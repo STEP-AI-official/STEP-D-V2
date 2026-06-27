@@ -118,21 +118,26 @@ def refresh_access_token(settings: Settings, refresh_token: str) -> dict[str, An
     return payload
 
 
-def ensure_channel_access_token(settings: Settings, channel: Any) -> tuple[str, bool]:
+def ensure_channel_access_token(settings: Settings, channel: Any, *, force: bool = False) -> tuple[str, bool]:
     """Return a valid access token for a stored YouTubeChannel, refreshing it when
     expired. Mutates the channel in place; the caller is responsible for committing.
 
     Returns ``(access_token, changed)`` where ``changed`` is True when the token was
     refreshed and the channel row needs to be persisted.
+
+    Pass ``force=True`` to bypass the expiry check and unconditionally re-issue a
+    new access token — use this after a 401 response from Google even though the DB
+    says the token is still valid (e.g. token revoked, clock skew, etc.).
     """
-    expires_at = getattr(channel, "expires_at", None)
-    still_valid = bool(
-        getattr(channel, "access_token", None)
-        and expires_at
-        and expires_at > datetime.utcnow() + timedelta(seconds=60)
-    )
-    if still_valid:
-        return str(channel.access_token), False
+    if not force:
+        expires_at = getattr(channel, "expires_at", None)
+        still_valid = bool(
+            getattr(channel, "access_token", None)
+            and expires_at
+            and expires_at > datetime.utcnow() + timedelta(seconds=60)
+        )
+        if still_valid:
+            return str(channel.access_token), False
 
     refresh_token = getattr(channel, "refresh_token", None)
     if not refresh_token:

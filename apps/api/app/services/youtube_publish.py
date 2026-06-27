@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +7,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import session_scope
 from app.models import Clip, YouTubeChannel, YouTubePublish
 from app.services.youtube_metadata import normalize_shorts_publish_metadata
-from app.services.youtube_oauth import refresh_access_token as refresh_channel_access_token
+from app.services.youtube_oauth import ensure_channel_access_token, refresh_access_token as refresh_channel_access_token
 from app.services.storage import media_path_from_url
 
 
@@ -91,18 +90,12 @@ def _select_channel(db, publish: YouTubePublish) -> YouTubeChannel | None:
 def _access_token_for_publish(settings: Settings, db, publish: YouTubePublish) -> tuple[str, YouTubeChannel | None]:
     channel = _select_channel(db, publish)
     if channel:
-        expires_at = channel.expires_at
-        still_valid = bool(expires_at and expires_at > datetime.utcnow() + timedelta(seconds=60))
-        if channel.access_token and still_valid:
-            return str(channel.access_token), channel
-        if not channel.refresh_token:
-            raise RuntimeError(f"YouTube channel '{channel.title}' does not have a refresh token. Reconnect the channel.")
-        token_payload = refresh_channel_access_token(settings, str(channel.refresh_token))
-        channel.access_token = str(token_payload.get("access_token") or "")
-        channel.expires_at = token_payload.get("expires_at")
-        channel.token_type = token_payload.get("token_type") or channel.token_type
-        channel.scope = token_payload.get("scope") or channel.scope
-        return str(channel.access_token), channel
+        access_token, changed = ensure_channel_access_token(settings, channel)
+        if changed:
+            # Commit the refreshed token before the (potentially long) upload so it
+            # is persisted even if the upload itself fails or is retried later.
+            db.commit()
+        return access_token, channel
     return refresh_env_access_token(settings), None
 
 
