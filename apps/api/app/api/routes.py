@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models import Clip, Job, JobStatus, YouTubePublish
+from app.models import Clip, Job, JobStatus, YouTubeChannel, YouTubePublish
 from app.queue import queue
 from app.schemas import (
     AssetUploadResponse,
@@ -61,7 +61,14 @@ from app.services.subtitles import (
 )
 from app.services.templates import ALLOWED_OVERLAY_POSITIONS, get_render_template, list_render_templates
 from app.services.timecode import format_time
+from app.services.youtube_analytics import (
+    YouTubeTokenError,
+    fetch_video_stats,
+    summarize_comments,
+    fetch_video_comments,
+)
 from app.services.youtube_metadata import build_youtube_metadata
+from app.services.youtube_oauth import ensure_channel_access_token
 from app.services.youtube_package import build_youtube_package
 
 
@@ -84,6 +91,7 @@ def _clip_response(clip: Clip) -> ClipResponse:
     korean_shorts_signals = build_korean_shorts_signals(clip, youtube_metadata)
     return ClipResponse(
         id=clip.id,
+        job_id=clip.job_id,
         rank=clip.rank,
         title=clip.title,
         score=clip.score,
@@ -564,6 +572,102 @@ def patch_ppl_links(clip_id: str, request: PplLinksRequest, db: Session = Depend
         raise HTTPException(status_code=404, detail="Clip not found.")
     analysis = update_ppl_affiliate_links(clip_id, request.links)
     return PplAnalysisResponse(clip_id=clip_id, analysis=analysis)
+
+
+@router.get("/jobs/{job_id}/ppl-report")
+def get_job_ppl_report(job_id: str, db: Session = Depends(get_db)):
+    """Aggregate PPL analysis across all clips in a job — brand-level exposure report."""
+    if not db.get(Job, job_id):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    clips = db.query(Clip).filter(Clip.job_id == job_id).all()
+    brands: dict[str, dict] = {}
+    total_analyzed = 0
+    for clip in clips:
+        analysis = clip.ppl_analysis_json
+        if not analysis or analysis.get("status") != "done":
+            continue
+        total_analyzed += 1
+        for product in analysis.get("products") or []:
+            brand = product.get("brand") or "노브랜드"
+            prod_name = product.get("product") or ""
+            key = f"{brand.lower()}|{prod_name.lower()}"
+            if key not in brands:
+                brands[key] = {
+                    "brand": brand,
+                    "product": prod_name,
+                    "category": product.get("category") or "",
+                    "total_exposure_seconds": 0.0,
+                    "total_voice_mentions": 0,
+                    "clip_count": 0,
+                    "clips": [],
+                }
+            e = brands[key]
+            e["total_exposure_seconds"] += float(product.get("exposure_seconds") or 0)
+            e["total_voice_mentions"] += len(product.get("voice_mentions") or [])
+            e["clip_count"] += 1
+            e["clips"].append({
+                "clip_id": clip.id,
+                "clip_rank": clip.rank,
+                "clip_title": clip.title,
+                "exposure_seconds": round(float(product.get("exposure_seconds") or 0), 2),
+                "confidence": round(float(product.get("confidence") or 0), 3),
+                "voice_mentions": len(product.get("voice_mentions") or []),
+                "affiliate_url": product.get("affiliate_url") or "",
+            })
+    brand_list = sorted(brands.values(), key=lambda x: x["total_exposure_seconds"], reverse=True)
+    for e in brand_list:
+        e["total_exposure_seconds"] = round(e["total_exposure_seconds"], 2)
+    return {
+        "job_id": job_id,
+        "total_clips": len(clips),
+        "analyzed_clips": total_analyzed,
+        "brands": brand_list,
+    }
+
+
+@router.get("/clips/{clip_id}/youtube-stats")
+def get_clip_youtube_stats(clip_id: str, db: Session = Depends(get_db)):
+    """Fetch live YouTube stats (views, likes, comments) for a published clip."""
+    clip = db.get(Clip, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found.")
+    publish = (
+        db.query(YouTubePublish)
+        .filter(YouTubePublish.clip_id == clip_id, YouTubePublish.youtube_video_id.isnot(None))
+        .order_by(YouTubePublish.created_at.desc())
+        .first()
+    )
+    if not publish or not publish.youtube_video_id:
+        return {"published": False, "clip_id": clip_id}
+
+    metadata = publish.metadata_json if isinstance(publish.metadata_json, dict) else {}
+    channel_db_id = metadata.get("youtube_channel_db_id")
+    channel = db.get(YouTubeChannel, str(channel_db_id)) if channel_db_id else None
+    if not channel:
+        channel = db.query(YouTubeChannel).filter(YouTubeChannel.is_default == 1).first()
+    if not channel:
+        return {"published": True, "clip_id": clip_id, "youtube_video_id": publish.youtube_video_id, "stats": None, "error": "채널 연결 정보 없음"}
+
+    settings = get_settings()
+    try:
+        try:
+            access_token = ensure_channel_access_token(settings, channel)[0]
+        except Exception:
+            access_token = channel.access_token
+        db.commit()
+        videos = fetch_video_stats(access_token, [publish.youtube_video_id])
+        stats = videos[0] if videos else None
+    except YouTubeTokenError as exc:
+        return {"published": True, "clip_id": clip_id, "youtube_video_id": publish.youtube_video_id, "stats": None, "error": str(exc)}
+    except Exception as exc:
+        return {"published": True, "clip_id": clip_id, "youtube_video_id": publish.youtube_video_id, "stats": None, "error": str(exc)}
+    return {
+        "published": True,
+        "clip_id": clip_id,
+        "youtube_video_id": publish.youtube_video_id,
+        "youtube_url": publish.youtube_url,
+        "stats": stats,
+    }
 
 
 @router.post("/clips/{clip_id}/retrim", response_model=ClipResponse)

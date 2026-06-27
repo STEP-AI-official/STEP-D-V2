@@ -118,6 +118,7 @@ export type AssetUploadResponse = {
 
 export type Clip = {
   clip_id: string;
+  job_id?: string;
   rank: number;
   title: string;
   score: number;
@@ -161,6 +162,12 @@ export type PplFrame = {
   detections: PplDetection[];
 };
 
+export type VoiceMention = {
+  text: string;
+  video_time: number;
+  clip_time: number;
+};
+
 export type PplProduct = {
   id: string;
   brand: string;
@@ -173,6 +180,54 @@ export type PplProduct = {
   exposure_seconds: number;
   best_box: [number, number, number, number];
   affiliate_url: string;
+  voice_mentions?: VoiceMention[];
+};
+
+export type PplReportBrand = {
+  brand: string;
+  product: string;
+  category: string;
+  total_exposure_seconds: number;
+  total_voice_mentions: number;
+  clip_count: number;
+  clips: {
+    clip_id: string;
+    clip_rank: number;
+    clip_title: string;
+    exposure_seconds: number;
+    confidence: number;
+    voice_mentions: number;
+    affiliate_url: string;
+  }[];
+};
+
+export type PplReport = {
+  job_id: string;
+  total_clips: number;
+  analyzed_clips: number;
+  brands: PplReportBrand[];
+};
+
+export type ClipYouTubeStats = {
+  published: boolean;
+  clip_id: string;
+  youtube_video_id?: string;
+  youtube_url?: string;
+  stats?: {
+    view_count: number;
+    like_count: number;
+    comment_count: number;
+    title: string;
+    published_at?: string;
+  } | null;
+  error?: string;
+};
+
+export type CommentSummary = {
+  summary: string;
+  sentiment: string;
+  themes: string[];
+  highlights: string[];
 };
 
 export type PplAnalysis = {
@@ -758,4 +813,22 @@ export async function getVideoComments(
   limit = 20
 ): Promise<VideoComment[]> {
   return request<VideoComment[]>(`/api/youtube/channels/${channelDbId}/videos/${videoId}/comments?limit=${limit}`);
+}
+
+export async function getVideoCommentsWithSummary(
+  channelDbId: string,
+  videoId: string,
+  limit = 30
+): Promise<{ comments: VideoComment[]; summary: CommentSummary }> {
+  return request<{ comments: VideoComment[]; summary: CommentSummary }>(
+    `/api/youtube/channels/${channelDbId}/videos/${videoId}/comments?limit=${limit}&summarize=true`
+  );
+}
+
+export async function getJobPplReport(jobId: string): Promise<PplReport> {
+  return request<PplReport>(`/api/jobs/${jobId}/ppl-report`);
+}
+
+export async function getClipYouTubeStats(clipId: string): Promise<ClipYouTubeStats> {
+  return request<ClipYouTubeStats>(`/api/clips/${clipId}/youtube-stats`);
 }

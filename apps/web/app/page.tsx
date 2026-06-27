@@ -15,12 +15,15 @@ import {
   disconnectChannel,
   getChannelAnalytics,
   getChannelInsights,
+  getClipYouTubeStats,
   getJob,
+  getJobPplReport,
   getPublishStatus,
   getResults,
   getStudioSummary,
   reschedulePublish,
   getVideoComments,
+  getVideoCommentsWithSummary,
   getYouTubeChannelDraft,
   getYouTubeStatus,
   importFromYouTube,
@@ -37,6 +40,9 @@ import {
   uploadVideo,
   youtubeConnectUrl,
   type Clip as BackendClip,
+  type ClipYouTubeStats,
+  type CommentSummary,
+  type PplReport,
   type StudioProject,
   type StudioScheduleItem,
   type SubtitleMode,
@@ -67,7 +73,7 @@ const POSTERS = [
 type TitleOption = { id: string; text: string; overlay: string; note: string };
 type ThumbTextOption = { id: string; text: string; note: string };
 type Clip = {
-  id: string; rank: number; score: number; start: string; end: string; durSec: number;
+  id: string; jobId?: string; rank: number; score: number; start: string; end: string; durSec: number;
   startSec: number; endSec: number;
   caption: string; title: string; reason: string; transcript?: string; labels: string[];
   yt: { title: string; tags: string[] };
@@ -337,6 +343,7 @@ const mapBackendClip = (clip: BackendClip): Clip => {
 
   return {
     id: clip.clip_id,
+    jobId: clip.job_id,
     rank: clip.rank,
     score: Math.round(clip.score),
     start: clip.start_time,
@@ -606,6 +613,13 @@ export default function Home() {
   const [pplData, setPplData] = useState<Record<string, PplAnalysis | null>>({});
   const [pplBusy, setPplBusy] = useState(false);
   const [pplLinkDraft, setPplLinkDraft] = useState<Record<string, string>>({});
+  const [pplReport, setPplReport] = useState<Record<string, PplReport>>({});
+  const [pplReportBusy, setPplReportBusy] = useState(false);
+  const [pplReportOpen, setPplReportOpen] = useState<Record<string, boolean>>({});
+  // YouTube stats per clip (live view/like counts)
+  const [clipYtStats, setClipYtStats] = useState<Record<string, ClipYouTubeStats>>({});
+  // Comment summary per video_id
+  const [commentSummary, setCommentSummary] = useState<Record<string, CommentSummary & { busy?: boolean }>>({});
   const [titleSeed, setTitleSeed] = useState(0);
   const [chosenTitle, setChosenTitle] = useState<Record<string, string>>({});
   const [revisions, setRevisions] = useState<Record<string, number>>({});
@@ -1292,6 +1306,40 @@ export default function Home() {
       showToast("제휴 링크를 저장했어요");
     } catch (error) {
       showToast("저장 실패: " + errorMessage(error));
+    }
+  };
+
+  const loadPplReport = async (jobId: string) => {
+    setPplReportBusy(true);
+    try {
+      const report = await getJobPplReport(jobId);
+      setPplReport(s => ({ ...s, [jobId]: report }));
+      setPplReportOpen(s => ({ ...s, [jobId]: true }));
+    } catch (error) {
+      showToast("리포트 로드 실패: " + errorMessage(error));
+    } finally {
+      setPplReportBusy(false);
+    }
+  };
+
+  const loadClipYtStats = async (clipId: string) => {
+    try {
+      const stats = await getClipYouTubeStats(clipId);
+      setClipYtStats(s => ({ ...s, [clipId]: stats }));
+    } catch {
+      // silent
+    }
+  };
+
+  const loadCommentSummary = async (channelDbId: string, videoId: string) => {
+    const key = `${channelDbId}|${videoId}`;
+    setCommentSummary(s => ({ ...s, [key]: { ...(s[key] ?? { summary: "", sentiment: "neutral", themes: [], highlights: [] }), busy: true } }));
+    try {
+      const result = await getVideoCommentsWithSummary(channelDbId, videoId);
+      setCommentSummary(s => ({ ...s, [key]: { ...result.summary, busy: false } }));
+    } catch (error) {
+      showToast("댓글 요약 실패: " + errorMessage(error));
+      setCommentSummary(s => ({ ...s, [key]: { ...(s[key] ?? { summary: "", sentiment: "neutral", themes: [], highlights: [] }), busy: false } }));
     }
   };
 
@@ -2354,7 +2402,52 @@ export default function Home() {
                       <div style={{ fontSize: 10.5, color: "#9A8F7E", marginTop: 3 }}>댓글</div>
                     </div>
                   </div>
-                  <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".04em", color: "#A0957F", textTransform: "uppercase", marginBottom: 11 }}>댓글</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".04em", color: "#A0957F", textTransform: "uppercase" }}>댓글</div>
+                    {openChannel && openVideo && (() => {
+                      const key = `${openChannel}|${openVideo}`;
+                      const cs = commentSummary[key];
+                      return (
+                        <button
+                          onClick={() => void loadCommentSummary(openChannel, openVideo)}
+                          disabled={cs?.busy}
+                          style={{ height: 26, padding: "0 10px", border: "1px solid #E1D8C6", borderRadius: 7, background: cs?.summary ? "#EBF3E0" : "#FBF7EF", color: cs?.summary ? "#4A7A2E" : "#7A7060", fontSize: 11.5, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
+                        >
+                          <Icon d={["M12 3a9 9 0 0 0-9 9c0 2 .7 3.9 1.9 5.4L3 21l3.6-1.9A9 9 0 1 0 12 3Z"]} size={12} strokeWidth={2} />
+                          {cs?.busy ? "요약 중…" : cs?.summary ? "AI 요약 완료" : "AI 요약"}
+                        </button>
+                      );
+                    })()}
+                  </div>
+                  {openChannel && openVideo && commentSummary[`${openChannel}|${openVideo}`]?.summary && (() => {
+                    const cs = commentSummary[`${openChannel}|${openVideo}`];
+                    const sentimentColor = cs.sentiment === "positive" ? "#4A7A2E" : cs.sentiment === "negative" ? "#A04A2E" : "#6B6050";
+                    const sentimentBg = cs.sentiment === "positive" ? "#EBF3E0" : cs.sentiment === "negative" ? "#FBF1EC" : "#F3EEE3";
+                    return (
+                      <div style={{ marginBottom: 16, padding: "13px 14px", borderRadius: 12, background: sentimentBg, border: `1px solid ${cs.sentiment === "positive" ? "#C5DCA8" : cs.sentiment === "negative" ? "#F0D9CE" : "#E1D8C6"}` }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: sentimentColor, letterSpacing: ".04em", textTransform: "uppercase" }}>
+                            AI 댓글 요약 · {cs.sentiment === "positive" ? "긍정" : cs.sentiment === "negative" ? "부정" : cs.sentiment === "mixed" ? "혼재" : "중립"}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 13, lineHeight: 1.6, color: "#16120D", marginBottom: cs.themes.length ? 10 : 0 }}>{cs.summary}</div>
+                        {cs.themes.length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                            {cs.themes.map((t, i) => (
+                              <span key={i} style={{ fontSize: 11, fontWeight: 600, color: sentimentColor, background: "#fff", border: `1px solid ${cs.sentiment === "positive" ? "#C5DCA8" : cs.sentiment === "negative" ? "#F0D9CE" : "#E1D8C6"}`, borderRadius: 999, padding: "2px 9px" }}>{t}</span>
+                            ))}
+                          </div>
+                        )}
+                        {cs.highlights.length > 0 && (
+                          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 5 }}>
+                            {cs.highlights.map((h, i) => (
+                              <div key={i} style={{ fontSize: 12, color: "#5B5346", fontStyle: "italic", lineHeight: 1.5 }}>&ldquo;{h}&rdquo;</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div style={{ display: "flex", flexDirection: "column", gap: 13, maxHeight: 420, overflowY: "auto" }}>
                     {!openVideo || videoComments[openVideo] === undefined ? (
                       <div style={{ fontSize: 12.5, color: "#9A8F7E", padding: "8px 0" }}>댓글을 불러오는 중…</div>
@@ -2541,16 +2634,82 @@ export default function Home() {
                             <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: ".04em", color: "#A0957F", textTransform: "uppercase", margin: "0 0 9px" }}>협찬 노출 리포트</div>
                             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
                               {ppl.products.map((p, i) => (
-                                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, background: "#fff", border: "1px solid #EAE1D0" }}>
-                                  <span style={{ flex: "0 0 auto", width: 12, height: 12, borderRadius: 3, background: PPL_BOX_COLORS[i % PPL_BOX_COLORS.length] }} />
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: 13.5, fontWeight: 700, color: "#16120D", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.brand} · {p.product}</div>
-                                    <div style={{ marginTop: 3, fontSize: 11, color: "#9A8F7E", fontFamily: "'Space Mono',monospace" }}>노출 {fmt1(p.exposure_seconds)}초 · {fmt1(p.first_seen)}s–{fmt1(p.last_seen)}s{p.category ? ` · ${p.category}` : ""}</div>
+                                <div key={p.id} style={{ borderRadius: 12, background: "#fff", border: "1px solid #EAE1D0", overflow: "hidden" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px" }}>
+                                    <span style={{ flex: "0 0 auto", width: 12, height: 12, borderRadius: 3, background: PPL_BOX_COLORS[i % PPL_BOX_COLORS.length] }} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#16120D", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.brand} · {p.product}</div>
+                                      <div style={{ marginTop: 3, fontSize: 11, color: "#9A8F7E", fontFamily: "'Space Mono',monospace" }}>
+                                        화면 {fmt1(p.exposure_seconds)}초 · {fmt1(p.first_seen)}s–{fmt1(p.last_seen)}s{p.category ? ` · ${p.category}` : ""}
+                                        {p.voice_mentions && p.voice_mentions.length > 0 && (
+                                          <span style={{ marginLeft: 8, color: "#6B8C4A", background: "#EBF3E0", borderRadius: 999, padding: "1px 7px", fontWeight: 700 }}>음성 {p.voice_mentions.length}회</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <span style={{ flex: "0 0 auto", fontSize: 11, fontWeight: 700, color: "#7A7060", background: "#F3EEE3", border: "1px solid #EAE1D0", borderRadius: 999, padding: "3px 9px" }}>{Math.round(p.confidence * 100)}%</span>
                                   </div>
-                                  <span style={{ flex: "0 0 auto", fontSize: 11, fontWeight: 700, color: "#7A7060", background: "#F3EEE3", border: "1px solid #EAE1D0", borderRadius: 999, padding: "3px 9px" }}>{Math.round(p.confidence * 100)}%</span>
+                                  {p.voice_mentions && p.voice_mentions.length > 0 && (
+                                    <div style={{ borderTop: "1px solid #F0EBE0", padding: "8px 13px 10px", background: "#FAFAF7" }}>
+                                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "#6B8C4A", letterSpacing: ".04em", textTransform: "uppercase", marginBottom: 5 }}>음성 언급</div>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                        {p.voice_mentions.slice(0, 3).map((m, mi) => (
+                                          <div key={mi} style={{ fontSize: 11.5, color: "#555", fontFamily: "inherit", lineHeight: 1.5 }}>
+                                            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 10, color: "#9A8F7E", marginRight: 6 }}>{fmt1(m.clip_time)}s</span>
+                                            &ldquo;{m.text}&rdquo;
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               ))}
                             </div>
+
+                            {/* Job-level PPL report */}
+                            {sel.jobId && (() => {
+                              const report = pplReport[sel.jobId];
+                              const isOpen = pplReportOpen[sel.jobId];
+                              return (
+                                <div style={{ marginBottom: 20 }}>
+                                  <button
+                                    onClick={() => {
+                                      if (report) {
+                                        setPplReportOpen(s => ({ ...s, [sel.jobId!]: !isOpen }));
+                                      } else {
+                                        void loadPplReport(sel.jobId!);
+                                      }
+                                    }}
+                                    disabled={pplReportBusy}
+                                    style={{ width: "100%", height: 38, border: "1px solid #D9CEB6", borderRadius: 10, background: "#FAFAF7", color: "#5A5040", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+                                  >
+                                    <Icon d={["M9 12h6", "M12 9v6", "M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0"]} size={14} strokeWidth={2} />
+                                    {pplReportBusy ? "집계 중…" : (report && isOpen) ? "전체 리포트 닫기" : "전체 클립 PPL 리포트 보기"}
+                                  </button>
+                                  {report && isOpen && (
+                                    <div style={{ marginTop: 10, padding: "14px", borderRadius: 12, background: "#fff", border: "1px solid #EAE1D0" }}>
+                                      <div style={{ fontSize: 11.5, color: "#7A7060", marginBottom: 10 }}>총 {report.total_clips}개 클립 중 {report.analyzed_clips}개 분석됨</div>
+                                      {report.brands.length === 0 ? (
+                                        <div style={{ fontSize: 12.5, color: "#9A8F7E", textAlign: "center" }}>분석된 PPL이 없어요.</div>
+                                      ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                          {report.brands.map((b, bi) => (
+                                            <div key={bi} style={{ padding: "10px 12px", borderRadius: 10, background: "#F9F5EE", border: "1px solid #EAE1D0" }}>
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                                                <div style={{ fontSize: 13, fontWeight: 700, color: "#16120D" }}>{b.brand}{b.product ? ` · ${b.product}` : ""}</div>
+                                                <span style={{ fontSize: 11, fontWeight: 700, color: "#A04A2E", background: "#FFF4EF", border: "1px solid #F0D9CE", borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>{b.total_exposure_seconds}초</span>
+                                              </div>
+                                              <div style={{ marginTop: 4, fontSize: 11, color: "#9A8F7E", fontFamily: "'Space Mono',monospace" }}>
+                                                클립 {b.clip_count}개 · 음성 {b.total_voice_mentions}회
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
 
                             <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: ".04em", color: "#A0957F", textTransform: "uppercase", margin: "0 0 9px" }}>상품 태깅 · 제휴 링크</div>
                             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2723,6 +2882,42 @@ export default function Home() {
                       </div>
                     )}
                   </div>
+                  {/* YouTube live stats card — shown when clip is published */}
+                  {selPublish && (selPublish.status === "published" || selPublish.status === "scheduled") && (() => {
+                    const ytStats = clipYtStats[sel.id];
+                    return (
+                      <div style={{ border: "1px solid #E6DDCB", borderRadius: 13, background: "#fff", padding: "13px 14px" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: "#A0957F", textTransform: "uppercase" }}>실시간 성과</span>
+                          <button
+                            onClick={() => void loadClipYtStats(sel.id)}
+                            style={{ height: 26, padding: "0 10px", border: "1px solid #E1D8C6", borderRadius: 7, background: "#FBF7EF", color: "#7A7060", fontSize: 11.5, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
+                          >
+                            <Icon d={["M3 12a9 9 0 0 1 15-6.7L21 8", "M21 3v5h-5", "M21 12a9 9 0 0 1-15 6.7L3 16", "M3 21v-5h5"]} size={12} strokeWidth={2} />조회
+                          </button>
+                        </div>
+                        {!ytStats ? (
+                          <div style={{ fontSize: 12, color: "#9A8F7E", textAlign: "center", padding: "8px 0" }}>조회 버튼을 눌러 최신 성과를 가져오세요</div>
+                        ) : ytStats.stats ? (
+                          <div style={{ display: "flex", gap: 8 }}>
+                            {[
+                              { label: "조회수", value: ytStats.stats.view_count.toLocaleString() },
+                              { label: "좋아요", value: ytStats.stats.like_count.toLocaleString() },
+                              { label: "댓글", value: ytStats.stats.comment_count.toLocaleString() },
+                            ].map(({ label, value }) => (
+                              <div key={label} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 10, background: "#F9F5EE" }}>
+                                <div style={{ fontSize: 17, fontWeight: 800, color: "#16120D" }}>{value}</div>
+                                <div style={{ fontSize: 11, color: "#9A8F7E", marginTop: 2 }}>{label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12, color: "#9A8F7E", textAlign: "center", padding: "8px 0" }}>{ytStats.error ?? "데이터 없음"}</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   <div style={{ border: "1px solid #E6DDCB", borderRadius: 13, background: "#fff", padding: "13px 14px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", color: "#A0957F", textTransform: "uppercase" }}>유튜브 제목</span>

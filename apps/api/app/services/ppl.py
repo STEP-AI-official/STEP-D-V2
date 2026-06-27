@@ -7,6 +7,7 @@ track (for drawing boxes synced to playback). Boxes are normalized to 0..1 of
 the rendered frame so the frontend can position them as percentages.
 """
 
+import json
 import math
 from datetime import datetime
 from typing import Any
@@ -51,6 +52,57 @@ def _sample_times(duration: float, settings) -> list[float]:
 
 def _product_key(brand: str, product: str) -> str:
     return f"{brand.strip().lower()}|{product.strip().lower()}"
+
+
+def _detect_voice_mentions(
+    products: dict[str, dict[str, Any]],
+    job_id: str,
+    clip_start: float,
+    clip_end: float,
+    settings,
+) -> None:
+    """Scan STT transcript for brand/product name mentions within the clip's time range.
+    Mutates each product entry to add a voice_mentions list."""
+    transcript_path = (
+        settings.storage_dir.resolve() / "jobs" / job_id / "transcripts" / "transcript.json"
+    )
+    if not transcript_path.exists():
+        for entry in products.values():
+            entry.setdefault("voice_mentions", [])
+        return
+
+    try:
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except Exception:
+        for entry in products.values():
+            entry.setdefault("voice_mentions", [])
+        return
+
+    segments = transcript.get("segments") or []
+    for entry in products.values():
+        entry["voice_mentions"] = []
+
+    for seg in segments:
+        seg_start = float(seg.get("start") or 0.0)
+        seg_end = float(seg.get("end") or 0.0)
+        seg_text = str(seg.get("text") or "").strip()
+        if seg_end < clip_start or seg_start > clip_end or not seg_text:
+            continue
+        seg_lower = seg_text.lower()
+        for entry in products.values():
+            candidates = []
+            if entry["brand"] and entry["brand"] not in ("노브랜드", ""):
+                candidates.append(entry["brand"].lower())
+            if entry["product"] and entry["product"] not in ("상품", ""):
+                candidates.append(entry["product"].lower())
+            for name in candidates:
+                if len(name) >= 2 and name in seg_lower:
+                    entry["voice_mentions"].append({
+                        "text": seg_text,
+                        "video_time": round(seg_start, 2),
+                        "clip_time": round(max(0.0, seg_start - clip_start), 2),
+                    })
+                    break
 
 
 def build_ppl_analysis(clip: Clip, settings) -> dict[str, Any]:
@@ -134,6 +186,8 @@ def build_ppl_analysis(clip: Clip, settings) -> dict[str, Any]:
                 "confidence": round(confidence, 3),
             })
         overlay_frames.append({"timestamp": timestamp, "detections": frame_dets})
+
+    _detect_voice_mentions(products, clip.job_id, float(clip.start_time), float(clip.end_time), settings)
 
     product_list = []
     for entry in products.values():

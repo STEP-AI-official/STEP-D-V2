@@ -167,6 +167,20 @@ def detect_ppl(frame_paths: list[Path], frame_times: list[float], settings: Sett
     return frames if isinstance(frames, list) else []
 
 
+def call_text_prompt(prompt: str, settings: Settings) -> str:
+    """Text-only Gemini call (no images). Returns raw text string."""
+    if not settings.gemini_api_key:
+        raise GeminiError("GEMINI_API_KEY is required.")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent"
+    body = _request_body([{"text": prompt}], {"temperature": 0.3})
+    headers = {"Content-Type": "application/json", "x-goog-api-key": settings.gemini_api_key}
+    with httpx.Client(timeout=settings.gemini_timeout_seconds) as client:
+        response = client.post(url, headers=headers, json=body)
+    if response.status_code >= 400:
+        raise GeminiError(f"Gemini text API error {response.status_code}: {response.text[:300]}")
+    return _extract_text(response.json())
+
+
 def detect_burned_in_captions(frame_paths: list[Path], settings: Settings) -> dict[str, Any]:
     if not frame_paths:
         return {"has_burned_in_captions": False, "confidence": 0.0, "reason": "No frames were provided."}

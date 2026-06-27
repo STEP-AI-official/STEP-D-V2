@@ -40,10 +40,12 @@ from app.schemas import (
 from app.services.auth import get_current_user, get_optional_user
 from app.services.youtube_analytics import (
     SORT_KEYS,
+    YouTubeTokenError,
     build_channel_analytics,
     build_success_insights,
     fetch_video_comments,
     fetch_video_stats,
+    summarize_comments,
 )
 from app.services.youtube_metadata import build_youtube_metadata, normalize_shorts_publish_metadata
 from app.services.youtube_oauth import (
@@ -491,7 +493,12 @@ def channel_analytics(
         access_token, changed = ensure_channel_access_token(settings, channel)
         if changed:
             db.commit()
-        data = build_channel_analytics(access_token, channel.channel_id, limit=limit, sort=sort)
+        try:
+            data = build_channel_analytics(access_token, channel.channel_id, limit=limit, sort=sort)
+        except YouTubeTokenError:
+            access_token, _ = ensure_channel_access_token(settings, channel, force=True)
+            db.commit()
+            data = build_channel_analytics(access_token, channel.channel_id, limit=limit, sort=sort)
     except Exception as exc:  # noqa: BLE001 - surface upstream YouTube/API errors
         raise HTTPException(status_code=502, detail=f"Failed to load channel analytics: {exc}") from exc
 
@@ -528,7 +535,12 @@ def channel_insights(
         access_token, changed = ensure_channel_access_token(settings, channel)
         if changed:
             db.commit()
-        stats = fetch_video_stats(access_token, video_ids)
+        try:
+            stats = fetch_video_stats(access_token, video_ids)
+        except YouTubeTokenError:
+            access_token, _ = ensure_channel_access_token(settings, channel, force=True)
+            db.commit()
+            stats = fetch_video_stats(access_token, video_ids)
     except Exception as exc:  # noqa: BLE001 - surface upstream YouTube/API errors
         raise HTTPException(status_code=502, detail=f"인사이트를 불러오지 못했어요: {exc}") from exc
 
@@ -564,11 +576,12 @@ def channel_insights(
     return ChannelInsightsResponse(channel_db_id=channel.id, **data)
 
 
-@router.get("/channels/{channel_db_id}/videos/{video_id}/comments", response_model=list[VideoCommentResponse])
+@router.get("/channels/{channel_db_id}/videos/{video_id}/comments")
 def video_comments(
     channel_db_id: str,
     video_id: str,
     limit: int = 20,
+    summarize: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -578,11 +591,21 @@ def video_comments(
         access_token, changed = ensure_channel_access_token(settings, channel)
         if changed:
             db.commit()
-        comments = fetch_video_comments(access_token, video_id, max(1, min(50, limit)))
+        try:
+            comments = fetch_video_comments(access_token, video_id, max(1, min(50, limit)))
+        except YouTubeTokenError:
+            access_token, _ = ensure_channel_access_token(settings, channel, force=True)
+            db.commit()
+            comments = fetch_video_comments(access_token, video_id, max(1, min(50, limit)))
     except Exception as exc:  # noqa: BLE001 - surface upstream YouTube/API errors
         logger.exception("Failed to load comments for video %s (channel %s)", video_id, channel_db_id)
         raise HTTPException(status_code=502, detail=f"Failed to load comments: {exc}") from exc
-    return [VideoCommentResponse(**comment) for comment in comments]
+
+    comment_list = [VideoCommentResponse(**c) for c in comments]
+    if not summarize:
+        return comment_list
+    summary = summarize_comments(comments, settings)
+    return {"comments": [c.model_dump() for c in comment_list], "summary": summary}
 
 
 @router.get("/publishes/{publish_id}", response_model=YouTubePublishResponse)

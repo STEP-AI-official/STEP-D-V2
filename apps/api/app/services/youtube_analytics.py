@@ -1,16 +1,20 @@
-"""Channel analytics via the YouTube Data API v3.
-
-Pulls a connected channel's uploaded videos with view/like/comment counts and
-ranks them, so the dashboard can show "top videos by views" and channel totals.
-"""
+"""Channel analytics + comment summarization via YouTube Data API v3 and Gemini."""
 
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
+if TYPE_CHECKING:
+    from app.core.config import Settings
+
 
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
+
+
+class YouTubeTokenError(RuntimeError):
+    """Raised when Google returns 401 — the access token is invalid or revoked."""
+
 
 SORT_KEYS = {
     "views": "view_count",
@@ -27,6 +31,8 @@ def _get(url: str, access_token: str, params: dict[str, Any]) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=30,
     )
+    if response.status_code == 401:
+        raise YouTubeTokenError(f"YouTube token unauthorized (401): {response.text[:200]}")
     if response.status_code >= 400:
         raise RuntimeError(f"YouTube API error {response.status_code}: {response.text[:300]}")
     return response.json()
@@ -231,6 +237,48 @@ def build_success_insights(records: list[dict[str, Any]]) -> dict[str, Any]:
         "patterns": patterns,
         "recommendations": recommendations,
     }
+
+
+def summarize_comments(comments: list[dict[str, Any]], settings: "Settings") -> dict[str, Any]:
+    """Use Gemini to summarize a list of YouTube comments into key themes and sentiment."""
+    from app.services.gemini import GeminiError, call_text_prompt
+
+    if not comments:
+        return {"summary": "댓글이 없어요.", "sentiment": "neutral", "themes": []}
+
+    lines = "\n".join(
+        f"- {c.get('text', '')} (좋아요 {c.get('likes', 0)})"
+        for c in comments[:50]
+        if c.get("text", "").strip()
+    )
+    prompt = f"""다음은 YouTube 영상의 댓글 목록입니다. 한국어로 간결하게 분석해 주세요.
+
+댓글:
+{lines}
+
+다음 JSON 형식으로 응답하세요:
+{{
+  "summary": "2-3문장 전체 요약 (핵심 반응·분위기)",
+  "sentiment": "positive | neutral | negative | mixed",
+  "themes": ["주요 반응 키워드 또는 주제 (최대 5개)"],
+  "highlights": ["가장 반응 좋은 또는 인상적인 댓글 원문 1-3개"]
+}}"""
+
+    try:
+        raw = call_text_prompt(prompt, settings)
+        import json
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`").removeprefix("json").strip()
+        result = json.loads(cleaned)
+        return {
+            "summary": str(result.get("summary") or ""),
+            "sentiment": str(result.get("sentiment") or "neutral"),
+            "themes": [str(t) for t in (result.get("themes") or [])[:5]],
+            "highlights": [str(h) for h in (result.get("highlights") or [])[:3]],
+        }
+    except (GeminiError, Exception):
+        return {"summary": "요약 실패", "sentiment": "neutral", "themes": [], "highlights": []}
 
 
 def build_channel_analytics(

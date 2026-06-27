@@ -113,6 +113,7 @@ class JobResponse(BaseModel):
 
 class ClipResponse(BaseModel):
     clip_id: str = Field(alias="id")
+    job_id: str = ""
     rank: int
     title: str
     score: int
