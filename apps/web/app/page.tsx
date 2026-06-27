@@ -18,6 +18,7 @@ import {
   getClipYouTubeStats,
   getJob,
   getJobPplReport,
+  getSilenceReport,
   pplReportCsvUrl,
   getPublishStatus,
   getResults,
@@ -44,6 +45,7 @@ import {
   type ClipYouTubeStats,
   type CommentSummary,
   type PplReport,
+  type SilenceReport,
   type StudioProject,
   type StudioScheduleItem,
   type SubtitleMode,
@@ -608,7 +610,7 @@ export default function Home() {
   // results
   const [filter, setFilter] = useState<"top" | "all" | "short" | "custom">("top");
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [tab, setTab] = useState<"titles" | "overlay" | "youtube" | "ppl">("titles");
+  const [tab, setTab] = useState<"titles" | "overlay" | "youtube" | "ppl" | "edit">("titles");
 
   // PPL (product placement) analysis — on-demand per clip
   const [pplData, setPplData] = useState<Record<string, PplAnalysis | null>>({});
@@ -617,6 +619,9 @@ export default function Home() {
   const [pplReport, setPplReport] = useState<Record<string, PplReport>>({});
   const [pplReportBusy, setPplReportBusy] = useState(false);
   const [pplReportOpen, setPplReportOpen] = useState<Record<string, boolean>>({});
+  // Silence detection per job
+  const [silenceReport, setSilenceReport] = useState<Record<string, SilenceReport>>({});
+  const [silenceBusy, setSilenceBusy] = useState<Record<string, boolean>>({});
   // YouTube stats per clip (live view/like counts)
   const [clipYtStats, setClipYtStats] = useState<Record<string, ClipYouTubeStats>>({});
   // Comment summary per video_id
@@ -1320,6 +1325,18 @@ export default function Home() {
       showToast("리포트 로드 실패: " + errorMessage(error));
     } finally {
       setPplReportBusy(false);
+    }
+  };
+
+  const loadSilenceReport = async (jobId: string) => {
+    setSilenceBusy(s => ({ ...s, [jobId]: true }));
+    try {
+      const report = await getSilenceReport(jobId);
+      setSilenceReport(s => ({ ...s, [jobId]: report }));
+    } catch (error) {
+      showToast("무음 탐지 실패: " + errorMessage(error));
+    } finally {
+      setSilenceBusy(s => ({ ...s, [jobId]: false }));
     }
   };
 
@@ -2585,8 +2602,8 @@ export default function Home() {
 
               {/* tabs */}
               <div style={{ display: "flex", gap: 6, padding: 4, background: "#EBE3D4", borderRadius: 12, marginBottom: 18 }}>
-                {(["titles", "overlay", "youtube", "ppl"] as const).map(t => {
-                  const labels = { titles: "제목", overlay: "자막 스타일", youtube: "유튜브", ppl: "PPL" };
+                {(["titles", "overlay", "youtube", "ppl", "edit"] as const).map(t => {
+                  const labels = { titles: "제목", overlay: "자막 스타일", youtube: "유튜브", ppl: "PPL", edit: "편집 제안" };
                   const on = tab === t;
                   return (
                     <button key={t} onClick={() => setTab(t)} style={{ flex: 1, height: 38, border: 0, borderRadius: 9, background: on ? "#fff" : "transparent", color: on ? "#16120D" : "#7A7060", fontSize: 13.5, fontWeight: 700, cursor: "pointer", boxShadow: on ? "0 2px 6px rgba(40,30,20,.1)" : "none", transition: "all .15s" }}>{labels[t]}</button>
@@ -2737,6 +2754,95 @@ export default function Home() {
                               <Icon d={["M5 12l5 5L20 7"]} size={16} strokeWidth={2.2} />제휴 링크 저장
                             </button>
                           </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {tab === "edit" && sel.jobId && (() => {
+                const jobId = sel.jobId;
+                const report = silenceReport[jobId];
+                const busy = silenceBusy[jobId];
+                const fmtT = (s: number) => {
+                  const m = Math.floor(s / 60);
+                  const sec = (s % 60).toFixed(1);
+                  return m > 0 ? `${m}:${sec.padStart(4, "0")}` : `${sec}s`;
+                };
+                const LABEL_META = {
+                  dead_zone: { text: "장기 무음", bg: "#FBF1EC", color: "#A04A2E", bd: "#F0D9CE" },
+                  pause:     { text: "침묵 구간", bg: "#FBF8EE", color: "#8C6A1E", bd: "#EFD9A8" },
+                  micro:     { text: "짧은 무음", bg: "#F3F3F3", color: "#6A6060", bd: "#E0DCDC" },
+                };
+                return (
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#16120D" }}>편집 제안 <span style={{ color: "#A0957F" }}>· 원본 영상 무음 분석</span></div>
+                      <button
+                        onClick={() => void loadSilenceReport(jobId)}
+                        disabled={busy}
+                        style={{ height: 32, padding: "0 12px", border: "1px solid #E1D8C6", borderRadius: 9, background: "#fff", color: "#A04A2E", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1, whiteSpace: "nowrap" }}
+                      >
+                        <Icon d={["M3 12a9 9 0 0 1 15-6.7L21 8", "M21 3v5h-5", "M21 12a9 9 0 0 1-15 6.7L3 16", "M3 21v-5h5"]} size={14} strokeWidth={2} style={busy ? { animation: "scSpin 1s linear infinite" } : undefined} />
+                        {busy ? "분석 중…" : report ? "다시 분석" : "무음 탐지"}
+                      </button>
+                    </div>
+                    <p style={{ margin: "0 0 14px", fontSize: 12.5, lineHeight: 1.6, color: "#9A8F7E" }}>원본 영상에서 무음 구간을 찾아 컷 가능한 위치를 제안해요. 쇼츠 후보 선정이나 원본 편집에 참고하세요.</p>
+
+                    {!report && !busy && (
+                      <div style={{ padding: "22px 16px", textAlign: "center", borderRadius: 12, background: "#fff", border: "1px dashed #D9CEB6", color: "#9A8F7E", fontSize: 12.5 }}>
+                        <b style={{ color: "#A04A2E" }}>무음 탐지</b>를 눌러 원본 영상의 침묵 구간을 찾아보세요.
+                      </div>
+                    )}
+
+                    {busy && (
+                      <div style={{ padding: "18px 14px", borderRadius: 12, background: "#fff", border: "1px solid #EAE1D0", color: "#7A7060", fontSize: 12.5, display: "flex", alignItems: "center", gap: 10 }}>
+                        <Icon d={["M3 12a9 9 0 0 1 15-6.7L21 8", "M21 3v5h-5", "M21 12a9 9 0 0 1-15 6.7L3 16", "M3 21v-5h5"]} size={16} strokeWidth={2} style={{ animation: "scSpin 1s linear infinite" }} />
+                        원본 영상 전체를 스캔하는 중… (영상 길이에 따라 30초~2분 소요)
+                      </div>
+                    )}
+
+                    {report && (
+                      <>
+                        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                          {[
+                            { label: "장기 무음", value: report.dead_zone_count, color: "#A04A2E", bg: "#FBF1EC" },
+                            { label: "침묵 구간", value: report.pause_count, color: "#8C6A1E", bg: "#FBF8EE" },
+                            { label: "총 절약 가능", value: `${report.total_silence_seconds}초`, color: "#16120D", bg: "#F3EEE3" },
+                          ].map(({ label, value, color, bg }) => (
+                            <div key={label} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 10, background: bg }}>
+                              <div style={{ fontSize: 17, fontWeight: 800, color }}>{value}</div>
+                              <div style={{ fontSize: 10.5, color: "#9A8F7E", marginTop: 2 }}>{label}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {report.segments.filter(s => s.label !== "micro").length === 0 ? (
+                          <div style={{ padding: "16px 14px", textAlign: "center", borderRadius: 12, background: "#fff", border: "1px solid #EAE1D0", color: "#9A8F7E", fontSize: 12.5 }}>
+                            유의미한 무음 구간이 없어요. 영상이 잘 편집되어 있거나 음악/배경음이 깔려 있을 수 있어요.
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: ".04em", color: "#A0957F", textTransform: "uppercase", marginBottom: 4 }}>컷 후보 구간</div>
+                            {report.segments.filter(s => s.label !== "micro").map((seg, i) => {
+                              const meta = LABEL_META[seg.label];
+                              return (
+                                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 13px", borderRadius: 11, background: meta.bg, border: `1px solid ${meta.bd}` }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: meta.color }}>{meta.text} · {seg.duration}초</div>
+                                    <div style={{ marginTop: 2, fontSize: 11, color: "#9A8F7E", fontFamily: "'Space Mono',monospace" }}>{fmtT(seg.start)} → {fmtT(seg.end)}</div>
+                                  </div>
+                                  <span style={{ flex: "0 0 auto", fontSize: 11, fontWeight: 700, color: meta.color, background: "#fff", border: `1px solid ${meta.bd}`, borderRadius: 999, padding: "3px 9px" }}>
+                                    -{seg.duration}s
+                                  </span>
+                                </div>
+                              );
+                            })}
+                            {report.micro_count > 0 && (
+                              <div style={{ fontSize: 11.5, color: "#9A8F7E", textAlign: "center", marginTop: 4 }}>+ 짧은 무음 {report.micro_count}개는 생략됨</div>
+                            )}
+                          </div>
                         )}
                       </>
                     )}

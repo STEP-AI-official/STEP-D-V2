@@ -1340,6 +1340,68 @@ def extract_thumbnail(
     return output_path
 
 
+def detect_silence(
+    video_path: Path,
+    settings: Settings,
+    noise_db: float = -35.0,
+    min_duration: float = 0.5,
+) -> list[dict]:
+    """Detect silent segments in a video using ffmpeg silencedetect filter.
+
+    Returns a list of {start, end, duration, label} dicts sorted by start time.
+    label is one of: 'micro' (<1s), 'pause' (1-3s), 'dead_zone' (>3s).
+    """
+    import re as _re
+
+    args = [
+        settings.ffmpeg_binary,
+        "-y",
+        "-i", str(video_path),
+        "-af", f"silencedetect=noise={noise_db:.0f}dB:d={min_duration:.2f}",
+        "-f", "null",
+        "-",
+    ]
+    proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    output = proc.stderr + proc.stdout
+
+    starts: list[float] = []
+    ends: list[float] = []
+    durations: list[float] = []
+
+    for line in output.splitlines():
+        m = _re.search(r"silence_start:\s*([\d.]+)", line)
+        if m:
+            starts.append(float(m.group(1)))
+        m = _re.search(r"silence_end:\s*([\d.]+)", line)
+        if m:
+            ends.append(float(m.group(1)))
+        m = _re.search(r"silence_duration:\s*([\d.]+)", line)
+        if m:
+            durations.append(float(m.group(1)))
+
+    segments = []
+    for i, start in enumerate(starts):
+        end = ends[i] if i < len(ends) else start + (durations[i] if i < len(durations) else 0)
+        dur = durations[i] if i < len(durations) else max(0.0, end - start)
+        if dur < min_duration:
+            continue
+        if dur < 1.0:
+            label = "micro"
+        elif dur < 3.0:
+            label = "pause"
+        else:
+            label = "dead_zone"
+        segments.append({
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "duration": round(dur, 2),
+            "label": label,
+        })
+
+    segments.sort(key=lambda s: s["start"])
+    return segments
+
+
 def extract_source_frame(
     video_path: Path,
     output_path: Path,

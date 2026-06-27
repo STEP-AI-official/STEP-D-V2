@@ -46,6 +46,7 @@ from app.services.clip_briefing import build_clip_briefing
 from app.services.clip_signals import build_korean_shorts_signals
 from app.services.ffmpeg import (
     cut_clip,
+    detect_silence,
     extract_thumbnail,
     ffmpeg_available,
     probe_duration,
@@ -574,6 +575,48 @@ def patch_ppl_links(clip_id: str, request: PplLinksRequest, db: Session = Depend
         raise HTTPException(status_code=404, detail="Clip not found.")
     analysis = update_ppl_affiliate_links(clip_id, request.links)
     return PplAnalysisResponse(clip_id=clip_id, analysis=analysis)
+
+
+@router.get("/jobs/{job_id}/silence-report")
+def get_silence_report(
+    job_id: str,
+    noise_db: float = -35.0,
+    min_duration: float = 0.5,
+    db: Session = Depends(get_db),
+):
+    """Detect silent segments in the job's source video and return cut suggestions."""
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status not in (JobStatus.completed, JobStatus.processing):
+        raise HTTPException(status_code=409, detail="Job source video not yet ready.")
+
+    source_path = Path(job.input_path)
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="Source video file not found on disk.")
+
+    settings = get_settings()
+    try:
+        segments = detect_silence(source_path, settings, noise_db=noise_db, min_duration=min_duration)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Silence detection failed: {exc}") from exc
+
+    total_silence = round(sum(s["duration"] for s in segments), 2)
+    dead_zones = [s for s in segments if s["label"] == "dead_zone"]
+    pauses = [s for s in segments if s["label"] == "pause"]
+    micros = [s for s in segments if s["label"] == "micro"]
+
+    return {
+        "job_id": job_id,
+        "source_duration": job.duration,
+        "total_silence_seconds": total_silence,
+        "segment_count": len(segments),
+        "dead_zone_count": len(dead_zones),
+        "pause_count": len(pauses),
+        "micro_count": len(micros),
+        "segments": segments,
+        "params": {"noise_db": noise_db, "min_duration": min_duration},
+    }
 
 
 @router.get("/jobs/{job_id}/ppl-report")

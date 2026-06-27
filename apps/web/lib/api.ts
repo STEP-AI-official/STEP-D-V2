@@ -825,6 +825,36 @@ export async function getVideoCommentsWithSummary(
   );
 }
 
+export type SilenceSegment = {
+  start: number;
+  end: number;
+  duration: number;
+  label: "micro" | "pause" | "dead_zone";
+};
+
+export type SilenceReport = {
+  job_id: string;
+  source_duration: number | null;
+  total_silence_seconds: number;
+  segment_count: number;
+  dead_zone_count: number;
+  pause_count: number;
+  micro_count: number;
+  segments: SilenceSegment[];
+  params: { noise_db: number; min_duration: number };
+};
+
+export async function getSilenceReport(
+  jobId: string,
+  opts: { noise_db?: number; min_duration?: number } = {}
+): Promise<SilenceReport> {
+  const params = new URLSearchParams();
+  if (opts.noise_db !== undefined) params.set("noise_db", String(opts.noise_db));
+  if (opts.min_duration !== undefined) params.set("min_duration", String(opts.min_duration));
+  const qs = params.toString();
+  return request<SilenceReport>(`/api/jobs/${jobId}/silence-report${qs ? `?${qs}` : ""}`);
+}
+
 export async function getJobPplReport(jobId: string): Promise<PplReport> {
   return request<PplReport>(`/api/jobs/${jobId}/ppl-report`);
 }
