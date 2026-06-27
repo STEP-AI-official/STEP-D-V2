@@ -223,10 +223,16 @@ def _prepare_burn_overlays(settings, job_id: str, overlays: list[dict] | None) -
                 try:
                     from app.services.storage import media_path_from_url
 
-                    next_item["path"] = str(media_path_from_url(settings, src))
+                    resolved = media_path_from_url(settings, src)
+                    if not resolved.exists():
+                        continue
+                    next_item["path"] = str(resolved)
                 except Exception:
                     continue
-            elif not next_item.get("path"):
+            elif next_item.get("path"):
+                if not Path(next_item["path"]).exists():
+                    continue
+            else:
                 continue
         prepared.append(next_item)
     return prepared
@@ -785,11 +791,13 @@ def retrim_clip(clip_id: str, request: RetrimRequest, db: Session = Depends(get_
     revision = int(evaluation.get("render_revision") or 0) + 1
 
     render_title_text = (clip.thumbnail_text or clip.title or "").strip()
+    editor_state = (creative_settings or {}).get("editor_state") or {}
     dirs = ensure_job_dirs(settings, clip.job_id)
     transcript = _read_json(dirs["transcripts"] / "transcript.json", {})
     subtitle_plan = subtitle_render_plan(Path(job.input_path), settings, dict(job.metadata_json or {}))
+    captions_on = editor_state.get("captionsOn", True)
     subtitle_path = None
-    if subtitle_plan["render"]:
+    if subtitle_plan["render"] and captions_on:
         subtitle_path = build_ass_subtitles(
             transcript,
             start,
@@ -798,6 +806,7 @@ def retrim_clip(clip_id: str, request: RetrimRequest, db: Session = Depends(get_
             dirs["clips"] / f"short_{clip.rank:03d}.ass",
             hook_terms=[str(term) for term in evaluation.get("hook_terms", [])],
             style_preset=subtitle_plan["style_preset"],
+            highlight_color_override=editor_state.get("hl"),
         )
 
     best_frame_time = clip.best_frame_time
@@ -896,8 +905,9 @@ def apply_creative(clip_id: str, request: CreativeApplyRequest, db: Session = De
     dirs = ensure_job_dirs(settings, clip.job_id)
     transcript = _read_json(dirs["transcripts"] / "transcript.json", {})
     subtitle_plan = subtitle_render_plan(Path(job.input_path), settings, dict(job.metadata_json or {}))
+    captions_on = (editor_state or {}).get("captionsOn", True)
     subtitle_path = None
-    if subtitle_plan["render"]:
+    if subtitle_plan["render"] and captions_on:
         subtitle_path = build_ass_subtitles(
             transcript,
             clip.start_time,
