@@ -7,7 +7,7 @@ from app.services.korean_shorts import score_text_for_korean_shorts, unique
 
 
 SIGNAL_SCORE_THRESHOLD = 32.0
-ANCHOR_PRE_ROLL_SECONDS = 1.5
+ANCHOR_PRE_ROLL_SECONDS = 2.5
 
 
 HOOK_TERMS = {
@@ -346,17 +346,21 @@ def detect_candidates(
             target_seconds=target_seconds,
         )
         window_score, window_terms = _score_text(text)
-        density = min(15.0, len(text.split()) / max(1.0, end - start) * 3)
+        # 밀도: 단어 수보다 한글 음절 기반이 한국어에 더 정확
+        hangul_chars = sum(1 for c in text if "가" <= c <= "힣")
+        density = min(12.0, hangul_chars / max(1.0, end - start) * 0.6)
+        # window 전체 품질(65%) + anchor 훅 강도(35%) + 밀도 보너스
+        combined = window_score * 0.65 + score * 0.35 + density
         candidate = Candidate(
             id=f"cand_{len(selected) + 1:03d}",
             start=start,
             end=end,
             anchor_time=float(segments[index].get("start") or start),
             transcript=text,
-            local_score=min(100.0, max(score, window_score) + density),
+            local_score=min(100.0, combined),
             hook_terms=unique([*terms, *window_terms], 10),
         )
-        if all(_overlap_ratio(candidate, existing) < 0.55 for existing in selected):
+        if all(_overlap_ratio(candidate, existing) < 0.35 for existing in selected):
             selected.append(candidate)
         if len(selected) >= max_candidates:
             break
@@ -389,7 +393,7 @@ def detect_candidates(
                 local_score=max(20.0, score * 0.75),
                 hook_terms=terms,
             )
-            if all(_overlap_ratio(candidate, existing) < 0.55 for existing in selected):
+            if all(_overlap_ratio(candidate, existing) < 0.35 for existing in selected):
                 selected.append(candidate)
             if len(selected) >= max_candidates:
                 break

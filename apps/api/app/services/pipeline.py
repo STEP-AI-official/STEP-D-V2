@@ -44,17 +44,20 @@ def _save_json(path: Path, payload: Any) -> None:
 
 def _sample_times(candidate: Candidate, count: int) -> list[float]:
     duration = max(0.1, candidate.end - candidate.start)
+    # 초반 훅(2개) + 중반 페이로프(3개) + 앵커 + 후반 종결(1개)
     raw = [
-        candidate.start + min(1.0, duration * 0.08),
-        candidate.start + duration * 0.35,
-        candidate.anchor_time,
-        candidate.start + duration * 0.72,
-        candidate.end - min(1.0, duration * 0.08),
+        candidate.start + min(0.5, duration * 0.04),   # 첫 프레임 (훅 진입)
+        candidate.start + min(1.5, duration * 0.12),   # 훅 반응 구간
+        candidate.start + duration * 0.28,             # 초중반
+        candidate.anchor_time,                         # 핵심 순간
+        candidate.start + duration * 0.52,             # 중반 이후
+        candidate.start + duration * 0.72,             # 페이로프
+        candidate.end - min(1.2, duration * 0.10),     # 종결 직전
     ]
     times: list[float] = []
     for item in raw:
         bounded = min(candidate.end - 0.05, max(candidate.start, item))
-        if all(abs(bounded - existing) > 0.75 for existing in times):
+        if all(abs(bounded - existing) > 0.6 for existing in times):
             times.append(bounded)
         if len(times) >= count:
             break

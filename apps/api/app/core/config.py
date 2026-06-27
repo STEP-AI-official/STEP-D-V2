@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
     gemini_timeout_seconds: int = 90
-    gemini_max_eval_candidates: int = 12
+    gemini_max_eval_candidates: int = 20
 
     # PPL (product placement) analysis — on-demand brand/product detection on the rendered short.
     ppl_max_frames: int = 8
@@ -63,13 +63,13 @@ class Settings(BaseSettings):
     min_clip_seconds: int = 20
     max_clip_seconds: int = 75
     target_clip_seconds: int = 38
-    frame_count_per_candidate: int = 4
+    frame_count_per_candidate: int = 7
     boundary_refine_enabled: bool = True
     boundary_max_seconds: int = 60
-    boundary_start_lookback_seconds: float = 6.0
-    boundary_end_lookahead_seconds: float = 8.0
-    boundary_pre_padding_seconds: float = 0.4
-    boundary_post_padding_seconds: float = 0.8
+    boundary_start_lookback_seconds: float = 8.0
+    boundary_end_lookahead_seconds: float = 10.0
+    boundary_pre_padding_seconds: float = 0.7
+    boundary_post_padding_seconds: float = 1.2
 
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
