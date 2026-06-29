@@ -40,6 +40,7 @@ export function CommerceScreen() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const thumbFor = (clipId: string) => c.pickerClips.find((p) => p.clipId === clipId)?.thumb ?? null;
+  const videoFor = (clipId: string) => c.pickerClips.find((p) => p.clipId === clipId)?.videoUrl ?? null;
   const [linkPlat, setLinkPlat] = useState<Record<string, string>>({});
   const [deployed, setDeployed] = useState<Record<string, boolean>>({});
   const [cta, setCta] = useState<Record<string, string>>({});
@@ -83,26 +84,38 @@ export function CommerceScreen() {
             {/* preview + real recognition meta */}
             <div>
               {(() => {
+                const videoUrl = videoFor(sel.clipId);
                 const thumb = thumbFor(sel.clipId);
                 return (
-                  <div style={{ borderRadius: 12, height: 240, position: "relative", overflow: "hidden", background: C.ink, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    {thumb
-                      ? <img src={thumb} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
-                      : <div style={{ position: "absolute", inset: 0, background: "repeating-linear-gradient(135deg,#222530,#222530 10px,#1B1E27 10px,#1B1E27 20px)" }} />
-                    }
+                  <div style={{ borderRadius: 14, overflow: "hidden", background: C.ink, position: "relative", aspectRatio: "9 / 16", maxHeight: 460 }}>
+                    {videoUrl ? (
+                      <video
+                        src={videoUrl}
+                        poster={thumb ?? undefined}
+                        controls
+                        playsInline
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                      />
+                    ) : thumb ? (
+                      <img src={thumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    ) : (
+                      <div style={{ position: "absolute", inset: 0, background: "repeating-linear-gradient(135deg,#222530,#222530 10px,#1B1E27 10px,#1B1E27 20px)" }} />
+                    )}
                     {/* AI 인식 배지 */}
-                    <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "center", gap: 7, background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "5px 10px", borderRadius: 8 }}>
+                    <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "center", gap: 7, background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "5px 10px", borderRadius: 8, pointerEvents: "none" }}>
                       <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#3CE08F" }} />
                       <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>브랜드 인식됨 (AI)</span>
                     </div>
-                    {/* 브랜드 레이블 */}
-                    <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.93)", borderRadius: 10, padding: "7px 12px", boxShadow: "0 2px 12px rgba(0,0,0,.22)" }}>
-                      <div style={{ width: 24, height: 24, borderRadius: 6, background: C.violetSoft2, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{sel.brand.slice(0, 1)}</div>
-                      <div style={{ lineHeight: 1.2 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 700 }}>{sel.brand}</div>
-                        <div style={{ fontSize: 10.5, color: C.muted }}>노출 {sel.exposure.toFixed(1)}초</div>
+                    {/* 브랜드 레이블 - 비디오 없을 때만 */}
+                    {!videoUrl && (
+                      <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.93)", borderRadius: 10, padding: "7px 12px", boxShadow: "0 2px 12px rgba(0,0,0,.22)" }}>
+                        <div style={{ width: 24, height: 24, borderRadius: 6, background: C.violetSoft2, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{sel.brand.slice(0, 1)}</div>
+                        <div style={{ lineHeight: 1.2 }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{sel.brand}</div>
+                          <div style={{ fontSize: 10.5, color: C.muted }}>노출 {sel.exposure.toFixed(1)}초</div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 );
               })()}

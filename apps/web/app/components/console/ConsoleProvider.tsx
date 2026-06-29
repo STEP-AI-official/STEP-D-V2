@@ -262,6 +262,7 @@ function useConsoleState() {
             jobId: p.job_id,
             title: c.title,
             thumb: c.thumbnail_url,
+            videoUrl: c.video_url || null,
             score: c.score,
             status: c.status,
             project: p.original_filename || p.title,

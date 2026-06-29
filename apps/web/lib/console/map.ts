@@ -93,6 +93,7 @@ export type PickerClip = {
   jobId: string;
   title: string;
   thumb?: string | null;
+  videoUrl?: string | null;
   score: number;
   status: string;
   project: string;
