@@ -117,6 +117,23 @@ export type HighlightDraft = {
   result?: HighlightRenderResponse | null;
 };
 
+/** A real PPL-detected product surfaced on the Commerce screen. */
+export type CommerceItem = {
+  key: string;
+  jobId: string;
+  clipId: string;
+  clipTitle: string;
+  projectTitle: string;
+  productId: string;
+  brand: string;
+  product: string;
+  category: string;
+  exposure: number;
+  voiceMentions: number;
+  confidence: number;
+  affiliateUrl: string;
+};
+
 function useConsoleState() {
   /* ---- nav / global ---- */
   const [nav, setNav] = useState<NavKey>("dashboard");
@@ -176,6 +193,10 @@ function useConsoleState() {
   /* ---- ppl (commerce) ---- */
   const [pplData, setPplData] = useState<Record<string, PplAnalysis | null>>({});
   const [pplBusy, setPplBusy] = useState<string | null>(null);
+  const [commerceItems, setCommerceItems] = useState<CommerceItem[]>([]);
+  const [commerceLoaded, setCommerceLoaded] = useState(false);
+  const [commerceLoading, setCommerceLoading] = useState(false);
+  const [commerceAnalyzing, setCommerceAnalyzing] = useState<string | null>(null);
 
   /* ---- publish ---- */
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
@@ -844,6 +865,94 @@ function useConsoleState() {
     }
   };
 
+  // Collect already-analyzed PPL products across every project into commerce items.
+  const loadCommerce = async () => {
+    if (commerceLoading) return;
+    setCommerceLoading(true);
+    try {
+      const items: CommerceItem[] = [];
+      for (const p of projects) {
+        try {
+          const res = await getResults(p.id);
+          res.clips.forEach((cl) => {
+            const a = cl.ppl_analysis;
+            if (a?.products?.length) {
+              a.products.forEach((pr) =>
+                items.push({
+                  key: `${cl.clip_id}|${pr.id}`,
+                  jobId: p.id,
+                  clipId: cl.clip_id,
+                  clipTitle: cl.title,
+                  projectTitle: p.title,
+                  productId: pr.id,
+                  brand: pr.brand,
+                  product: pr.product,
+                  category: pr.category,
+                  exposure: pr.exposure_seconds,
+                  voiceMentions: (pr.voice_mentions || []).length,
+                  confidence: pr.confidence,
+                  affiliateUrl: pr.affiliate_url || "",
+                })
+              );
+            }
+          });
+        } catch {
+          /* skip project that fails to load */
+        }
+      }
+      setCommerceItems(items);
+    } finally {
+      setCommerceLoading(false);
+      setCommerceLoaded(true);
+    }
+  };
+
+  // Run on-demand brand recognition (Gemini vision) for one clip, then merge.
+  const analyzeClipForCommerce = async (clip: PickerClip) => {
+    setCommerceAnalyzing(clip.clipId);
+    try {
+      const a = await analyzePpl(clip.clipId);
+      const fresh: CommerceItem[] = (a?.products || []).map((pr) => ({
+        key: `${clip.clipId}|${pr.id}`,
+        jobId: clip.jobId,
+        clipId: clip.clipId,
+        clipTitle: clip.title,
+        projectTitle: clip.project,
+        productId: pr.id,
+        brand: pr.brand,
+        product: pr.product,
+        category: pr.category,
+        exposure: pr.exposure_seconds,
+        voiceMentions: (pr.voice_mentions || []).length,
+        confidence: pr.confidence,
+        affiliateUrl: pr.affiliate_url || "",
+      }));
+      setCommerceItems((prev) => [...prev.filter((x) => x.clipId !== clip.clipId), ...fresh]);
+      setCommerceLoaded(true);
+      showToast(fresh.length ? `브랜드 ${fresh.length}개를 인식했어요` : "감지된 브랜드가 없어요");
+    } catch (error) {
+      showToast("브랜드 분석 실패: " + errorMessage(error));
+    } finally {
+      setCommerceAnalyzing(null);
+    }
+  };
+
+  // Persist a chosen affiliate URL for one product (real, via savePplLinks).
+  const saveCommerceLink = async (clipId: string, productId: string, url: string) => {
+    const links: Record<string, string> = {};
+    commerceItems.filter((x) => x.clipId === clipId).forEach((x) => {
+      links[x.productId] = x.affiliateUrl;
+    });
+    links[productId] = url;
+    try {
+      await savePplLinks(clipId, links);
+      setCommerceItems((prev) => prev.map((x) => (x.clipId === clipId && x.productId === productId ? { ...x, affiliateUrl: url } : x)));
+      showToast("제휴 링크를 저장했어요");
+    } catch (error) {
+      showToast("저장 실패: " + errorMessage(error));
+    }
+  };
+
   /* ---- publish ---- */
   const schedulePublishPoll = (publishId: string, clipId: string) => {
     const tick = async () => {
@@ -1036,6 +1145,8 @@ function useConsoleState() {
     highlightDraft, setHighlightDraft, highlightBusy, doRenderHighlight,
     // ppl / commerce
     pplData, pplBusy, runPpl, savePpl,
+    commerceItems, commerceLoaded, commerceLoading, commerceAnalyzing,
+    loadCommerce, analyzeClipForCommerce, saveCommerceLink,
     // channels
     channels, ytAuthed, defaultPrivacy, openChannel, openChannelDetail, closeChannel,
     openVideo, setOpenVideo, videoComments, commentSummary, loadCommentSummary,
