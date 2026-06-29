@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, Film, Pencil, Plus, Sparkles, Upload, Youtube } from "lucide-react";
+import { BarChart2, Download, Film, Pencil, Plus, Sparkles, Tag, Upload, Youtube, Zap } from "lucide-react";
 import { clipDownloadUrl } from "@/lib/api";
 import { C, POSTERS, card, ghostBtn, input, primaryBtn } from "@/lib/console/theme";
 import { useConsole } from "../ConsoleProvider";
@@ -193,14 +193,38 @@ export function StudioScreen() {
               {c.ytPreviewId && <div style={{ fontSize: 11.5, color: C.green }}>링크 준비 완료 · {c.fileName}</div>}
             </div>
           </div>
-          <button
-            onClick={c.beginUpload}
-            disabled={!c.selectedFile && !c.ytUrl.trim()}
-            className="hv-btn-primary"
-            style={{ ...primaryBtn, width: "100%", height: 44, marginTop: 16, opacity: !c.selectedFile && !c.ytUrl.trim() ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-          >
-            <Sparkles size={16} /> 쇼츠 만들기
-          </button>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginTop: 16 }}>
+            {/* 영상분석 — VC 데모용 (기능 준비 중) */}
+            <button style={{ ...ghostBtn, height: 52, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, opacity: 0.45, cursor: "not-allowed" }} disabled>
+              <BarChart2 size={15} />
+              <span style={{ fontSize: 11.5, fontWeight: 650 }}>영상분석</span>
+            </button>
+            {/* 하이라이트 — VC 데모용 (기능 준비 중) */}
+            <button style={{ ...ghostBtn, height: 52, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, opacity: 0.45, cursor: "not-allowed" }} disabled>
+              <Zap size={15} />
+              <span style={{ fontSize: 11.5, fontWeight: 650 }}>하이라이트</span>
+            </button>
+            {/* 쇼츠 — 실제 동작 */}
+            <button
+              onClick={c.beginUpload}
+              disabled={!c.selectedFile && !c.ytUrl.trim()}
+              className="hv-btn-primary"
+              style={{ ...primaryBtn, height: 52, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, opacity: !c.selectedFile && !c.ytUrl.trim() ? 0.5 : 1 }}
+            >
+              <Sparkles size={15} />
+              <span style={{ fontSize: 11.5, fontWeight: 650 }}>쇼츠</span>
+            </button>
+            {/* PPL분석 — 실제 동작: 쇼츠 파이프라인 후 자동 PPL 실행 */}
+            <button
+              onClick={c.beginPplFlow}
+              disabled={!c.selectedFile && !c.ytUrl.trim()}
+              className="hv-soft"
+              style={{ ...ghostBtn, height: 52, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, opacity: !c.selectedFile && !c.ytUrl.trim() ? 0.45 : 1 }}
+            >
+              <Tag size={15} />
+              <span style={{ fontSize: 11.5, fontWeight: 650 }}>PPL분析</span>
+            </button>
+          </div>
           {c.backendError && <div style={{ marginTop: 10, fontSize: 12.5, color: C.danger }}>{c.backendError}</div>}
         </div>
       )}

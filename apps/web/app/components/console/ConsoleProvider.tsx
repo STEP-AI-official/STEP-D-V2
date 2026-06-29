@@ -191,6 +191,7 @@ function useConsoleState() {
   const [revisions, setRevisions] = useState<Record<string, number>>({});
 
   /* ---- ppl (commerce) ---- */
+  const [autoPplMode, setAutoPplMode] = useState(false);
   const [pplData, setPplData] = useState<Record<string, PplAnalysis | null>>({});
   const [pplBusy, setPplBusy] = useState<string | null>(null);
   const [commerceItems, setCommerceItems] = useState<CommerceItem[]>([]);
@@ -474,6 +475,17 @@ function useConsoleState() {
         setView("results");
         void loadStudio();
         showToast(`쇼츠 후보 ${clips.length}개를 만들었어요`);
+        if (autoPplMode) {
+          setAutoPplMode(false);
+          showToast("PPL 분석을 시작해요…");
+          for (const clip of clips) {
+            try {
+              const analysis = await analyzePpl(clip.id);
+              if (analysis) setPplData((s) => ({ ...s, [clip.id]: analysis }));
+            } catch { /* 개별 실패 무시 */ }
+          }
+          showToast("PPL 분석 완료!");
+        }
         return;
       }
       if (job.status === "failed") throw new Error(job.error || "작업이 실패했어요");
@@ -514,6 +526,14 @@ function useConsoleState() {
       showToast("영상 파일이나 유튜브 링크를 먼저 준비하세요");
       return;
     }
+    setView("checking");
+  };
+  const beginPplFlow = () => {
+    if (!selectedFile && !ytUrl.trim()) {
+      showToast("영상 파일이나 유튜브 링크를 먼저 준비하세요");
+      return;
+    }
+    setAutoPplMode(true);
     setView("checking");
   };
   const answerSubs = (hasExistingSubtitles: boolean) => {
@@ -1136,7 +1156,7 @@ function useConsoleState() {
     view, setView, dragging, setDragging, fileName, ytUrl, setYtUrl, ytPreviewId,
     progress, stageIndex, selectedFile, sourcePreviewUrl, inspection, inspecting, backendError,
     backendClips, uploadOpen, setUploadOpen, openUpload,
-    pickFile, onFileInput, onDrop, importYt, beginUpload, answerSubs, startBackendJob, resetUpload,
+    pickFile, onFileInput, onDrop, importYt, beginUpload, beginPplFlow, answerSubs, startBackendJob, resetUpload,
     activeClips, currentJobId, replaceClip,
     // clip editing
     selectedClipId, setSelectedClipId, editorClipId, editorClip, openClipEditor, setEditorClipId,

@@ -38,6 +38,8 @@ const estRevenue = (exposure: number, voiceMentions: number, rate: number) =>
 export function CommerceScreen() {
   const c = useConsole();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const thumbFor = (clipId: string) => c.pickerClips.find((p) => p.clipId === clipId)?.thumb ?? null;
   const [linkPlat, setLinkPlat] = useState<Record<string, string>>({});
   const [deployed, setDeployed] = useState<Record<string, boolean>>({});
   const [cta, setCta] = useState<Record<string, string>>({});
@@ -80,20 +82,30 @@ export function CommerceScreen() {
           <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 24, padding: 22 }}>
             {/* preview + real recognition meta */}
             <div>
-              <div style={{ background: C.ink, borderRadius: 12, height: 240, position: "relative", overflow: "hidden", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-                <div style={{ position: "absolute", inset: 0, background: "repeating-linear-gradient(135deg,#222530,#222530 10px,#1B1E27 10px,#1B1E27 20px)" }} />
-                <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "center", gap: 7, background: "rgba(255,255,255,.12)", padding: "5px 10px", borderRadius: 8 }}>
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#3CE08F" }} />
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>브랜드 인식됨 (AI)</span>
-                </div>
-                <div style={{ position: "relative", marginBottom: 18, display: "flex", alignItems: "center", gap: 8, background: "#fff", borderRadius: 10, padding: "8px 12px" }}>
-                  <div style={{ width: 24, height: 24, borderRadius: 6, background: C.violetSoft2, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{sel.brand.slice(0, 1)}</div>
-                  <div style={{ lineHeight: 1.2 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700 }}>{sel.brand}</div>
-                    <div style={{ fontSize: 10.5, color: C.muted }}>노출 {sel.exposure.toFixed(1)}초</div>
+              {(() => {
+                const thumb = thumbFor(sel.clipId);
+                return (
+                  <div style={{ borderRadius: 12, height: 240, position: "relative", overflow: "hidden", background: C.ink, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {thumb
+                      ? <img src={thumb} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+                      : <div style={{ position: "absolute", inset: 0, background: "repeating-linear-gradient(135deg,#222530,#222530 10px,#1B1E27 10px,#1B1E27 20px)" }} />
+                    }
+                    {/* AI 인식 배지 */}
+                    <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "center", gap: 7, background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "5px 10px", borderRadius: 8 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#3CE08F" }} />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>브랜드 인식됨 (AI)</span>
+                    </div>
+                    {/* 브랜드 레이블 */}
+                    <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,.93)", borderRadius: 10, padding: "7px 12px", boxShadow: "0 2px 12px rgba(0,0,0,.22)" }}>
+                      <div style={{ width: 24, height: 24, borderRadius: 6, background: C.violetSoft2, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{sel.brand.slice(0, 1)}</div>
+                      <div style={{ lineHeight: 1.2 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 700 }}>{sel.brand}</div>
+                        <div style={{ fontSize: 10.5, color: C.muted }}>노출 {sel.exposure.toFixed(1)}초</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                );
+              })()}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>
                 <Stat label="화면 노출" value={`${sel.exposure.toFixed(1)}초`} />
                 <Stat label="음성 언급" value={`${sel.voiceMentions}회`} />
@@ -227,14 +239,28 @@ export function CommerceScreen() {
             const isDeployed = !!deployed[it.key];
             return (
               <div key={it.key} onClick={() => setSelectedKey(it.key)} className="hv-violet" style={card({ overflow: "hidden", display: "flex", flexDirection: "column", cursor: "pointer" })}>
-                <div style={{ position: "relative", height: 128, background: "repeating-linear-gradient(135deg,#F1F2F4,#F1F2F4 9px,#ECEEF2 9px,#ECEEF2 18px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 9, padding: "6px 10px" }}>
-                    <div style={{ width: 22, height: 22, borderRadius: 6, background: C.violetSoft2, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>{it.brand.slice(0, 1)}</div>
-                    <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "-.2px" }}>{it.brand}</span>
-                  </div>
-                  <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9.5, fontWeight: 700, color: isDeployed ? C.green : it.affiliateUrl ? C.cyanInk : C.violet, background: isDeployed ? C.greenSoft : it.affiliateUrl ? C.cyanSoft : C.violetSoft, padding: "3px 8px", borderRadius: 5 }}>{isDeployed ? "배포 완료" : it.affiliateUrl ? "링크 연결됨" : "링크 대기"}</span>
-                  <span style={{ position: "absolute", bottom: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{it.exposure.toFixed(1)}초</span>
-                </div>
+                {(() => {
+                  const thumb = thumbFor(it.clipId);
+                  return (
+                    <div style={{ position: "relative", height: 128, background: thumb ? C.ink : "repeating-linear-gradient(135deg,#F1F2F4,#F1F2F4 9px,#ECEEF2 9px,#ECEEF2 18px)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                      {thumb && <img src={thumb} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: 0.85 }} />}
+                      {!thumb && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 9, padding: "6px 10px" }}>
+                          <div style={{ width: 22, height: 22, borderRadius: 6, background: C.violetSoft2, color: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>{it.brand.slice(0, 1)}</div>
+                          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "-.2px" }}>{it.brand}</span>
+                        </div>
+                      )}
+                      {thumb && (
+                        <div style={{ position: "absolute", bottom: 8, left: 8, display: "flex", alignItems: "center", gap: 5, background: "rgba(0,0,0,.55)", backdropFilter: "blur(4px)", borderRadius: 7, padding: "4px 8px" }}>
+                          <div style={{ width: 16, height: 16, borderRadius: 4, background: C.violet, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff" }}>{it.brand.slice(0, 1)}</div>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>{it.brand}</span>
+                        </div>
+                      )}
+                      <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9.5, fontWeight: 700, color: isDeployed ? C.green : it.affiliateUrl ? C.cyanInk : C.violet, background: isDeployed ? C.greenSoft : it.affiliateUrl ? C.cyanSoft : C.violetSoft, padding: "3px 8px", borderRadius: 5 }}>{isDeployed ? "배포 완료" : it.affiliateUrl ? "링크 연결됨" : "링크 대기"}</span>
+                      <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{it.exposure.toFixed(1)}초</span>
+                    </div>
+                  );
+                })()}
                 <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", flex: 1 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 650, letterSpacing: "-.2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.product}</div>
                   <div style={{ fontSize: 11.5, color: C.muted, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.projectTitle}{it.voiceMentions > 0 ? ` · 음성 ${it.voiceMentions}회` : ""}</div>
