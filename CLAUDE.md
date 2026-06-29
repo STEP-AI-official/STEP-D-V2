@@ -38,9 +38,14 @@ STEP-D-V2/
 │   │       └── clip_evaluation.py  ← Gemini 클립 평가 프롬프트
 │   └── Dockerfile
 ├── apps/web/          # Next.js 프론트엔드 (TypeScript)
-│   ├── app/page.tsx             ← 메인 대시보드 (단일 페이지 앱)
+│   ├── app/page.tsx             ← 진입점 (ConsoleProvider + ConsoleShell 렌더만)
+│   ├── app/components/console/
+│   │   ├── ConsoleProvider.tsx  ← 모든 상태·핸들러 (≈1200줄, Context 노출)
+│   │   ├── ConsoleShell.tsx     ← 레이아웃 (Sidebar+Topbar+스크린라우터)
+│   │   └── screens/             ← Dashboard·Channels·Studio·Schedule·Commerce·Report·Settings
 │   ├── app/components/ShortcutEditor.tsx ← 클립 에디터 컴포넌트
-│   └── lib/api.ts               ← 백엔드 API 클라이언트 함수 전체
+│   ├── lib/api.ts               ← 백엔드 API 클라이언트 함수 전체
+│   └── lib/console/             ← theme·format·map·dummy 유틸
 ├── apps/docs/         ← 상세 문서 (architecture.md, feature-status.md, dev-guide.md)
 ├── docker-compose.prod.yml
 └── Caddyfile
