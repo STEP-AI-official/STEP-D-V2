@@ -9,7 +9,7 @@ set -euo pipefail
 APP_DIR=/home/STEPAI05/app
 ENV_FILE=apps/api/.env.production
 COMPOSE_FILE=docker-compose.prod.yml
-HEALTH_URL=http://127.0.0.1:8010/api/health
+HEALTH_URL=http://127.0.0.1/api/health
 
 cd "$APP_DIR"
 
