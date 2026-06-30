@@ -1,14 +1,5 @@
-"use client";
-
-import { ConsoleProvider } from "./components/console/ConsoleProvider";
-import { ConsoleGlobalStyle } from "./components/console/ConsoleGlobalStyle";
-import { ConsoleShell } from "./components/console/ConsoleShell";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return (
-    <ConsoleProvider>
-      <ConsoleGlobalStyle />
-      <ConsoleShell />
-    </ConsoleProvider>
-  );
+  redirect("/landing");
 }

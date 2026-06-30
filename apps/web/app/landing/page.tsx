@@ -5,11 +5,11 @@ import { useMemo, useState } from "react";
 import "./landing.css";
 
 /** 콘솔(현재 우리 서비스) 경로. '들어가기' 버튼이 이리로 이동한다. */
-const APP_URL = "/";
+const APP_URL = "/console";
 
 /** 소개영상 URL. GCS 공개 URL을 랜딩 히어로 영상으로 사용한다. */
 const LANDING_VIDEO_URL =
-  "https://storage.googleapis.com/step-d-landing/AENA_%EC%86%8C%EA%B0%9C%EC%98%81%EC%83%81.mp4";
+  "https://storage.cloud.google.com/step-d-landing/AENA_%EC%86%8C%EA%B0%9C%EC%98%81%EC%83%81.mp4";
 
 // 천 단위 콤마 (SSR/CSR 동일 결과 보장용 — toLocaleString 하이드레이션 불일치 회피)
 const comma = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
