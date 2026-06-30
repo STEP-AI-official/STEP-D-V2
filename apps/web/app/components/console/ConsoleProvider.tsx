@@ -145,6 +145,14 @@ export type CommerceItem = {
   overlay?: PplAnalysis;
 };
 
+/* ───────── VC 데모 모드 ─────────
+ * 실시간 분석은 시연 중 너무 오래 걸려, 미리 만들어 둔 잡(DEMO_JOB_ID)을 라이브러리에서
+ * 숨겨 뒀다가 유튜브 링크로 "쇼츠 만들기"를 실행하면 가짜 진행률을 보여준 뒤 그 결과를
+ * 라이브로 만든 것처럼 노출한다. 시연이 끝나면 DEMO_MODE=false 로 끄면 실제 분석으로 복귀. */
+const DEMO_MODE = true;
+const DEMO_JOB_ID = "0dae66ed8cc64983b69222457721f4e2";
+const DEMO_FAKE_MS = 9500; // 가짜 분석 진행 시간(대략)
+
 function useConsoleState() {
   /* ---- nav / global ---- */
   const [nav, setNav] = useState<NavKey>("dashboard");
@@ -238,6 +246,7 @@ function useConsoleState() {
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const demoRevealedRef = useRef(false); // 데모 잡이 "공개"됐는지 (공개 후엔 라이브러리에도 표시)
   const showToast = (msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(msg);
@@ -272,10 +281,14 @@ function useConsoleState() {
   const loadStudio = async () => {
     try {
       const summary = await getStudioSummary();
-      setProjects(summary.projects.map(mapStudioProject));
+      // 데모 모드: 미리 만든 잡은 "공개" 전까지 라이브러리/피커에서 숨긴다.
+      const visibleProjects = summary.projects.filter(
+        (p) => !DEMO_MODE || demoRevealedRef.current || p.job_id !== DEMO_JOB_ID
+      );
+      setProjects(visibleProjects.map(mapStudioProject));
       setSched(summary.schedule.map(mapScheduleItem).filter((x): x is SchedItem => x !== null));
       setPickerClips(
-        summary.projects.flatMap((p) =>
+        visibleProjects.flatMap((p) =>
           (p.clips || []).map((c) => ({
             clipId: c.clip_id,
             jobId: p.job_id,
@@ -526,10 +539,54 @@ function useConsoleState() {
       showToast("백엔드 작업을 확인하지 못했어요");
     }
   };
+  // 데모: 미리 만든 잡 결과를 라이브로 생성한 것처럼 노출.
+  const finishDemoReveal = async () => {
+    try {
+      const results = await getResults(DEMO_JOB_ID);
+      const clips = results.clips.map(mapBackendClip);
+      setBackendClips(clips);
+      setBackendJobId(DEMO_JOB_ID);
+      setProgress(100);
+      setStageIndex(3);
+      setView("results");
+      demoRevealedRef.current = true;
+      void loadStudio(); // 이제 라이브러리에도 등장
+      showToast(`쇼츠 후보 ${clips.length}개를 만들었어요`);
+    } catch (error) {
+      setBackendError(errorMessage(error));
+      setView("checking");
+      showToast("백엔드 작업을 확인하지 못했어요");
+    }
+  };
+  // 데모: 가짜 진행률을 약 DEMO_FAKE_MS 동안 보여준 뒤 결과를 공개.
+  const runDemoReveal = () => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    setBackendError(null);
+    setUploadOpen(false);
+    setView("processing");
+    setProgress(1);
+    setStageIndex(0);
+    const stepMs = 500;
+    const inc = 94 / Math.max(1, DEMO_FAKE_MS / stepMs);
+    let p = 1;
+    const tick = () => {
+      p = Math.min(p + inc, 95);
+      setProgress(Math.round(p));
+      setStageIndex(stageFromProgress(p));
+      if (p < 95) pollTimer.current = setTimeout(tick, stepMs);
+      else void finishDemoReveal();
+    };
+    pollTimer.current = setTimeout(tick, stepMs);
+  };
   const startBackendJob = async (subtitleMode: SubtitleMode) => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     if (!selectedFile && !ytUrl.trim()) {
       showToast("영상 파일이나 유튜브 링크를 먼저 준비하세요");
+      return;
+    }
+    // 데모 모드: 유튜브 링크로 들어온 생성은 실제 분석 대신 미리 만든 잡을 공개.
+    if (DEMO_MODE && !selectedFile && ytUrl.trim()) {
+      runDemoReveal();
       return;
     }
     setBackendError(null);

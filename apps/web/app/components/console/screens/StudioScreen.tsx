@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
-import { BarChart2, Download, FileDown, Film, Pencil, Plus, Sparkles, Tag, Upload, Youtube, Zap } from "lucide-react";
-import { clipDownloadUrl, pplReportCsvUrl } from "@/lib/api";
+import { useRef, useState } from "react";
+import { BarChart2, Download, Pencil, Plus, Sparkles, Tag, Upload, Youtube, Zap } from "lucide-react";
+import { clipDownloadUrl } from "@/lib/api";
+import type { Clip } from "@/lib/console/map";
 import { C, POSTERS, card, ghostBtn, input, primaryBtn } from "@/lib/console/theme";
 import { youtubeId } from "@/lib/console/format";
 import { useConsole } from "../ConsoleProvider";
-import { ClipDetailDrawer } from "./ClipDetailDrawer";
 
 const STAGE_DEFS = [
   { name: "음성 전사", desc: "OpenAI STT로 전체 자막을 추출해요" },
@@ -114,27 +114,9 @@ export function StudioScreen() {
     return (
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "22px 28px 60px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-          <button onClick={() => { c.resetUpload(); c.closeProject(); }} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 12.5 }}>‹ 라이브러리</button>
-          <div style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.3px" }}>{proj?.title || c.fileName || "방금 만든 쇼츠"}</div>
-          <span style={{ fontSize: 11.5, color: C.muted }}>{c.activeClips.length}개 클립</span>
-          <div style={{ flex: 1 }} />
-          <button
-            onClick={() => c.setHighlightDraft({ title: `${(proj?.title || "하이라이트").replace(/\.[^.]+$/, "")} 하이라이트`.slice(0, 80), clipIds: c.activeClips.slice(0, 5).map((x) => x.id), aspect: "landscape", maxDurationSeconds: 720, result: null })}
-            className="hv-soft"
-            style={{ ...ghostBtn, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6 }}
-          >
-            <Film size={14} /> 하이라이트 만들기
-          </button>
-          {c.currentJobId && (
-            <a
-              href={pplReportCsvUrl(c.currentJobId)}
-              className="hv-soft"
-              title="이 프로젝트의 PPL 브랜드 통합 리포트를 CSV로 내려받아요 (광고주 핸드오프용)"
-              style={{ ...ghostBtn, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, textDecoration: "none", color: C.body }}
-            >
-              <FileDown size={14} /> 브랜드 리포트 CSV
-            </a>
-          )}
+          <button onClick={() => { c.resetUpload(); c.closeProject(); }} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 12.5, whiteSpace: "nowrap", flexShrink: 0 }}>‹ 라이브러리</button>
+          <div style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.3px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{proj?.title || c.fileName || "방금 만든 쇼츠"}</div>
+          <span style={{ fontSize: 11.5, color: C.muted, whiteSpace: "nowrap", flexShrink: 0 }}>{c.activeClips.length}개 클립</span>
         </div>
 
         {c.activeClips.length === 0 ? (
@@ -146,14 +128,9 @@ export function StudioScreen() {
               const pub = c.publishState[clip.id];
               return (
                 <div key={clip.id} style={card({ overflow: "hidden", display: "flex", flexDirection: "column" })}>
-                  <div onClick={() => c.setSelectedClipId(clip.id)} title="클립 상세" style={{ position: "relative", aspectRatio: "9 / 16", background: poster.g, overflow: "hidden", cursor: "pointer" }}>
-                    {clip.thumbnailUrl && <img src={clip.thumbnailUrl} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />}
-                    <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{clip.start}~{clip.end}</span>
-                    <span style={{ position: "absolute", bottom: 8, left: 8, fontSize: 17, fontWeight: 800, color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.5)" }}>{clip.score}</span>
-                    {pub && <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9.5, fontWeight: 700, color: "#fff", background: pub.status === "published" ? C.green : C.violet, padding: "2px 7px", borderRadius: 5 }}>{pub.status === "published" ? "발행됨" : pub.status === "scheduled" ? "예약됨" : "처리중"}</span>}
-                  </div>
+                  <ClipThumb clip={clip} bg={poster.g} pubStatus={pub?.status} />
                   <div style={{ padding: "12px 13px", display: "flex", flexDirection: "column", flex: 1 }}>
-                    <div onClick={() => c.setSelectedClipId(clip.id)} style={{ fontSize: 13, fontWeight: 650, letterSpacing: "-.2px", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", cursor: "pointer" }}>{clip.title}</div>
+                    <div style={{ fontSize: 13, fontWeight: 650, letterSpacing: "-.2px", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{clip.title}</div>
                     <div style={{ fontSize: 11, color: C.muted, marginTop: 5, display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {clip.labels.slice(0, 2).map((l) => (
                         <span key={l} style={{ background: C.lineSoft, padding: "1px 6px", borderRadius: 4 }}>{l}</span>
@@ -175,7 +152,6 @@ export function StudioScreen() {
             })}
           </div>
         )}
-        <ClipDetailDrawer />
       </div>
     );
   }
@@ -223,7 +199,7 @@ export function StudioScreen() {
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.body }}>유튜브 링크로 가져오기</div>
               <input value={c.ytUrl} onChange={(e) => c.setYtUrl(e.target.value)} placeholder="https://youtube.com/watch?v=…" style={input} />
-              <button onClick={() => c.setYtUrl("https://www.youtube.com/watch?v=bkk4g04iaGA")} className="hv-soft" style={{ ...ghostBtn, padding: "9px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <button onClick={() => c.setYtUrl("https://www.youtube.com/watch?v=SYjoQyBfLuU")} className="hv-soft" style={{ ...ghostBtn, padding: "9px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                 <Youtube size={15} color="#FF0000" /> 링크 준비
               </button>
               {c.ytPreviewId && <div style={{ fontSize: 11.5, color: C.green }}>링크 준비 완료 · {c.fileName}</div>}
@@ -348,6 +324,44 @@ export function StudioScreen() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* 클립 카드 썸네일 — 마우스를 올리면 음소거 미리보기 재생, 클릭하면 재생/정지 토글. */
+function ClipThumb({ clip, bg, pubStatus }: { clip: Clip; bg: string; pubStatus?: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const enter = () => {
+    const v = ref.current;
+    if (!v) return;
+    v.play().then(() => setPlaying(true)).catch(() => {});
+  };
+  const leave = () => {
+    const v = ref.current;
+    if (v) { v.pause(); try { v.currentTime = 0; } catch { /* ignore */ } }
+    setPlaying(false);
+  };
+  const toggle = () => {
+    const v = ref.current;
+    if (!v) return;
+    if (v.paused) v.play().then(() => setPlaying(true)).catch(() => {});
+    else { v.pause(); setPlaying(false); }
+  };
+  return (
+    <div onClick={clip.videoUrl ? toggle : undefined} onMouseEnter={enter} onMouseLeave={leave} title="마우스를 올리면 미리보기" style={{ position: "relative", aspectRatio: "9 / 16", background: bg, overflow: "hidden", cursor: clip.videoUrl ? "pointer" : "default" }}>
+      {clip.videoUrl ? (
+        <video ref={ref} src={clip.videoUrl} poster={clip.thumbnailUrl} muted loop playsInline preload="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+      ) : clip.thumbnailUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={clip.thumbnailUrl} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+      ) : null}
+      {clip.videoUrl && !playing && (
+        <span style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 42, height: 42, borderRadius: "50%", background: "rgba(16,18,24,.55)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, paddingLeft: 3, pointerEvents: "none" }}>▶</span>
+      )}
+      <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{clip.start}~{clip.end}</span>
+      <span style={{ position: "absolute", bottom: 8, left: 8, fontSize: 17, fontWeight: 800, color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.5)" }}>{clip.score}</span>
+      {pubStatus && <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9.5, fontWeight: 700, color: "#fff", background: pubStatus === "published" ? C.green : C.violet, padding: "2px 7px", borderRadius: 5 }}>{pubStatus === "published" ? "발행됨" : pubStatus === "scheduled" ? "예약됨" : "처리중"}</span>}
     </div>
   );
 }

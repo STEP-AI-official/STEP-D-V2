@@ -274,12 +274,6 @@ export function ChannelsScreen() {
         )}
       </div>
 
-      {!c.channels.length && (
-        <div style={{ ...card({ padding: "12px 16px", marginBottom: 16, background: C.violetSoft, border: "1px solid #E4DEFB" }), fontSize: 12.5, color: "#5B4BD6" }}>
-          데모 데이터를 보고 있어요. 실제 채널을 연결하면 구독자·조회수·영상이 실시간으로 채워집니다.
-        </div>
-      )}
-
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14 }}>
         {views.map((v) => {
           const gs = gradeStyle(v.grade);
