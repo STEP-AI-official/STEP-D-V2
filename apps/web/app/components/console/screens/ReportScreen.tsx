@@ -256,6 +256,10 @@ function downloadReport() {
 
 const REPORT_KEYWORDS = ["보고서", "리포트", "report", "초안", "다운로드", "내보내기", "파일"];
 
+// AI가 고민하는 척 — 답변이 바로 안 나오고 잠시 뜸 들이도록.
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const thinkDelay = () => 1100 + Math.floor(Math.random() * 900); // 1.1~2.0초
+
 const SUGGESTIONS = [
   "이번 달 수익을 한 문단으로 요약해줘",
   "구독자 성장률이 가장 높은 채널은?",
@@ -297,8 +301,12 @@ export function ReportScreen() {
     setLoading(true);
     scrollDown();
 
+    // 답변이 바로 튀어나오지 않도록 최소 1.1~2.0초 '고민' 시간을 둔다.
+    const think = sleep(thinkDelay());
+
     // 보고서 요청 감지
     if (REPORT_KEYWORDS.some((k) => q.includes(k))) {
+      await think;
       downloadReport();
       setMessages((m) => [...m, { role: "assistant", content: REPORT_CHAT_RESPONSE }]);
       setLoading(false);
@@ -306,21 +314,23 @@ export function ReportScreen() {
       return;
     }
 
-    // 즉시 응답 매핑
+    // 즉시 응답 매핑 (캔드 답변도 잠시 뜸 들였다가)
     const matched = DEMO_REPLY_MAP.find(([keywords]) => keywords.some((k) => q.includes(k)));
     if (matched) {
+      await think;
       setMessages((m) => [...m, { role: "assistant", content: matched[1] }]);
       setLoading(false);
       scrollDown();
       return;
     }
 
-    // 실제 API 호출 (fallback)
+    // 실제 API 호출 (fallback) — 호출과 최소 고민 시간을 함께 대기
     try {
       const next = [...messages, userMsg];
-      const res = await reportChat({ messages: next, context });
+      const [res] = await Promise.all([reportChat({ messages: next, context }), think]);
       setMessages((m) => [...m, { role: "assistant", content: res.answer || "답변을 가져오지 못했어요." }]);
     } catch {
+      await think;
       setMessages((m) => [...m, { role: "assistant", content: "오류가 발생했어요. 잠시 후 다시 시도해 주세요." }]);
     } finally {
       setLoading(false);
@@ -348,7 +358,12 @@ export function ReportScreen() {
         {loading && (
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
             <div style={{ width: 28, height: 28, borderRadius: 8, background: C.ink, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>D</div>
-            <div style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 14, padding: "14px 16px", fontSize: 13, color: C.muted }}>분석 중…</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 14, padding: "14px 16px", fontSize: 13, color: C.muted }}>
+              <span>분석 중</span>
+              <span style={{ display: "inline-flex", gap: 4 }}>
+                <span className="think-dot" /><span className="think-dot" /><span className="think-dot" />
+              </span>
+            </div>
           </div>
         )}
       </div>

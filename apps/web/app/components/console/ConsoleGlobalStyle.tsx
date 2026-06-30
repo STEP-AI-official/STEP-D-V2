@@ -14,6 +14,10 @@ body{font-family:'Pretendard Variable',Pretendard,system-ui,-apple-system,'Segoe
 @keyframes scrimIn{from{opacity:0}to{opacity:1}}
 @keyframes scFade{from{opacity:0}to{opacity:1}}
 @keyframes scPop{from{opacity:0;transform:translateY(8px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes dotPulse{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
+.think-dot{width:5px;height:5px;border-radius:50%;background:#9AA1AC;display:inline-block;animation:dotPulse 1.2s infinite ease-in-out}
+.think-dot:nth-child(2){animation-delay:.16s}
+.think-dot:nth-child(3){animation-delay:.32s}
 input,textarea,button{font-family:inherit;}
 textarea{resize:none;}
 input[type=range]{accent-color:#6C5CE7;}
