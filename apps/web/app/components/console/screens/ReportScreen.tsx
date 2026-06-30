@@ -7,7 +7,6 @@ import { fmtWon } from "@/lib/console/format";
 import {
   CONTENT_REV_MONTH,
   CUMULATIVE_REV,
-  DEMO_CHAT_MESSAGES,
   DEMO_REPLY_MAP,
   DUMMY_CHANNELS,
   DUMMY_SCHED,
@@ -270,9 +269,8 @@ const SUGGESTIONS = [
 
 export function ReportScreen() {
   const c = useConsole();
-  const [messages, setMessages] = useState<ReportChatMessage[]>(
-    DEMO_CHAT_MESSAGES as ReportChatMessage[]
-  );
+  // 처음 진입 시에는 빈 대화로 시작 (시드 리포트 없음)
+  const [messages, setMessages] = useState<ReportChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
