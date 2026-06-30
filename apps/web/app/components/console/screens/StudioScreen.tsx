@@ -5,6 +5,7 @@ import { BarChart2, Download, Film, Pencil, Plus, Sparkles, Tag, Upload, Youtube
 import { clipDownloadUrl } from "@/lib/api";
 import { C, POSTERS, card, ghostBtn, input, primaryBtn } from "@/lib/console/theme";
 import { useConsole } from "../ConsoleProvider";
+import { ClipDetailDrawer } from "./ClipDetailDrawer";
 
 const STAGE_DEFS = [
   { name: "음성 전사", desc: "OpenAI STT로 전체 자막을 추출해요" },
@@ -111,14 +112,14 @@ export function StudioScreen() {
               const pub = c.publishState[clip.id];
               return (
                 <div key={clip.id} style={card({ overflow: "hidden", display: "flex", flexDirection: "column" })}>
-                  <div style={{ position: "relative", aspectRatio: "9 / 16", background: poster.g, overflow: "hidden" }}>
+                  <div onClick={() => c.setSelectedClipId(clip.id)} title="클립 상세" style={{ position: "relative", aspectRatio: "9 / 16", background: poster.g, overflow: "hidden", cursor: "pointer" }}>
                     {clip.thumbnailUrl && <img src={clip.thumbnailUrl} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />}
                     <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{clip.start}~{clip.end}</span>
                     <span style={{ position: "absolute", bottom: 8, left: 8, fontSize: 17, fontWeight: 800, color: "#fff", textShadow: "0 2px 8px rgba(0,0,0,.5)" }}>{clip.score}</span>
                     {pub && <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9.5, fontWeight: 700, color: "#fff", background: pub.status === "published" ? C.green : C.violet, padding: "2px 7px", borderRadius: 5 }}>{pub.status === "published" ? "발행됨" : pub.status === "scheduled" ? "예약됨" : "처리중"}</span>}
                   </div>
                   <div style={{ padding: "12px 13px", display: "flex", flexDirection: "column", flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 650, letterSpacing: "-.2px", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{clip.title}</div>
+                    <div onClick={() => c.setSelectedClipId(clip.id)} style={{ fontSize: 13, fontWeight: 650, letterSpacing: "-.2px", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", cursor: "pointer" }}>{clip.title}</div>
                     <div style={{ fontSize: 11, color: C.muted, marginTop: 5, display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {clip.labels.slice(0, 2).map((l) => (
                         <span key={l} style={{ background: C.lineSoft, padding: "1px 6px", borderRadius: 4 }}>{l}</span>
@@ -140,6 +141,7 @@ export function StudioScreen() {
             })}
           </div>
         )}
+        <ClipDetailDrawer />
       </div>
     );
   }

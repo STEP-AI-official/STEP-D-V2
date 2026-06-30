@@ -30,10 +30,12 @@ import {
   disconnectChannel,
   getChannelAnalytics,
   getChannelInsights,
+  getClipYouTubeStats,
   getJob,
   getMe,
   getPublishStatus,
   getResults,
+  getSilenceReport,
   getStudioSummary,
   getVideoComments,
   getVideoCommentsWithSummary,
@@ -43,6 +45,7 @@ import {
   inspectVideo,
   logout as apiLogout,
   publishToYouTube,
+  regenerateThumbnailTexts,
   regenerateTitles,
   reschedulePublish,
   renderHighlight,
@@ -55,9 +58,11 @@ import {
   type AuthUser,
   type Clip as BackendClip,
   type ChannelInsights,
+  type ClipYouTubeStats,
   type CommentSummary,
   type HighlightRenderResponse,
   type PplAnalysis,
+  type SilenceReport,
   type SubtitleMode,
   type VideoInspection,
   type YouTubeChannelDraft,
@@ -198,6 +203,13 @@ function useConsoleState() {
   const [commerceLoaded, setCommerceLoaded] = useState(false);
   const [commerceLoading, setCommerceLoading] = useState(false);
   const [commerceAnalyzing, setCommerceAnalyzing] = useState<string | null>(null);
+
+  /* ---- clip detail drawer (silence / live stats / title-thumb regen) ---- */
+  const [silenceReport, setSilenceReport] = useState<Record<string, SilenceReport>>({});
+  const [silenceBusy, setSilenceBusy] = useState<string | null>(null);
+  const [clipYtStats, setClipYtStats] = useState<Record<string, ClipYouTubeStats>>({});
+  const [clipStatsBusy, setClipStatsBusy] = useState<string | null>(null);
+  const [thumbBusy, setThumbBusy] = useState(false);
 
   /* ---- publish ---- */
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
@@ -839,6 +851,44 @@ function useConsoleState() {
     }
   };
 
+  const regenThumbs = async (clipId: string) => {
+    setThumbBusy(true);
+    try {
+      const res = await regenerateThumbnailTexts(clipId);
+      const opts = res.options.map((o, i) => ({ id: o.id || `${clipId}-th${i}`, text: o.text, note: o.reason || o.style || "" }));
+      setBackendClips((prev) => (prev ? prev.map((c) => (c.id === clipId ? { ...c, thumbTextOptions: opts } : c)) : prev));
+      showToast("썸네일 문구를 새로 생성했어요");
+    } catch (error) {
+      showToast(errorMessage(error));
+    } finally {
+      setThumbBusy(false);
+    }
+  };
+
+  const loadSilenceReport = async (jobId: string) => {
+    setSilenceBusy(jobId);
+    try {
+      const r = await getSilenceReport(jobId);
+      setSilenceReport((s) => ({ ...s, [jobId]: r }));
+    } catch (error) {
+      showToast("무음 탐지 실패: " + errorMessage(error));
+    } finally {
+      setSilenceBusy(null);
+    }
+  };
+
+  const loadClipYtStats = async (clipId: string) => {
+    setClipStatsBusy(clipId);
+    try {
+      const r = await getClipYouTubeStats(clipId);
+      setClipYtStats((s) => ({ ...s, [clipId]: r }));
+    } catch (error) {
+      showToast("성과 조회 실패: " + errorMessage(error));
+    } finally {
+      setClipStatsBusy(null);
+    }
+  };
+
   /* ---- highlight ---- */
   const doRenderHighlight = async (clipIds: string[], title: string, aspect: HighlightDraft["aspect"], maxDur: number) => {
     if (!currentJobId) {
@@ -1161,7 +1211,9 @@ function useConsoleState() {
     activeClips, currentJobId, replaceClip,
     // clip editing
     selectedClipId, setSelectedClipId, editorClipId, editorClip, openClipEditor, setEditorClipId,
-    saveShortcutEditor, applyBusy, doRetrim, retrimBusy, regenTitles, titleBusy, revisions,
+    saveShortcutEditor, applyBusy, doRetrim, retrimBusy, regenTitles, regenThumbs, titleBusy, thumbBusy, revisions,
+    // clip detail drawer
+    silenceReport, silenceBusy, loadSilenceReport, clipYtStats, clipStatsBusy, loadClipYtStats,
     // highlight
     highlightDraft, setHighlightDraft, highlightBusy, doRenderHighlight,
     // ppl / commerce
