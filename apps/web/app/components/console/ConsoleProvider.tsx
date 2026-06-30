@@ -553,6 +553,20 @@ function useConsoleState() {
       showToast("영상 파일이나 유튜브 링크를 먼저 준비하세요");
       return;
     }
+    // '링크 준비'를 건너뛰고 바로 만들기를 눌러도 유튜브 썸네일/제목을 준비.
+    if (!selectedFile) {
+      const id = youtubeId(ytUrl.trim());
+      if (id && id !== ytPreviewId) {
+        setYtPreviewId(id);
+        if (!fileName) setFileName("유튜브 영상 · " + ytUrl.trim().replace(/^https?:\/\/(www\.)?/, "").slice(0, 42));
+        fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(ytUrl.trim())}&format=json`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (d && typeof d.title === "string") setYtTitle(d.title);
+          })
+          .catch(() => {});
+      }
+    }
     setView("checking");
   };
   const beginPplFlow = () => {

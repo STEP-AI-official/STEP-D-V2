@@ -4,6 +4,7 @@ import { useState } from "react";
 import { BarChart2, Download, FileDown, Film, Pencil, Plus, Sparkles, Tag, Upload, Youtube, Zap } from "lucide-react";
 import { clipDownloadUrl, pplReportCsvUrl } from "@/lib/api";
 import { C, POSTERS, card, ghostBtn, input, primaryBtn } from "@/lib/console/theme";
+import { youtubeId } from "@/lib/console/format";
 import { useConsole } from "../ConsoleProvider";
 import { ClipDetailDrawer } from "./ClipDetailDrawer";
 
@@ -27,8 +28,9 @@ export function StudioScreen() {
         <div style={card({ padding: "28px 30px" })}>
           {/* 영상 미리보기 (크게) + 제목 */}
           {(() => {
-            const ytThumb = c.ytPreviewId ? `https://i.ytimg.com/vi/${c.ytPreviewId}/hqdefault.jpg` : null;
-            const title = c.ytTitle || (c.ytPreviewId ? "유튜브 영상" : c.fileName) || "선택한 영상";
+            const ytId = c.ytPreviewId || youtubeId(c.ytUrl);
+            const ytThumb = ytId ? `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` : null;
+            const title = c.ytTitle || (ytId ? "유튜브 영상" : c.fileName) || "선택한 영상";
             return (
               <div style={{ marginBottom: 22, paddingBottom: 20, borderBottom: `1px solid ${C.lineSoft}` }}>
                 <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", maxHeight: 360, borderRadius: 12, overflow: "hidden", background: "#000", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -40,7 +42,7 @@ export function StudioScreen() {
                   ) : (
                     <Upload size={32} color="#fff" />
                   )}
-                  <span style={{ position: "absolute", top: 10, left: 10, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "3px 9px", borderRadius: 6, pointerEvents: "none" }}>{c.ytPreviewId ? "YouTube 영상" : "업로드 영상"}</span>
+                  <span style={{ position: "absolute", top: 10, left: 10, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "3px 9px", borderRadius: 6, pointerEvents: "none" }}>{ytId ? "YouTube 영상" : "업로드 영상"}</span>
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.3px", marginTop: 12, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{title}</div>
                 <div style={{ fontSize: 11.5, color: C.muted, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.fileName}</div>
