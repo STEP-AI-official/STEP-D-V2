@@ -56,7 +56,7 @@ from app.services.ffmpeg import (
     render_highlight_segments,
 )
 from app.services.pipeline import import_and_process, process_job, subtitle_render_plan
-from app.services.ppl import analyze_clip_ppl, update_ppl_affiliate_links
+from app.services.ppl import analyze_clip_ppl, delete_ppl_product, update_ppl_affiliate_links
 from app.services.storage import ensure_job_dirs, media_path_from_url, media_url, safe_job_id
 from app.services.subtitles import (
     available_style_presets,
@@ -582,6 +582,15 @@ def patch_ppl_links(clip_id: str, request: PplLinksRequest, db: Session = Depend
     if not db.get(Clip, clip_id):
         raise HTTPException(status_code=404, detail="Clip not found.")
     analysis = update_ppl_affiliate_links(clip_id, request.links)
+    return PplAnalysisResponse(clip_id=clip_id, analysis=analysis)
+
+
+@router.delete("/clips/{clip_id}/ppl/products/{product_id}", response_model=PplAnalysisResponse)
+def delete_ppl_product_endpoint(clip_id: str, product_id: str, db: Session = Depends(get_db)):
+    """Remove one recognized PPL product from a clip (commerce 항목 영구 삭제)."""
+    if not db.get(Clip, clip_id):
+        raise HTTPException(status_code=404, detail="Clip not found.")
+    analysis = delete_ppl_product(clip_id, product_id)
     return PplAnalysisResponse(clip_id=clip_id, analysis=analysis)
 
 

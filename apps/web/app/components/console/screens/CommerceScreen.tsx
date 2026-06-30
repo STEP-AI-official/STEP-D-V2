@@ -300,7 +300,16 @@ export function CommerceScreen() {
                         </div>
                       )}
                       <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9.5, fontWeight: 700, color: isDeployed ? C.green : it.affiliateUrl ? C.cyanInk : C.violet, background: isDeployed ? C.greenSoft : it.affiliateUrl ? C.cyanSoft : C.violetSoft, padding: "3px 8px", borderRadius: 5 }}>{isDeployed ? "배포 완료" : it.affiliateUrl ? "링크 연결됨" : "링크 대기"}</span>
-                      <span style={{ position: "absolute", top: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{it.exposure.toFixed(1)}초</span>
+                      <span style={{ position: "absolute", bottom: 8, right: 8, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(16,18,24,.78)", padding: "2px 7px", borderRadius: 5, fontFeatureSettings: "'tnum' 1" }}>{it.exposure.toFixed(1)}초</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`'${it.brand} · ${it.product}' 커머스 항목을 삭제할까요?`)) void c.removeCommerceItem(it.key);
+                        }}
+                        title="삭제"
+                        aria-label="커머스 항목 삭제"
+                        style={{ position: "absolute", top: 8, right: 8, width: 24, height: 24, borderRadius: 7, border: "none", background: "rgba(16,18,24,.62)", color: "#fff", fontSize: 15, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+                      >×</button>
                     </div>
                   );
                 })()}

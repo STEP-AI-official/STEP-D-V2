@@ -235,3 +235,27 @@ def update_ppl_affiliate_links(clip_id: str, links: dict[str, str]) -> dict[str,
         analysis["products"] = products
         clip.ppl_analysis_json = analysis
         return analysis
+
+
+def delete_ppl_product(clip_id: str, product_id: str) -> dict[str, Any]:
+    """Remove one detected product (and its frame detections) from a clip's PPL analysis."""
+    with session_scope() as db:
+        clip = db.get(Clip, clip_id)
+        if not clip:
+            raise ValueError("Clip not found")
+        analysis = dict(clip.ppl_analysis_json or {})
+        analysis["products"] = [
+            dict(item) for item in analysis.get("products") or [] if item.get("id") != product_id
+        ]
+        frames: list[dict[str, Any]] = []
+        for frame in analysis.get("frames") or []:
+            new_frame = dict(frame)
+            new_frame["detections"] = [
+                d for d in (frame.get("detections") or []) if d.get("product_id") != product_id
+            ]
+            if new_frame["detections"]:
+                frames.append(new_frame)
+        analysis["frames"] = frames
+        analysis["frame_count"] = len(frames)
+        clip.ppl_analysis_json = analysis
+        return analysis

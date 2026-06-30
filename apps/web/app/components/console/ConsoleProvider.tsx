@@ -50,6 +50,7 @@ import {
   reschedulePublish,
   renderHighlight,
   retrimClip,
+  deletePplProduct,
   savePplLinks,
   setDefaultChannel,
   updateChannelStyleNote,
@@ -1060,6 +1061,21 @@ function useConsoleState() {
     }
   };
 
+  // Permanently remove one recognized commerce item — deletes the product from the
+  // clip's PPL analysis on the backend so it stays gone after reload/report.
+  const removeCommerceItem = async (key: string) => {
+    const target = commerceItems.find((x) => x.key === key);
+    if (!target) return;
+    setCommerceItems((prev) => prev.filter((x) => x.key !== key)); // optimistic
+    try {
+      await deletePplProduct(target.clipId, target.productId);
+      showToast("커머스 항목을 삭제했어요");
+    } catch (error) {
+      setCommerceItems((prev) => [...prev, target]); // rollback on failure
+      showToast("삭제 실패: " + errorMessage(error));
+    }
+  };
+
   /* ---- publish ---- */
   const schedulePublishPoll = (publishId: string, clipId: string) => {
     const tick = async () => {
@@ -1255,7 +1271,7 @@ function useConsoleState() {
     // ppl / commerce
     pplData, pplBusy, runPpl, savePpl,
     commerceItems, commerceLoaded, commerceLoading, commerceAnalyzing,
-    loadCommerce, analyzeClipForCommerce, saveCommerceLink,
+    loadCommerce, analyzeClipForCommerce, saveCommerceLink, removeCommerceItem,
     // channels
     channels, ytAuthed, defaultPrivacy, openChannel, openChannelDetail, closeChannel,
     openVideo, setOpenVideo, videoComments, commentSummary, loadCommentSummary,

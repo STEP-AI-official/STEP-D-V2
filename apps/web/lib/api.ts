@@ -593,6 +593,17 @@ export async function savePplLinks(
   return res.analysis;
 }
 
+export async function deletePplProduct(
+  clipId: string,
+  productId: string
+): Promise<PplAnalysis | null> {
+  const res = await request<{ clip_id: string; analysis: PplAnalysis | null }>(
+    `/api/clips/${clipId}/ppl/products/${encodeURIComponent(productId)}`,
+    { method: "DELETE" }
+  );
+  return res.analysis;
+}
+
 export async function uploadOverlayAsset(jobId: string, file: File): Promise<AssetUploadResponse> {
   const body = new FormData();
   body.append("file", file);
