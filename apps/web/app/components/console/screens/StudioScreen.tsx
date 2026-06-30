@@ -25,25 +25,25 @@ export function StudioScreen() {
     return (
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 28px 60px" }}>
         <div style={card({ padding: "28px 30px" })}>
-          {/* 영상 미리보기 (썸네일 + 제목) */}
+          {/* 영상 미리보기 (크게) + 제목 */}
           {(() => {
             const ytThumb = c.ytPreviewId ? `https://i.ytimg.com/vi/${c.ytPreviewId}/hqdefault.jpg` : null;
             const title = c.ytTitle || (c.ytPreviewId ? "유튜브 영상" : c.fileName) || "선택한 영상";
             return (
-              <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 22, paddingBottom: 20, borderBottom: `1px solid ${C.lineSoft}` }}>
-                <div style={{ width: 168, height: 94, borderRadius: 10, overflow: "hidden", background: C.ink, flex: "0 0 168px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {ytThumb ? (
+              <div style={{ marginBottom: 22, paddingBottom: 20, borderBottom: `1px solid ${C.lineSoft}` }}>
+                <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", maxHeight: 360, borderRadius: 12, overflow: "hidden", background: "#000", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {c.sourcePreviewUrl ? (
+                    <video src={c.sourcePreviewUrl} controls muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }} />
+                  ) : ytThumb ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={ytThumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   ) : (
-                    <Upload size={26} color="#fff" />
+                    <Upload size={32} color="#fff" />
                   )}
+                  <span style={{ position: "absolute", top: 10, left: 10, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "3px 9px", borderRadius: 6, pointerEvents: "none" }}>{c.ytPreviewId ? "YouTube 영상" : "업로드 영상"}</span>
                 </div>
-                <div style={{ minWidth: 0 }}>
-                  <span style={{ fontSize: 10.5, fontWeight: 700, color: C.violet, background: C.violetSoft, padding: "2px 8px", borderRadius: 5 }}>{c.ytPreviewId ? "YouTube 영상" : "업로드 영상"}</span>
-                  <div style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.3px", marginTop: 8, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{title}</div>
-                  <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 360 }}>{c.fileName}</div>
-                </div>
+                <div style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.3px", marginTop: 12, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{title}</div>
+                <div style={{ fontSize: 11.5, color: C.muted, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.fileName}</div>
               </div>
             );
           })()}
