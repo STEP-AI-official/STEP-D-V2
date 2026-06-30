@@ -253,6 +253,18 @@ function downloadReport() {
   URL.revokeObjectURL(url);
 }
 
+// 새 탭에서 보고서 미리보기 (다운로드 없이)
+function previewReport() {
+  const html = buildReportHtml();
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// 채팅에서 '보고서 카드'(미리보기/다운로드 버튼)를 표시하기 위한 마커.
+const REPORT_MARKER = "__REPORT_CARD__";
+
 const REPORT_KEYWORDS = ["보고서", "리포트", "report", "초안", "다운로드", "내보내기", "파일"];
 
 // AI가 고민하는 척 — 답변이 바로 안 나오고 잠시 뜸 들이도록.
@@ -305,8 +317,7 @@ export function ReportScreen() {
     // 보고서 요청 감지
     if (REPORT_KEYWORDS.some((k) => q.includes(k))) {
       await think;
-      downloadReport();
-      setMessages((m) => [...m, { role: "assistant", content: REPORT_CHAT_RESPONSE }]);
+      setMessages((m) => [...m, { role: "assistant", content: REPORT_MARKER }]);
       setLoading(false);
       scrollDown();
       return;
@@ -347,9 +358,19 @@ export function ReportScreen() {
               <div style={{ width: 28, height: 28, borderRadius: 8, background: C.ink, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, flexShrink: 0, marginRight: 10, marginTop: 2 }}>D</div>
             )}
             <div style={{ maxWidth: m.role === "user" ? "76%" : "calc(100% - 38px)", background: m.role === "user" ? C.ink : "#fff", color: m.role === "user" ? "#fff" : C.ink, border: m.role === "user" ? "none" : `1px solid ${C.line}`, borderRadius: 14, padding: "13px 16px", fontSize: 13.5, lineHeight: 1.65, letterSpacing: "-.1px" }}>
-              {m.role === "user"
-                ? <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
-                : <div dangerouslySetInnerHTML={{ __html: mdToHtml(m.content) }} />}
+              {m.role === "user" ? (
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+              ) : m.content === REPORT_MARKER ? (
+                <div>
+                  <div dangerouslySetInnerHTML={{ __html: mdToHtml(REPORT_CHAT_RESPONSE) }} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                    <button onClick={previewReport} className="hv-soft" style={{ ...ghostBtn, padding: "9px 15px", fontSize: 12.5, fontWeight: 650 }}>🔎 미리보기</button>
+                    <button onClick={downloadReport} className="hv-btn-primary" style={{ ...primaryBtn, padding: "9px 17px", fontSize: 12.5 }}>⬇ 다운로드</button>
+                  </div>
+                </div>
+              ) : (
+                <div dangerouslySetInnerHTML={{ __html: mdToHtml(m.content) }} />
+              )}
             </div>
           </div>
         ))}
