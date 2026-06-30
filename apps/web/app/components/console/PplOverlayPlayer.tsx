@@ -7,7 +7,7 @@ const PPL_BOX_COLORS = ["#6C5CE7", "#27E0A0", "#5B8CFF", "#FFD400", "#FF49DB", "
 
 // 9:16 player that draws brand/product bounding boxes synced to playback.
 // Boxes are normalized 0..1 of the rendered frame. Ported from the original app.
-export function PplOverlayPlayer({ analysis, videoUrl, poster }: { analysis: PplAnalysis; videoUrl?: string; poster?: string }) {
+export function PplOverlayPlayer({ analysis, videoUrl, poster, maxWidth = 300 }: { analysis: PplAnalysis; videoUrl?: string; poster?: string; maxWidth?: number }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [t, setT] = useState(0);
   useEffect(() => {
@@ -34,7 +34,7 @@ export function PplOverlayPlayer({ analysis, videoUrl, poster }: { analysis: Ppl
     return best.detections;
   }, [analysis, t]);
   return (
-    <div style={{ position: "relative", width: "100%", maxWidth: 260, margin: "0 auto", aspectRatio: "9 / 16", borderRadius: 12, overflow: "hidden", background: "#000", boxShadow: "0 10px 30px -16px rgba(0,0,0,.6)" }}>
+    <div style={{ position: "relative", width: "100%", maxWidth, margin: "0 auto", aspectRatio: "9 / 16", borderRadius: 12, overflow: "hidden", background: "#000", boxShadow: "0 10px 30px -16px rgba(0,0,0,.6)" }}>
       {videoUrl ? (
         <video ref={videoRef} src={videoUrl} controls playsInline preload="metadata" poster={poster} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", background: "#050505" }} />
       ) : poster ? (

@@ -81,7 +81,7 @@ export function CommerceScreen() {
             <span style={{ fontSize: 11, fontWeight: 700, color: isDeployed ? C.green : C.violet, background: isDeployed ? C.greenSoft : C.violetSoft, padding: "4px 10px", borderRadius: 6 }}>{isDeployed ? "배포 완료" : "배포 대기"}</span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 24, padding: 22 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "380px 1fr", gap: 28, padding: 22 }}>
             {/* preview + real recognition meta */}
             <div>
               {(() => {
@@ -90,17 +90,17 @@ export function CommerceScreen() {
                 // 단일 브랜드 오버레이(이 브랜드의 박스만) — 프레임 좌표가 있을 때
                 if (sel.overlay && sel.overlay.frames.length) {
                   return (
-                    <div style={{ position: "relative", maxWidth: 260, margin: "0 auto" }}>
+                    <div style={{ position: "relative", maxWidth: 380, margin: "0 auto" }}>
                       <div style={{ position: "absolute", top: 12, left: 12, zIndex: 3, display: "flex", alignItems: "center", gap: 7, background: "rgba(0,0,0,.55)", backdropFilter: "blur(6px)", padding: "5px 10px", borderRadius: 8, pointerEvents: "none" }}>
                         <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#3CE08F" }} />
                         <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>{sel.brand} 인식 · 오버레이</span>
                       </div>
-                      <PplOverlayPlayer analysis={sel.overlay} videoUrl={videoUrl} poster={thumb} />
+                      <PplOverlayPlayer analysis={sel.overlay} videoUrl={videoUrl} poster={thumb} maxWidth={380} />
                     </div>
                   );
                 }
                 return (
-                  <div style={{ borderRadius: 14, overflow: "hidden", background: C.ink, position: "relative", aspectRatio: "9 / 16", maxHeight: 460 }}>
+                  <div style={{ borderRadius: 14, overflow: "hidden", background: C.ink, position: "relative", aspectRatio: "9 / 16", maxHeight: 620 }}>
                     {videoUrl ? (
                       <video
                         src={videoUrl}
