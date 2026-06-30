@@ -8,13 +8,6 @@ import { C, POSTERS, card, ghostBtn, input, primaryBtn } from "@/lib/console/the
 import { youtubeId } from "@/lib/console/format";
 import { useConsole } from "../ConsoleProvider";
 
-const STAGE_DEFS = [
-  { name: "음성 전사", desc: "OpenAI STT로 전체 자막을 추출해요" },
-  { name: "하이라이트 후보 추출", desc: "자막에서 터질 구간 20~30개를 골라요" },
-  { name: "AI 장면 평가", desc: "Gemini가 상위 후보의 대표 프레임만 채점해요" },
-  { name: "세로 쇼츠 렌더", desc: "9:16 캔버스에 자막·제목을 입혀 렌더해요" },
-];
-
 export function StudioScreen() {
   const c = useConsole();
   const [folder, setFolder] = useState<"all" | "upload" | "youtube">("all");
@@ -78,29 +71,12 @@ export function StudioScreen() {
         <div style={card({ padding: "30px 32px" })}>
           <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 18 }}>
             <Sparkles size={18} color={C.violet} />
-            <div style={{ fontSize: 16, fontWeight: 750 }}>AI가 쇼츠를 만들고 있어요</div>
+            <div style={{ fontSize: 16, fontWeight: 750 }}>STEP D가 쇼츠를 만들고 있어요</div>
             <div style={{ flex: 1 }} />
             <div style={{ fontSize: 20, fontWeight: 800, color: C.violet, fontFeatureSettings: "'tnum' 1" }}>{Math.round(c.progress)}%</div>
           </div>
           <div style={{ height: 8, background: C.lineSoft, borderRadius: 6, overflow: "hidden" }}>
             <div style={{ width: `${c.progress}%`, height: "100%", background: C.violet, transition: "width .4s ease" }} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 22 }}>
-            {STAGE_DEFS.map((s, i) => {
-              const active = i === c.stageIndex;
-              const done = i < c.stageIndex;
-              return (
-                <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 12, opacity: i <= c.stageIndex ? 1 : 0.4 }}>
-                  <div style={{ width: 24, height: 24, borderRadius: "50%", flex: "0 0 24px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: done || active ? "#fff" : C.muted, background: done ? C.green : active ? C.violet : C.lineSoft }}>
-                    {done ? "✓" : i + 1}
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 650, color: C.ink }}>{s.name}</div>
-                    <div style={{ fontSize: 11.5, color: C.muted }}>{s.desc}</div>
-                  </div>
-                </div>
-              );
-            })}
           </div>
           {c.backendError && <div style={{ marginTop: 16, fontSize: 12.5, color: C.danger }}>{c.backendError}</div>}
         </div>
@@ -350,12 +326,14 @@ function ClipThumb({ clip, bg, pubStatus }: { clip: Clip; bg: string; pubStatus?
   };
   return (
     <div onClick={clip.videoUrl ? toggle : undefined} onMouseEnter={enter} onMouseLeave={leave} title="마우스를 올리면 미리보기" style={{ position: "relative", aspectRatio: "9 / 16", background: bg, overflow: "hidden", cursor: clip.videoUrl ? "pointer" : "default" }}>
-      {clip.videoUrl ? (
-        <video ref={ref} src={clip.videoUrl} poster={clip.thumbnailUrl} muted loop playsInline preload="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
-      ) : clip.thumbnailUrl ? (
+      {/* 썸네일은 항상 베이스로 깔고, 영상은 재생 중에만 위에 페이드인 (포스터는 재생 후 검게 남는 문제 회피) */}
+      {clip.thumbnailUrl && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={clip.thumbnailUrl} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
-      ) : null}
+      )}
+      {clip.videoUrl && (
+        <video ref={ref} src={clip.videoUrl} muted loop playsInline preload="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: playing ? 1 : 0, transition: "opacity .15s ease" }} />
+      )}
       {clip.videoUrl && !playing && (
         <span style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 42, height: 42, borderRadius: "50%", background: "rgba(16,18,24,.55)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, paddingLeft: 3, pointerEvents: "none" }}>▶</span>
       )}
