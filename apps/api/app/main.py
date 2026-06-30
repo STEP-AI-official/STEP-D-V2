@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import router as auth_router
+from app.api.landing import router as landing_router
 from app.api.routes import router
 from app.api.youtube import router as youtube_router
 from app.core.config import get_settings
@@ -23,6 +24,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(landing_router)
     app.include_router(youtube_router)
     app.mount("/media", StaticFiles(directory=settings.storage_dir), name="media")
     return app

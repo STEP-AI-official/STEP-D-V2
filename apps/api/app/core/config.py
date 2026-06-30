@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Optional key prefix inside the bucket (e.g. "prod"). Empty = bucket root.
     gcs_prefix: str = ""
 
+    # Public landing assets can be kept private in GCS and served through the
+    # API's service account when organization policy blocks allUsers.
+    landing_video_gcs_bucket: str = "step-d-landing"
+    landing_video_gcs_object: str = "AENA_소개영상.mp4"
+
     openai_api_key: str = ""
     openai_transcribe_model: str = "whisper-1"
     openai_transcribe_language: str = "ko"
