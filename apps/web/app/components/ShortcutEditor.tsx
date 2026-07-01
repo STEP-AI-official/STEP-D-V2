@@ -1074,6 +1074,7 @@ export function ShortcutEditor({ clip, onClose, onSave, saving = false, onPublis
   const [state, setState] = useState<EditorState>(() => makeInitialState(clip));
   const [toast, setToast] = useState<string | null>(null);
   const [brandBusy, setBrandBusy] = useState(false); // 데모: 브랜드 분석 진행중 표시
+  const [publishBusy, setPublishBusy] = useState(false); // 데모: 배포 진행중 표시
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const raf = useRef<number | null>(null);
   const overlaySeq = useRef(0);
@@ -1396,8 +1397,8 @@ export function ShortcutEditor({ clip, onClose, onSave, saving = false, onPublis
               </button>
             )}
             {onPublish && (
-              <button onClick={onPublish} className="se-press" style={{ height: 38, padding: "0 14px", border: `1px solid ${LINE}`, borderRadius: 10, background: "#fff", color: "#5B5346", display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                <Youtube size={15} color="#FF0000" />배포
+              <button onClick={() => { if (publishBusy) return; setPublishBusy(true); window.setTimeout(() => { setPublishBusy(false); flash("배포되었습니다"); }, 1100); }} disabled={publishBusy} className="se-press" style={{ height: 38, padding: "0 14px", border: `1px solid ${LINE}`, borderRadius: 10, background: "#fff", color: "#5B5346", display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, cursor: publishBusy ? "default" : "pointer", opacity: publishBusy ? 0.6 : 1 }}>
+                <Youtube size={15} color="#FF0000" />{publishBusy ? "배포 중..." : "배포"}
               </button>
             )}
             <button onClick={resetEditor} className="se-press" style={{ height: 38, padding: "0 15px", border: `1px solid ${LINE}`, borderRadius: 10, background: SOFT, color: "#5B5346", display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
