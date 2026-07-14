@@ -1,5 +1,10 @@
 # apps/api — 백엔드 Claude 컨텍스트
 
+> ⚠️ **레거시.** 이건 구 STEPD 백엔드다. 2026-07-14 리포 교체 이후 사용하지 않으며,
+> 2026-06-30 이후 손대지 않았다. **현재 백엔드는 `apps/server` (Hono + TypeScript, Cloud Run)** 다.
+> 새 코드를 여기 넣지 말 것. 아래 내용은 구 시스템 기준이며 제거 여부는 미결정.
+> STT·Gemini 기반 AI 파이프라인 코드는 아직 여기에만 있다 (apps/server로 이식되지 않음).
+
 FastAPI 백엔드. Python 3.12, SQLAlchemy ORM, Uvicorn.
 
 ## 핵심 파일 맵

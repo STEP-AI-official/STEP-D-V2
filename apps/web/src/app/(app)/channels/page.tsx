@@ -213,14 +213,18 @@ export default function ChannelTrendsPage() {
                       borderRadius: 8,
                       fontSize: 12,
                     }}
-                    formatter={(value: number, name: string) => {
+                    formatter={(value, name) => {
                       const labels: Record<string, string> = {
                         totalViews: "조회수",
                         totalLikes: "좋아요",
                       };
-                      return [fmt(value), labels[name] ?? name];
+                      const key = String(name);
+                      return [fmt(Number(value ?? 0)), labels[key] ?? key];
                     }}
-                    labelFormatter={(label: string) => `${label.slice(0, 4)}년 ${label.slice(5, 7)}월 ${label.slice(8)}일`}
+                    labelFormatter={(label) => {
+                      const d = String(label);
+                      return `${d.slice(0, 4)}년 ${d.slice(5, 7)}월 ${d.slice(8)}일`;
+                    }}
                   />
                   <Line
                     type="monotone"
@@ -341,9 +345,10 @@ export default function ChannelTrendsPage() {
                       borderRadius: 8,
                       fontSize: 12,
                     }}
-                    formatter={(value: number, name: string) => {
+                    formatter={(value, name) => {
                       const labels: Record<string, string> = { views: "조회수", likes: "좋아요", comments: "댓글" };
-                      return [fmt(value), labels[name] ?? name];
+                      const key = String(name);
+                      return [fmt(Number(value ?? 0)), labels[key] ?? key];
                     }}
                   />
                   <Line type="monotone" dataKey="views" stroke="var(--color-status-progress)" strokeWidth={2} dot={false} />

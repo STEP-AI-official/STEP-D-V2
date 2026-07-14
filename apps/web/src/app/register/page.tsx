@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getYouTubeAuthUrl } from "@/lib/data/api";
 
+// useSearchParams() opts the subtree into client-side rendering, so it has to sit
+// under a Suspense boundary or the /register prerender fails at build time.
 export default function RegisterPage() {
+  return (
+    <Suspense>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const searchParams = useSearchParams();
   const [channelUrl, setChannelUrl] = useState("");
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);

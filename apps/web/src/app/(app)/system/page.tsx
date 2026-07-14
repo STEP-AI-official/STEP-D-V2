@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Youtube } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { YouTubeChannelInfo } from "@/lib/data/api";
 import { fetchYouTubeChannels, getYouTubeAuthUrl, deleteYouTubeChannel } from "@/lib/data/api";
@@ -61,7 +62,7 @@ export default function SystemPage() {
         ) : channels.length === 0 ? (
           <Card className="p-8">
             <EmptyState
-              icon={<div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-500">YT</div>}
+              icon={Youtube}
               title="연동된 YouTube 채널이 없습니다"
               description="'채널 추가' 버튼으로 YouTube 채널을 연결하세요. 외부 협력자는 /register 페이지에서 직접 등록할 수 있습니다."
             />

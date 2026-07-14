@@ -222,18 +222,19 @@ app.post("/api/media/upload", async (c) => {
     const tmpDir = path.resolve("/tmp/stepd-uploads");
     const tmpPath = path.join(tmpDir, `${mediaId}${ext}`);
     if (fs.existsSync(tmpPath)) {
+      const thumbTmp = path.join(tmpDir, `${mediaId}.jpg`);
       try {
         const thumbObjPath = thumbPath(mediaId);
-        const thumbTmp = path.join(tmpDir, `${mediaId}.jpg`);
         await captureThumbnail(tmpPath, Math.max(1, meta.durationSec * 0.1), thumbTmp);
         const thumbStored = await uploadFile(thumbObjPath, thumbTmp);
         await updateMediaThumb(mediaId, thumbStored);
         row.thumbPath = thumbStored;
-        // Cleanup temp
-        try { fs.unlinkSync(tmpPath); } catch {}
-        try { fs.unlinkSync(thumbTmp); } catch {}
       } catch {
         /* optional */
+      } finally {
+        // /tmp is RAM-backed on Cloud Run — the source must go even if thumbnailing failed.
+        try { fs.unlinkSync(tmpPath); } catch {}
+        try { fs.unlinkSync(thumbTmp); } catch {}
       }
     }
   }
@@ -288,17 +289,17 @@ app.post("/api/recommendations/:id/adopt", async (c) => {
         const clipObjPath = clipPath(clipMediaId);
         const tmpPath = path.join(tmpDir, `${clipMediaId}.mp4`);
 
-        // Download master to temp for ffmpeg processing
+        // ffmpeg reads from the local filesystem, so a GCS master has to come down first.
+        let srcPath = master.path;
         if (useGcs()) {
+          srcPath = path.join(tmpDir, `${clipMediaId}-src.mp4`);
           const { Storage } = await import("@google-cloud/storage");
           const storage = new Storage();
           const bucket = storage.bucket(process.env.GCS_BUCKET!);
-          await bucket.file(masterObjPath).download({ destination: tmpPath });
-        } else {
-          fs.cpSync(master.path, tmpPath, { force: true });
+          await bucket.file(masterObjPath).download({ destination: srcPath });
         }
 
-        await trimEncode(master.path, rec.startTime, rec.endTime, tmpPath);
+        await trimEncode(srcPath, rec.startTime, rec.endTime, tmpPath);
         const cmeta = await probe(tmpPath).catch(() => ({
           durationSec: clip.durationSec, width: 0, height: 0, codec: "h264", hasAudio: true,
         }));
@@ -330,6 +331,7 @@ app.post("/api/recommendations/:id/adopt", async (c) => {
         // Cleanup temp
         try { fs.unlinkSync(tmpPath); } catch {}
         try { fs.unlinkSync(thumbTmp); } catch {}
+        if (srcPath !== master.path) { try { fs.unlinkSync(srcPath); } catch {} }
       } catch (err) {
         console.error("[adopt] trim-encode failed:", err);
       }
