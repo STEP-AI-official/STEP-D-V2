@@ -23,4 +23,7 @@ apps/api/assets/fonts/*.zip
 # Local docs / archives / scratch — not part of the app
 *.docx
 *.zip
-/ziCO95nk
+|/ziCO95nk
+|
+# GCP service account keys (never commit!)
+gcp-keys/

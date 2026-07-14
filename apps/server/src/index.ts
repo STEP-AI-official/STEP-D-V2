@@ -58,17 +58,15 @@ import {
   useGcs,
 } from "./storage-gcs.ts";
 
+// Sync init — no CPU throttling issues on Cloud Run
 let dbReady = false;
-let FFMPEG = false;
+const FFMPEG = hasFfmpeg();
+console.log(`[stepd-server] ffmpeg available: ${FFMPEG}`);
 
 // Init DB in background — don't block server startup
 initDb()
   .then(() => { dbReady = true; console.log("[stepd-server] database ready"); })
   .catch((err) => console.error("[stepd-server] database init failed (server still running):", err));
-
-hasFfmpeg()
-  .then((f) => { FFMPEG = f; console.log(`[stepd-server] ffmpeg available: ${FFMPEG}`); })
-  .catch((err) => console.error("[stepd-server] hasFfmpeg error:", err));
 console.log(`[stepd-server] storage mode: ${useGcs() ? "GCS" : "local"}`);
 
 const app = new Hono();

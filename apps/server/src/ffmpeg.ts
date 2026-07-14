@@ -1,7 +1,7 @@
 /**
  * ffmpeg/ffprobe wrapper — used in Cloud Run (ffmpeg baked into Docker image).
  */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 
 export type ProbeResult = {
@@ -12,12 +12,13 @@ export type ProbeResult = {
   hasAudio: boolean;
 };
 
-export function hasFfmpeg(): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err) => {
-      resolve(!err);
-    });
-  });
+export function hasFfmpeg(): boolean {
+  try {
+    const out = execFileSync("ffmpeg", ["-version"], { timeout: 5000, encoding: "utf8", stdio: "pipe" });
+    return out.includes("ffmpeg version");
+  } catch {
+    return false;
+  }
 }
 
 export function probe(filePath: string): Promise<ProbeResult> {
