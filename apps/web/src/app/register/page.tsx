@@ -91,8 +91,16 @@ function RegisterForm() {
           </button>
 
           <p className="text-zinc-500 text-xs text-center mt-6 leading-relaxed">
-            Google 로그인 후 선택한 YouTube 채널이<br />
-            STEP-D 시스템에 등록됩니다.
+            채널 분석에 필요한 <span className="text-zinc-300">읽기 권한만</span> 요청합니다.<br />
+            영상을 수정하거나 삭제하지 않습니다.
+          </p>
+
+          <p className="text-zinc-600 text-xs text-center mt-4">
+            계속하면{" "}
+            <a href="/terms" className="text-zinc-400 underline hover:text-zinc-200">이용약관</a>
+            {" "}및{" "}
+            <a href="/privacy" className="text-zinc-400 underline hover:text-zinc-200">개인정보처리방침</a>
+            에 동의하는 것으로 봅니다.
           </p>
 
           {channelUrl && (
