@@ -27,3 +27,6 @@ apps/api/assets/fonts/*.zip
 |
 # GCP service account keys (never commit!)
 gcp-keys/
+
+# Tool scratch cache
+.hermes/

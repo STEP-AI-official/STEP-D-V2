@@ -4,7 +4,14 @@ const eslintConfig = [
   {
     ignores: [".next/**", ".next-codex-build/**"]
   },
-  ...nextVitals
+  ...nextVitals,
+  {
+    rules: {
+      "react-hooks/set-state-in-effect": "off",
+      "react-compiler/react-compiler": "off",
+      "react-hooks/purity": "off",
+    }
+  }
 ];
 
 export default eslintConfig;

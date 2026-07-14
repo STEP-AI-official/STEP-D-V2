@@ -7,7 +7,7 @@ import type { DistributionChannel } from "@/lib/constants";
 import type { MetaPlatform } from "@/lib/types";
 
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:4000";
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "/api";
 
 /** Absolute URL for a server-relative media path (stream/thumb). */
 export function mediaUrl(relative: string | null | undefined): string | undefined {
@@ -32,7 +32,7 @@ async function json<T>(res: Response): Promise<T> {
 
 /** Probe + load full state. Rejects (fast) if the server isn't up. */
 export async function fetchState(signal?: AbortSignal): Promise<ServerState> {
-  const res = await fetch(`${API_BASE}/api/state`, { signal, cache: "no-store" });
+  const res = await fetch(`${API_BASE}/state`, { signal, cache: "no-store" });
   return json<ServerState>(res);
 }
 
@@ -49,7 +49,7 @@ export async function uploadVideo(
     form.append("programId", programId);
     if (title) form.append("title", title);
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/media/upload`);
+    xhr.open("POST", `${API_BASE}/media/upload`);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
     };
@@ -63,11 +63,11 @@ export async function uploadVideo(
 }
 
 export async function adoptRec(recId: string): Promise<{ clipId: string; clip: unknown }> {
-  return json(await fetch(`${API_BASE}/api/recommendations/${recId}/adopt`, { method: "POST" }));
+  return json(await fetch(`${API_BASE}/recommendations/${recId}/adopt`, { method: "POST" }));
 }
 
 export async function rejectRec(recId: string, reason: string): Promise<void> {
-  await fetch(`${API_BASE}/api/recommendations/${recId}/reject`, {
+  await fetch(`${API_BASE}/recommendations/${recId}/reject`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ reason }),
@@ -79,7 +79,7 @@ export async function publishClips(
   channel: DistributionChannel,
   opts: { reserveDate?: string; scheduled?: boolean; platforms?: MetaPlatform[] },
 ): Promise<void> {
-  await fetch(`${API_BASE}/api/distributions/publish`, {
+  await fetch(`${API_BASE}/distributions/publish`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clipIds, channel, ...opts }),
@@ -87,7 +87,7 @@ export async function publishClips(
 }
 
 export async function retryDist(clipId: string, channel: DistributionChannel): Promise<void> {
-  await fetch(`${API_BASE}/api/distributions/retry`, {
+  await fetch(`${API_BASE}/distributions/retry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clipId, channel }),
@@ -108,19 +108,19 @@ export interface YouTubeChannelInfo {
 }
 
 export async function fetchYouTubeChannels(): Promise<YouTubeChannelInfo[]> {
-  const res = await fetch(`${API_BASE}/api/youtube/channels`);
+  const res = await fetch(`${API_BASE}/youtube/channels`);
   const data = await res.json() as { channels: YouTubeChannelInfo[] };
   return data.channels;
 }
 
 export function getYouTubeAuthUrl(channelUrl?: string): string {
-  const base = `${API_BASE}/api/youtube/auth`;
+  const base = `${API_BASE}/youtube/auth`;
   if (channelUrl) return `${base}?channel=${encodeURIComponent(channelUrl)}`;
   return base;
 }
 
 export async function deleteYouTubeChannel(channelId: string): Promise<void> {
-  await fetch(`${API_BASE}/api/youtube/channels/${channelId}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/youtube/channels/${channelId}`, { method: "DELETE" });
 }
 
 // ── Channel video sync & trends ────────────────────────────────────────────────
@@ -134,7 +134,7 @@ import type {
 } from "@/lib/types";
 
 export async function syncChannelVideos(channelId: string): Promise<SyncResponse> {
-  const res = await fetch(`${API_BASE}/api/youtube/sync/${channelId}`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/youtube/sync/${channelId}`, { method: "POST" });
   return json<SyncResponse>(res);
 }
 
@@ -144,7 +144,7 @@ export async function fetchChannelVideos(channelId: string): Promise<{
   videoCount: number;
   videos: YouTubeChannelVideo[];
 }> {
-  const res = await fetch(`${API_BASE}/api/youtube/videos/${channelId}`);
+  const res = await fetch(`${API_BASE}/youtube/videos/${channelId}`);
   return json(res);
 }
 
@@ -155,15 +155,15 @@ export async function fetchChannelTrends(channelId: string, days = 30): Promise<
   trend: DailyTrend[];
   summary: ChannelTrendSummary;
 }> {
-  const res = await fetch(`${API_BASE}/api/youtube/trends/${channelId}?days=${days}`);
+  const res = await fetch(`${API_BASE}/youtube/trends/${channelId}?days=${days}`);
   return json(res);
 }
 
 export async function fetchVideoTrend(videoId: string, days = 30): Promise<VideoTrend> {
-  const res = await fetch(`${API_BASE}/api/youtube/trends/video/${videoId}?days=${days}`);
+  const res = await fetch(`${API_BASE}/youtube/trends/video/${videoId}?days=${days}`);
   return json<VideoTrend>(res);
 }
 
 export async function deleteTrackedVideo(videoId: string): Promise<void> {
-  await fetch(`${API_BASE}/api/youtube/videos/${videoId}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/youtube/videos/${videoId}`, { method: "DELETE" });
 }
