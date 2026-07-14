@@ -18,12 +18,10 @@ RUN npm install -g pnpm@latest
 
 # ── deps layer (cached) ──────────────────────────────────────────────────────
 FROM base AS deps
-WORKDIR /app
-# pnpm-workspace.yaml must be in the same directory as pnpm finds it
-COPY pnpm-workspace.yaml ./
 WORKDIR /app/apps/server
 COPY apps/server/package.json ./
-RUN pnpm install --no-frozen-lockfile
+# Install deps — ignore build scripts, then only rebuild esbuild (the only one that needs it)
+RUN pnpm install --no-frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM base AS runtime
