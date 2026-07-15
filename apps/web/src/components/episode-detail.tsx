@@ -88,7 +88,7 @@ export function EpisodeDetail({
       </Link>
 
       <PageHeader
-        title={`${episode.programTitle} · ${episode.episodeNumber}화`}
+        title={episode.episodeNumber != null ? `${episode.programTitle} · ${episode.episodeNumber}화` : episode.programTitle}
         description={`방송 ${episode.broadDate} · ${targetAgeLabel(episode.targetAge)}`}
         actions={
           <StatusBadge tone={episode.pipeline.stageStatus}>

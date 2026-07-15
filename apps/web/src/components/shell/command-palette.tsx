@@ -35,9 +35,9 @@ export function CommandPalette() {
     }));
     const eps: Command[] = episodes.map((ep) => ({
       id: `ep-${ep.id}`,
-      label: `${ep.programTitle} ${ep.episodeNumber}화`,
+      label: ep.episodeNumber != null ? `${ep.programTitle} ${ep.episodeNumber}화` : ep.programTitle,
       group: "회차",
-      keywords: `${ep.programTitle} ${ep.episodeNumber} 회차 episode`,
+      keywords: `${ep.programTitle} ${ep.episodeNumber ?? ""} 회차 episode`,
       run: () => router.push(`/episodes/${ep.id}`),
     }));
     const clipCmds: Command[] = clips.map((clip) => ({

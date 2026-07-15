@@ -105,7 +105,7 @@ export default function SystemPage() {
                       <div className="text-sm font-medium text-white">{ch.channelName}</div>
                       <div className="text-xs text-zinc-500">
                         구독자 {ch.subscribers ?? "?"}명
-                        {ch.connectedAt && ` · ${new Date(ch.connectedAt).toLocaleDateString("ko-KR")} 연결`}
+                        {ch.connectedAt && ` · ${new Date(Number(ch.connectedAt)).toLocaleDateString("ko-KR")} 연결`}
                       </div>
                     </div>
                   </div>
