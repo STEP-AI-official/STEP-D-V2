@@ -55,6 +55,7 @@
   .scene .dlg { margin-top: 5px; font-size: 12px; color: var(--text);
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 34px; }
   .scene .dlg.empty { color: var(--mut2); font-style: italic; }
+  .scene .names { margin-top: 5px; font-size: 11px; color: var(--good); font-weight: 600; }
 
   /* Transcript */
   .toolbar { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
@@ -162,6 +163,7 @@ function renderScenes() {
           <span class="badge ${s.has_dialogue ? 'talk' : 'silent'}">${s.has_dialogue ? '대사' : '무음'}</span>
         </div>
         ${tags ? `<div class="vtags">${tags}</div>` : ''}
+        ${(s.on_screen_names && s.on_screen_names.length) ? `<div class="names">🏷 ${s.on_screen_names.join(', ')}</div>` : ''}
         <div class="dlg ${s.text ? '' : 'empty'}">${s.text || '(대사 없음 — 화면으로 판단)'}</div>
       </div>
     </div>`;
