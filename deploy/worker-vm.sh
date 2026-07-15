@@ -64,7 +64,11 @@ else
 fi
 
 cd "$APP_DIR"
-pnpm install --filter @stepd/server... --frozen-lockfile
+# esbuild (via tsx) has a postinstall that pnpm 11 refuses to run non-interactively,
+# failing the whole install even though onlyBuiltDependencies lists it. Do it the way
+# the Dockerfile does: skip all build scripts, then rebuild just the one we need.
+pnpm install --filter @stepd/server... --frozen-lockfile --ignore-scripts
+pnpm rebuild esbuild
 
 echo "==> Secrets → /etc/stepd/worker.env"
 # Pulled from Secret Manager at provision time (VM SA needs secretmanager.secretAccessor).
