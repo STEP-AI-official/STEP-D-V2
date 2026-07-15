@@ -27,14 +27,14 @@ export interface NavItem {
 }
 
 export const NAV: NavItem[] = [
-  { href: "/", label: "오늘 할 일", icon: Inbox, badgeKey: "inbox" },
+  { href: "/", label: "대시보드", icon: Inbox, badgeKey: "inbox" },
   { href: "/programs", label: "콘텐츠", icon: LayoutGrid },
   { href: "/recommendations", label: "추천 & 채택", icon: Sparkles, badgeKey: "recommendations" },
   { href: "/clips", label: "클립", icon: Clapperboard },
-  { href: "/distribution", label: "배포", icon: Send, badgeKey: "distributionFailed" },
+  { href: "/distribution", label: "배포현황", icon: Send, badgeKey: "distributionFailed" },
   { href: "/analytics", label: "성과", icon: BarChart3, roles: ["admin", "superadmin"] },
   { href: "/channels", label: "채널 트렌드", icon: TrendingUp, roles: ["admin", "superadmin"] },
-  { href: "/system", label: "시스템", icon: Settings, roles: ["admin", "superadmin"] },
+  { href: "/system", label: "배포채널", icon: Settings, roles: ["admin", "superadmin"] },
 ];
 
 export function navForRole(role: Role): NavItem[] {

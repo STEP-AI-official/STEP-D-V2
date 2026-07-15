@@ -56,8 +56,8 @@ export default function SystemPage() {
   return (
     <>
       <PageHeader
-        title="시스템"
-        description="파이프라인 헬스, 채널 연동(YouTube/Meta), SMR 피드, 계정·역할, 파일 관리."
+        title="배포채널"
+        description="콘텐츠를 배포·분석할 채널을 연동하고 관리합니다 (YouTube 등)."
       />
 
       {/* YouTube 채널 연동 */}
