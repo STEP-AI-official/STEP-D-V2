@@ -20,7 +20,7 @@ export function LegalPage({
       <div className="mx-auto max-w-3xl px-6 py-16">
         <header className="mb-12 border-b border-zinc-800 pb-8">
           <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-300 transition">
-            STEP-D
+            STEP D
           </Link>
           <h1 className="mt-3 text-3xl font-bold text-white">{title}</h1>
           <p className="mt-2 text-sm text-zinc-500">최종 수정일: {updated}</p>

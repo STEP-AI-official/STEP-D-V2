@@ -5,8 +5,8 @@ import { SessionProvider } from "@/lib/auth";
 import { ToastProvider } from "@/components/ui/toast";
 
 export const metadata: Metadata = {
-  title: "STEP-D — 스튜디오",
-  description: "STEP D 콘텐츠 제작·배포 스튜디오 (UX 재설계)",
+  title: "STEP D — 스튜디오",
+  description: "STEP D 콘텐츠 제작·배포 스튜디오",
 };
 
 // Resolve theme before first paint to avoid a flash of the wrong theme.

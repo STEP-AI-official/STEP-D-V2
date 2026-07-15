@@ -1,8 +1,8 @@
 import { LegalPage } from "@/components/legal-page";
 
 export const metadata = {
-  title: "개인정보처리방침 — STEP-D",
-  description: "STEP-D가 YouTube 채널 데이터를 어떻게 수집·이용·보관하는지 설명합니다.",
+  title: "개인정보처리방침 — STEP D",
+  description: "STEP D가 YouTube 채널 데이터를 어떻게 수집·이용·보관하는지 설명합니다.",
 };
 
 export default function PrivacyPage() {
@@ -10,7 +10,7 @@ export default function PrivacyPage() {
     <LegalPage title="개인정보처리방침" updated="2026년 7월 14일">
       <section>
         <p>
-          STEP AI(이하 &ldquo;회사&rdquo;)는 콘텐츠 분석 서비스 STEP-D(이하 &ldquo;서비스&rdquo;)를 운영합니다.
+          STEP AI(이하 &ldquo;회사&rdquo;)는 콘텐츠 분석 서비스 STEP D(이하 &ldquo;서비스&rdquo;)를 운영합니다.
           본 방침은 이용자가 자신의 YouTube 채널을 서비스에 연결할 때 회사가 어떤 데이터를
           수집하고, 무엇에 쓰며, 어떻게 보관·삭제하는지 설명합니다.
         </p>
@@ -75,7 +75,7 @@ export default function PrivacyPage() {
       <section>
         <h2>4. Google 사용자 데이터 정책 준수 (Limited Use)</h2>
         <p>
-          STEP-D가 Google API로부터 받은 정보의 이용 및 다른 앱으로의 전송은, 제한적 사용(Limited Use)
+          STEP D가 Google API로부터 받은 정보의 이용 및 다른 앱으로의 전송은, 제한적 사용(Limited Use)
           요건을 포함한{" "}
           <a
             href="https://developers.google.com/terms/api-services-user-data-policy"
@@ -87,7 +87,7 @@ export default function PrivacyPage() {
           을 준수합니다.
         </p>
         <p className="text-sm text-zinc-500">
-          STEP-D&rsquo;s use and transfer of information received from Google APIs to any other app
+          STEP D&rsquo;s use and transfer of information received from Google APIs to any other app
           will adhere to the{" "}
           <a
             href="https://developers.google.com/terms/api-services-user-data-policy"
@@ -130,7 +130,7 @@ export default function PrivacyPage() {
             <a href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">
               Google 계정 권한 관리
             </a>{" "}
-            페이지에서 STEP-D의 접근 권한을 직접 해제
+            페이지에서 STEP D의 접근 권한을 직접 해제
           </li>
           <li>
             <a href="mailto:hkj@stepai.kr">hkj@stepai.kr</a> 로 삭제를 요청 — 확인 후 해당 채널의

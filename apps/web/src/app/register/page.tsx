@@ -163,7 +163,7 @@ function IdleCard() {
     <div className="rounded-3xl border border-white/10 bg-white/[0.03] backdrop-blur-xl p-8 shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-center mb-6">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
-          <Sparkles className="w-3.5 h-3.5 text-indigo-400" /> STEP-D 크리에이터 채널 분석
+          <Sparkles className="w-3.5 h-3.5 text-indigo-400" /> STEP D 크리에이터 채널 분석
         </span>
       </div>
 
@@ -171,7 +171,7 @@ function IdleCard() {
         내 유튜브 채널,<br />지금 바로 분석해요
       </h1>
       <p className="mt-3 text-center text-sm text-zinc-400 leading-relaxed">
-        구글 로그인 한 번이면 끝.<br />STEP-D가 채널 성과를 자동으로 분석해 드립니다.
+        구글 로그인 한 번이면 끝.<br />STEP D가 채널 성과를 자동으로 분석해 드립니다.
       </p>
 
       <button
@@ -335,7 +335,7 @@ function DoneCard(p: {
       </div>
 
       <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-center">
-        <p className="text-sm text-zinc-300">STEP-D 팀이 결과를 확인하고 곧 연락드릴게요.</p>
+        <p className="text-sm text-zinc-300">STEP D 팀이 결과를 확인하고 곧 연락드릴게요.</p>
         <p className="mt-1 text-xs text-zinc-500">이 창은 닫으셔도 됩니다.</p>
       </div>
     </div>

@@ -1,8 +1,8 @@
 import { LegalPage } from "@/components/legal-page";
 
 export const metadata = {
-  title: "서비스 이용약관 — STEP-D",
-  description: "STEP-D 콘텐츠 분석 서비스의 이용 조건입니다.",
+  title: "서비스 이용약관 — STEP D",
+  description: "STEP D 콘텐츠 분석 서비스의 이용 조건입니다.",
 };
 
 export default function TermsPage() {
@@ -11,7 +11,7 @@ export default function TermsPage() {
       <section>
         <h2>1. 서비스 개요</h2>
         <p>
-          STEP-D(이하 &ldquo;서비스&rdquo;)는 STEP AI(이하 &ldquo;회사&rdquo;)가 제공하는 콘텐츠 분석
+          STEP D(이하 &ldquo;서비스&rdquo;)는 STEP AI(이하 &ldquo;회사&rdquo;)가 제공하는 콘텐츠 분석
           서비스입니다. 이용자가 자신의 YouTube 채널을 연결하면, 서비스는 해당 채널의 성과 지표를
           조회하여 분석 리포트와 콘텐츠 추천을 제공합니다.
         </p>

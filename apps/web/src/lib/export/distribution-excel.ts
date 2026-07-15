@@ -93,7 +93,7 @@ function addYoutubeMetadataSheets(
       { header: "Youtube url", key: "url", width: 32 },
       { header: "ID", key: "videoId", width: 14 },
       { header: "내용", key: "synopsis", width: 50 },
-      { header: "STEPD 가동여부", key: "stepdOperated", width: 14 },
+      { header: "STEP D 가동여부", key: "stepdOperated", width: 14 },
     ];
     sheet.getRow(1).font = { bold: true };
 
@@ -185,7 +185,7 @@ export async function exportDistributionExcel(
 ): Promise<ExportResult> {
   const ExcelJS = (await import("exceljs")).default;
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "STEP-D";
+  workbook.creator = "STEP D";
 
   const recordRows = addDistributionRecordsSheet(workbook, data);
   const youtubeRows = addYoutubeMetadataSheets(workbook, data);

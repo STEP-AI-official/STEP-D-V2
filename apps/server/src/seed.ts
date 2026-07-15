@@ -1,18 +1,15 @@
 /**
- * Minimal seed data for a fresh database.
- * Only used when the entities table is empty.
+ * Seed data for a fresh database.
+ * Only applied when the entities table is empty (see db-pg.ts seedIfEmpty).
+ * Intentionally empty: production starts with no demo content — real programs,
+ * episodes, and clips are created by actual uploads. The app renders clean
+ * empty states when there is nothing yet.
  */
 export const seed = {
-  programs: [
-    { id: "p_demo", title: "시범 프로그램", targetAge: 7 },
-  ],
-  episodes: [
-    { id: "e_demo", programId: "p_demo", programTitle: "시범 프로그램", title: "시범 에피소드", targetAge: 7 },
-  ],
+  programs: [],
+  episodes: [],
   recommendations: [],
   clips: [],
   jobs: [],
-  connections: [
-    { id: "c_demo", from: "e_demo", to: "p_demo", type: "belongs_to" },
-  ],
+  connections: [],
 };

@@ -53,10 +53,7 @@ export function Sidebar() {
         )}
       >
         <Link href="/" className="flex h-14 items-center gap-2 px-5" aria-label="홈으로">
-          <span className="text-lg font-bold tracking-tight">STEPD</span>
-          <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold text-secondary-foreground">
-            v2
-          </span>
+          <span className="text-lg font-bold tracking-tight">STEP D</span>
         </Link>
 
         <nav className="flex-1 space-y-0.5 px-2 py-2">
