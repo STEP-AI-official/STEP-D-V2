@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS channel_videos (
   viewCount    BIGINT NOT NULL DEFAULT 0,
   likeCount    BIGINT NOT NULL DEFAULT 0,
   commentCount BIGINT NOT NULL DEFAULT 0,
-  lastSynced   BIGINT NOT NULL
+  lastSynced   BIGINT NOT NULL,
+  isShort      BOOLEAN NOT NULL DEFAULT FALSE  -- durationSec <= SHORTS_MAX_DURATION_SEC (config.ts)
 );
 
 CREATE TABLE IF NOT EXISTS video_stats (
@@ -77,6 +78,39 @@ CREATE TABLE IF NOT EXISTS video_stats (
   commentCount BIGINT NOT NULL DEFAULT 0
 );
 
+-- Per-video analytics snapshot (YouTube Analytics API, filters=video==id). Latest
+-- only: each refresh overwrites the row.
+CREATE TABLE IF NOT EXISTS video_analytics (
+  videoId        TEXT PRIMARY KEY,
+  channelId      TEXT NOT NULL,
+  fetchedAt      BIGINT NOT NULL,
+  summary        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  trafficSources JSONB NOT NULL DEFAULT '[]'::jsonb,
+  demographics   JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+-- Retention curve: [{ratio, watchRatio, relative}] along 0→1. Latest curve per video.
+CREATE TABLE IF NOT EXISTS video_retention (
+  videoId   TEXT PRIMARY KEY,
+  channelId TEXT NOT NULL,
+  fetchedAt BIGINT NOT NULL,
+  curve     JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+-- Top comment threads per video (Data API, one page). Keyed by comment id.
+CREATE TABLE IF NOT EXISTS video_comments (
+  id          TEXT PRIMARY KEY,
+  videoId     TEXT NOT NULL,
+  channelId   TEXT NOT NULL,
+  author      TEXT NOT NULL DEFAULT '',
+  text        TEXT NOT NULL DEFAULT '',
+  likeCount   BIGINT NOT NULL DEFAULT 0,
+  publishedAt TEXT NOT NULL,
+  fetchedAt   BIGINT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_channel_videos_channel ON channel_videos(channelId);
 CREATE INDEX IF NOT EXISTS idx_video_stats_video ON video_stats(videoId);
 CREATE INDEX IF NOT EXISTS idx_video_stats_snapshot ON video_stats(snapshotAt);
+CREATE INDEX IF NOT EXISTS idx_video_analytics_channel ON video_analytics(channelId);
+CREATE INDEX IF NOT EXISTS idx_video_comments_video ON video_comments(videoId);

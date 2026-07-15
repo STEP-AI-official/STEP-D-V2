@@ -1,5 +1,7 @@
 # STEP-D AI 파이프라인 구현 계획
 
+> 상위 확장: [context-engine-plan.md](context-engine-plan.md) — 인물·서사 컨텍스트 엔진(CX 트랙). 객체인식 기술 선정: [object-detection-research.md](object-detection-research.md)
+
 > 2026-07-14 작성. 발명신고서(구성 A~J)를 실제 제품으로 구현하기 위한 빌드/오픈소스/API 결정.
 > 전제: AI는 **관리형 API 위주**(GPU 자체 운영 없음), 현 Cloud Run + Cloud SQL + GCS 구조 유지.
 

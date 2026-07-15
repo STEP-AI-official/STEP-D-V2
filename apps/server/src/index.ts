@@ -39,6 +39,11 @@ import {
   getChannelViewTrend,
   getChannelTrendSummary,
   getChannelAnalytics,
+  markContentAnalysisPending,
+  getContentAnalysis,
+  getVideoAnalytics,
+  getVideoRetention,
+  listVideoComments,
   getPool,
   type MediaRow,
   type YouTubeChannel,
@@ -155,6 +160,13 @@ app.get("/api/media/:id/thumb", async (c) => {
   });
 });
 
+// ── content analysis result (AI pipeline: transcript + scenes + shorts) ─────────
+app.get("/api/media/:id/analysis", async (c) => {
+  const row = await getContentAnalysis(c.req.param("id"));
+  if (!row) return c.json({ status: "none" }, 404);
+  return c.json(row);
+});
+
 // ── upload a real video → episode + master media + heuristic recommendations ───
 app.post("/api/media/upload", async (c) => {
   const body = await c.req.parseBody();
@@ -255,6 +267,15 @@ app.post("/api/media/upload", async (c) => {
   const recs = buildRecommendations(episodeId, meta.durationSec || 300);
   for (const r of recs) {
     await prependEntity("recommendation", r.id, r);
+  }
+
+  // Kick the AI content pipeline (STT→refine→scenes→vision→shorts) on the worker.
+  // Enqueue = one INSERT; the GPU-free pipeline runs off-request on the worker VM.
+  try {
+    await markContentAnalysisPending(mediaId);
+    await enqueue("content.analyze", { mediaId }, { dedupeKey: `content.analyze:${mediaId}` });
+  } catch (err) {
+    console.error("[upload] failed to enqueue content.analyze", err);
   }
 
   return c.json({ media: mediaPublic(row), episode, recommendations: recs });
@@ -399,6 +420,27 @@ app.post("/api/distributions/retry", async (c) => {
   );
   await putEntity("clip", b.clipId, { ...clip, distributions: dists });
   return c.json({ ok: true });
+});
+
+// ── link a clip to the YouTube video it was published as ──────────────────────
+//
+// The minimal join between our clip metadata and the per-video YouTube metrics
+// (video_analytics / video_retention / video_comments). Manual for now — pass the
+// published videoId; pass null/"" to unlink. We don't require the video to be synced
+// yet, so `videoKnown` tells the caller whether metrics already exist for it.
+app.patch("/api/clips/:id/link-video", async (c) => {
+  const clipId = c.req.param("id");
+  const clip = await getEntity<any>("clip", clipId);
+  if (!clip) return c.json({ error: "clip not found" }, 404);
+
+  const body = await c.req.json<{ videoId?: string | null }>().catch(() => ({ videoId: undefined }));
+  if (!("videoId" in body)) return c.json({ error: "videoId is required" }, 400);
+
+  const videoId = body.videoId ? String(body.videoId).trim() : null;
+  const videoKnown = videoId ? Boolean(await getChannelVideoByVideoId(videoId)) : false;
+
+  await putEntity("clip", clipId, { ...clip, publishedVideoId: videoId });
+  return c.json({ ok: true, clipId, publishedVideoId: videoId, videoKnown });
 });
 
 // ── YouTube OAuth & channel management ────────────────────────────────────────
@@ -857,6 +899,33 @@ app.get("/api/youtube/trends/video/:videoId", async (c) => {
   return c.json({ video, trend });
 });
 
+/**
+ * Everything the video.analyze / video.comments jobs collected for one upload, served
+ * from our DB (no live YouTube call). Empty sections just mean the job hasn't run yet
+ * or YouTube had no data for that report.
+ */
+app.get("/api/youtube/videos/:videoId/analytics", async (c) => {
+  const videoId = c.req.param("videoId");
+  const video = await getChannelVideoByVideoId(videoId);
+  if (!video) return c.json({ error: "video not found" }, 404);
+
+  const [analytics, retention, comments] = await Promise.all([
+    getVideoAnalytics(videoId),
+    getVideoRetention(videoId),
+    listVideoComments(videoId),
+  ]);
+
+  return c.json({
+    video,
+    summary: analytics?.summary ?? {},
+    trafficSources: analytics?.trafficSources ?? [],
+    demographics: analytics?.demographics ?? [],
+    retention: retention?.curve ?? [],
+    comments,
+    fetchedAt: analytics?.fetchedAt ?? null,
+  });
+});
+
 app.delete("/api/youtube/videos/:videoId", async (c) => {
   await deleteChannelVideo(c.req.param("videoId"));
   return c.json({ ok: true });
@@ -885,6 +954,7 @@ app.get("/api/lab/data", (c) => {
   const pipe = (labJson("pipeline_output.json") as any) || {};
   const refined = (labJson("refined_segments.json") as any[]) || [];
   const scenes = (labJson("scenes.json") as any[]) || [];
+  const shorts = (labJson("shorts.json") as any[]) || [];
   const raw = pipe.segments || [];
   const videoName = pipe.video ? path.basename(pipe.video) : null;
   const talk = scenes.filter((s) => s?.has_dialogue).length;
@@ -898,10 +968,12 @@ app.get("/api/lab/data", (c) => {
       scenes: scenes.length,
       scenes_dialogue: talk,
       scenes_silent: scenes.length - talk,
+      shorts: shorts.length,
     },
     raw,
     refined,
     scenes,
+    shorts,
   });
 });
 

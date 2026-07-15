@@ -6,6 +6,7 @@
  */
 import pg from "pg";
 import { seed } from "./seed.ts";
+import { SHORTS_MAX_DURATION_SEC } from "./config.ts";
 
 const { Pool } = pg;
 
@@ -145,9 +146,44 @@ async function migrate(): Promise<void> {
       PRIMARY KEY (channelId, day)
     );
 
+    -- Per-video analytics snapshot (YouTube Analytics API, filters=video==id). One
+    -- row per video, overwritten on each refresh — we keep the latest, not a history.
+    CREATE TABLE IF NOT EXISTS video_analytics (
+      videoId        TEXT PRIMARY KEY,
+      channelId      TEXT NOT NULL,
+      fetchedAt      BIGINT NOT NULL,
+      summary        JSONB NOT NULL DEFAULT '{}'::jsonb,
+      trafficSources JSONB NOT NULL DEFAULT '[]'::jsonb,
+      demographics   JSONB NOT NULL DEFAULT '[]'::jsonb
+    );
+
+    -- Retention curve for a video: [{ratio, watchRatio, relative}] along 0→1.
+    -- Latest curve only (upsert by videoId), same rationale as video_analytics.
+    CREATE TABLE IF NOT EXISTS video_retention (
+      videoId   TEXT PRIMARY KEY,
+      channelId TEXT NOT NULL,
+      fetchedAt BIGINT NOT NULL,
+      curve     JSONB NOT NULL DEFAULT '[]'::jsonb
+    );
+
+    -- Top comment threads per video (Data API commentThreads, one page). Keyed by the
+    -- comment id so a re-fetch refreshes like counts instead of duplicating rows.
+    CREATE TABLE IF NOT EXISTS video_comments (
+      id          TEXT PRIMARY KEY,
+      videoId     TEXT NOT NULL,
+      channelId   TEXT NOT NULL,
+      author      TEXT NOT NULL DEFAULT '',
+      text        TEXT NOT NULL DEFAULT '',
+      likeCount   BIGINT NOT NULL DEFAULT 0,
+      publishedAt TEXT NOT NULL,
+      fetchedAt   BIGINT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_channel_videos_channel ON channel_videos(channelId);
     CREATE INDEX IF NOT EXISTS idx_video_stats_video ON video_stats(videoId);
     CREATE INDEX IF NOT EXISTS idx_video_stats_snapshot ON video_stats(snapshotAt);
+    CREATE INDEX IF NOT EXISTS idx_video_analytics_channel ON video_analytics(channelId);
+    CREATE INDEX IF NOT EXISTS idx_video_comments_video ON video_comments(videoId);
   `);
 
   // Added after the table shipped, so existing deployments need them backfilled.
@@ -157,6 +193,25 @@ async function migrate(): Promise<void> {
     ALTER TABLE youtube_channels ADD COLUMN IF NOT EXISTS lastSyncedAt   BIGINT;
     ALTER TABLE youtube_channels ADD COLUMN IF NOT EXISTS lastAnalyzedAt BIGINT;
     ALTER TABLE youtube_channels ADD COLUMN IF NOT EXISTS lastError      TEXT;
+  `);
+
+  // Shorts flag — derived from durationSec at write time (see upsertChannelVideo).
+  await pool.query(`
+    ALTER TABLE channel_videos ADD COLUMN IF NOT EXISTS isShort BOOLEAN NOT NULL DEFAULT FALSE;
+  `);
+
+  // Content pipeline results (per uploaded media): the analyze.py output blob
+  // (transcript + scenes + shorts). Kept as JSONB — the shape evolves with the
+  // pipeline and the admin/web read it whole.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS content_analysis (
+      mediaId    TEXT PRIMARY KEY,
+      status     TEXT NOT NULL DEFAULT 'pending',
+      data       JSONB,
+      error      TEXT,
+      createdAt  BIGINT NOT NULL,
+      updatedAt  BIGINT NOT NULL
+    );
   `);
 }
 
@@ -371,6 +426,8 @@ export interface ChannelVideo {
   likeCount: number;
   commentCount: number;
   lastSynced: number;
+  /** Derived from durationSec on write; ignored if supplied to upsertChannelVideo. */
+  isShort?: boolean;
 }
 
 export interface VideoStat {
@@ -384,9 +441,12 @@ export interface VideoStat {
 }
 
 export async function upsertChannelVideo(v: ChannelVideo): Promise<void> {
+  // isShort is derived here so the threshold lives in exactly one place (config.ts),
+  // not at each call site. durationSec 0 means "unknown" — not a Short.
+  const isShort = v.durationSec > 0 && v.durationSec <= SHORTS_MAX_DURATION_SEC;
   await pool.query(
-    `INSERT INTO channel_videos (id, channelId, videoId, title, description, publishedAt, durationSec, thumbnail, viewCount, likeCount, commentCount, lastSynced)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    `INSERT INTO channel_videos (id, channelId, videoId, title, description, publishedAt, durationSec, thumbnail, viewCount, likeCount, commentCount, lastSynced, isShort)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (videoId) DO UPDATE SET
        title = EXCLUDED.title,
        description = EXCLUDED.description,
@@ -395,15 +455,16 @@ export async function upsertChannelVideo(v: ChannelVideo): Promise<void> {
        viewCount = EXCLUDED.viewCount,
        likeCount = EXCLUDED.likeCount,
        commentCount = EXCLUDED.commentCount,
-       lastSynced = EXCLUDED.lastSynced`,
+       lastSynced = EXCLUDED.lastSynced,
+       isShort = EXCLUDED.isShort`,
     [v.id, v.channelId, v.videoId, v.title, v.description, v.publishedAt,
-     v.durationSec, v.thumbnail, v.viewCount, v.likeCount, v.commentCount, v.lastSynced],
+     v.durationSec, v.thumbnail, v.viewCount, v.likeCount, v.commentCount, v.lastSynced, isShort],
   );
 }
 
 export async function listChannelVideos(channelId: string): Promise<ChannelVideo[]> {
   const { rows } = await pool.query(
-    `SELECT id, channelid AS "channelId", videoid AS "videoId", title, description, publishedat AS "publishedAt", durationsec AS "durationSec", thumbnail, viewcount AS "viewCount", likecount AS "likeCount", commentcount AS "commentCount", lastsynced AS "lastSynced" FROM channel_videos WHERE channelId = $1 ORDER BY publishedAt DESC`,
+    `SELECT id, channelid AS "channelId", videoid AS "videoId", title, description, publishedat AS "publishedAt", durationsec AS "durationSec", thumbnail, viewcount AS "viewCount", likecount AS "likeCount", commentcount AS "commentCount", lastsynced AS "lastSynced", isshort AS "isShort" FROM channel_videos WHERE channelId = $1 ORDER BY publishedAt DESC`,
     [channelId],
   );
   return rows as unknown as ChannelVideo[];
@@ -411,7 +472,7 @@ export async function listChannelVideos(channelId: string): Promise<ChannelVideo
 
 export async function getChannelVideoByVideoId(videoId: string): Promise<ChannelVideo | undefined> {
   const { rows } = await pool.query(
-    `SELECT id, channelid AS "channelId", videoid AS "videoId", title, description, publishedat AS "publishedAt", durationsec AS "durationSec", thumbnail, viewcount AS "viewCount", likecount AS "likeCount", commentcount AS "commentCount", lastsynced AS "lastSynced" FROM channel_videos WHERE videoId = $1`,
+    `SELECT id, channelid AS "channelId", videoid AS "videoId", title, description, publishedat AS "publishedAt", durationsec AS "durationSec", thumbnail, viewcount AS "viewCount", likecount AS "likeCount", commentcount AS "commentCount", lastsynced AS "lastSynced", isshort AS "isShort" FROM channel_videos WHERE videoId = $1`,
     [videoId],
   );
   return rows[0] as ChannelVideo | undefined;
@@ -420,11 +481,17 @@ export async function getChannelVideoByVideoId(videoId: string): Promise<Channel
 export async function deleteChannelVideo(videoId: string): Promise<void> {
   await pool.query("DELETE FROM channel_videos WHERE videoId = $1", [videoId]);
   await pool.query("DELETE FROM video_stats WHERE videoId = $1", [videoId]);
+  await pool.query("DELETE FROM video_analytics WHERE videoId = $1", [videoId]);
+  await pool.query("DELETE FROM video_retention WHERE videoId = $1", [videoId]);
+  await pool.query("DELETE FROM video_comments WHERE videoId = $1", [videoId]);
 }
 
 export async function deleteChannelVideosForChannel(channelId: string): Promise<void> {
   await pool.query("DELETE FROM channel_videos WHERE channelId = $1", [channelId]);
   await pool.query("DELETE FROM video_stats WHERE channelId = $1", [channelId]);
+  await pool.query("DELETE FROM video_analytics WHERE channelId = $1", [channelId]);
+  await pool.query("DELETE FROM video_retention WHERE channelId = $1", [channelId]);
+  await pool.query("DELETE FROM video_comments WHERE channelId = $1", [channelId]);
 }
 
 export async function insertVideoStat(s: VideoStat): Promise<void> {
@@ -515,6 +582,114 @@ export async function getChannelTrendSummary(channelId: string, days = 30) {
   };
 }
 
+// ── per-video analytics ─────────────────────────────────────────────────────────
+
+export interface VideoAnalytics {
+  videoId: string;
+  channelId: string;
+  fetchedAt: number;
+  summary: Record<string, number>;
+  trafficSources: { source: string; views: number; estimatedMinutesWatched: number }[];
+  demographics: { ageGroup: string; gender: string; viewerPercentage: number }[];
+}
+
+export interface VideoRetention {
+  videoId: string;
+  channelId: string;
+  fetchedAt: number;
+  curve: { ratio: number; watchRatio: number; relative: number }[];
+}
+
+export interface VideoComment {
+  id: string;
+  videoId: string;
+  channelId: string;
+  author: string;
+  text: string;
+  likeCount: number;
+  publishedAt: string;
+  fetchedAt: number;
+}
+
+export async function upsertVideoAnalytics(a: VideoAnalytics): Promise<void> {
+  await pool.query(
+    `INSERT INTO video_analytics (videoId, channelId, fetchedAt, summary, trafficSources, demographics)
+     VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb)
+     ON CONFLICT (videoId) DO UPDATE SET
+       channelId      = EXCLUDED.channelId,
+       fetchedAt      = EXCLUDED.fetchedAt,
+       summary        = EXCLUDED.summary,
+       trafficSources = EXCLUDED.trafficSources,
+       demographics   = EXCLUDED.demographics`,
+    [a.videoId, a.channelId, a.fetchedAt, JSON.stringify(a.summary),
+     JSON.stringify(a.trafficSources), JSON.stringify(a.demographics)],
+  );
+}
+
+export async function getVideoAnalytics(videoId: string): Promise<VideoAnalytics | undefined> {
+  const { rows } = await pool.query(
+    `SELECT videoid AS "videoId", channelid AS "channelId", fetchedat AS "fetchedAt",
+            summary, trafficsources AS "trafficSources", demographics
+       FROM video_analytics WHERE videoId = $1`,
+    [videoId],
+  );
+  return rows[0] as VideoAnalytics | undefined;
+}
+
+export async function upsertVideoRetention(r: VideoRetention): Promise<void> {
+  await pool.query(
+    `INSERT INTO video_retention (videoId, channelId, fetchedAt, curve)
+     VALUES ($1,$2,$3,$4::jsonb)
+     ON CONFLICT (videoId) DO UPDATE SET
+       channelId = EXCLUDED.channelId,
+       fetchedAt = EXCLUDED.fetchedAt,
+       curve     = EXCLUDED.curve`,
+    [r.videoId, r.channelId, r.fetchedAt, JSON.stringify(r.curve)],
+  );
+}
+
+export async function getVideoRetention(videoId: string): Promise<VideoRetention | undefined> {
+  const { rows } = await pool.query(
+    `SELECT videoid AS "videoId", channelid AS "channelId", fetchedat AS "fetchedAt", curve
+       FROM video_retention WHERE videoId = $1`,
+    [videoId],
+  );
+  return rows[0] as VideoRetention | undefined;
+}
+
+export async function upsertVideoComment(cm: VideoComment): Promise<void> {
+  await pool.query(
+    `INSERT INTO video_comments (id, videoId, channelId, author, text, likeCount, publishedAt, fetchedAt)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (id) DO UPDATE SET
+       author      = EXCLUDED.author,
+       text        = EXCLUDED.text,
+       likeCount   = EXCLUDED.likeCount,
+       fetchedAt   = EXCLUDED.fetchedAt`,
+    [cm.id, cm.videoId, cm.channelId, cm.author, cm.text, cm.likeCount, cm.publishedAt, cm.fetchedAt],
+  );
+}
+
+export async function listVideoComments(videoId: string, limit = 100): Promise<VideoComment[]> {
+  const { rows } = await pool.query(
+    `SELECT id, videoid AS "videoId", channelid AS "channelId", author, text,
+            likecount AS "likeCount", publishedat AS "publishedAt", fetchedat AS "fetchedAt"
+       FROM video_comments WHERE videoId = $1 ORDER BY likeCount DESC LIMIT $2`,
+    [videoId, limit],
+  );
+  return rows as unknown as VideoComment[];
+}
+
+/** Most recent comment-collection time for a video — drives the daily refresh gate. */
+export async function getLatestCommentFetchedAt(videoId: string): Promise<number | null> {
+  const { rows } = await pool.query(
+    `SELECT MAX(fetchedAt)::bigint AS "fetchedAt" FROM video_comments WHERE videoId = $1`,
+    [videoId],
+  );
+  const v = rows[0]?.fetchedAt;
+  return v == null ? null : Number(v);
+}
+
 // ── media ──────────────────────────────────────────────────────────────────────
 
 export async function insertMedia(m: MediaRow): Promise<void> {
@@ -581,6 +756,59 @@ export function mediaPublic(m: MediaRow) {
     thumbUrl: m.thumbPath ? `/api/media/${m.id}/thumb` : null,
     createdAt: m.createdAt,
   };
+}
+
+// ── content analysis (uploaded media pipeline results) ─────────────────────────
+
+export interface ContentAnalysis {
+  mediaId: string;
+  status: string;
+  data: unknown | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Mark a media as queued/processing before the worker starts. */
+export async function markContentAnalysisPending(mediaId: string): Promise<void> {
+  const now = Date.now();
+  await pool.query(
+    `INSERT INTO content_analysis (mediaId, status, createdAt, updatedAt)
+     VALUES ($1, 'pending', $2, $2)
+     ON CONFLICT (mediaId) DO UPDATE SET status = 'pending', error = NULL, updatedAt = $2`,
+    [mediaId, now],
+  );
+}
+
+/** Store the finished analyze.py result (or an error). */
+export async function saveContentAnalysis(
+  mediaId: string,
+  result: { data?: unknown; error?: string },
+): Promise<void> {
+  const now = Date.now();
+  await pool.query(
+    `INSERT INTO content_analysis (mediaId, status, data, error, createdAt, updatedAt)
+     VALUES ($1, $2, $3::jsonb, $4, $5, $5)
+     ON CONFLICT (mediaId) DO UPDATE SET
+       status = EXCLUDED.status, data = EXCLUDED.data, error = EXCLUDED.error, updatedAt = $5`,
+    [
+      mediaId,
+      result.error ? "failed" : "done",
+      result.data ? JSON.stringify(result.data) : null,
+      result.error ?? null,
+      now,
+    ],
+  );
+}
+
+export async function getContentAnalysis(mediaId: string): Promise<ContentAnalysis | undefined> {
+  const { rows } = await pool.query(
+    `SELECT mediaid AS "mediaId", status, data, error,
+            createdat AS "createdAt", updatedat AS "updatedAt"
+       FROM content_analysis WHERE mediaId = $1`,
+    [mediaId],
+  );
+  return rows[0] as ContentAnalysis | undefined;
 }
 
 // ── cleanup ────────────────────────────────────────────────────────────────────

@@ -34,3 +34,6 @@ gcp-keys/
 # npm lockfile — this repo is a pnpm workspace (root pnpm-lock.yaml)
 package-lock.json
 .vercel
+
+.vercel
+.env*

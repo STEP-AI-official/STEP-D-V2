@@ -11,7 +11,14 @@
  */
 import { getPool } from "./db-pg.ts";
 
-export type JobType = "channel.analyze";
+export type JobType =
+  | "channel.analyze"
+  | "video.analyze"
+  | "video.hotwatch"
+  | "video.comments"
+  // Content pipeline (uploaded episodes): STT → refine → scenes → vision → shorts.
+  // Distinct from the video.* YouTube-analytics jobs above.
+  | "content.analyze";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 

@@ -34,7 +34,7 @@ export const DEFAULT_ANALYTICS_METRICS =
  */
 export async function fetchChannelAnalytics(
   accessToken: string,
-  opts: { startDate: string; endDate: string; metrics?: string; dimensions?: string; sort?: string; maxResults?: number },
+  opts: { startDate: string; endDate: string; metrics?: string; dimensions?: string; sort?: string; maxResults?: number; filters?: string },
 ): Promise<AnalyticsReport> {
   const params = new URLSearchParams({
     ids: "channel==MINE",
@@ -45,6 +45,8 @@ export async function fetchChannelAnalytics(
   if (opts.dimensions) params.set("dimensions", opts.dimensions);
   if (opts.sort) params.set("sort", opts.sort);
   if (opts.maxResults) params.set("maxResults", String(opts.maxResults));
+  // e.g. `video==VIDEO_ID` — scopes a channel report to a single upload.
+  if (opts.filters) params.set("filters", opts.filters);
 
   const res = await fetch(`https://youtubeanalytics.googleapis.com/v2/reports?${params}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -257,7 +259,7 @@ async function fetchPlaylistItems(
 }
 
 /** Fetch video statistics + duration for a batch of video IDs (max 50 per call). */
-async function fetchVideosBatch(
+export async function fetchVideosBatch(
   accessToken: string,
   videoIds: string[],
 ): Promise<Map<string, { viewCount: number; likeCount: number; commentCount: number; durationSec: number }>> {
@@ -347,4 +349,155 @@ export async function syncChannelVideos(
   });
 
   return { videos };
+}
+
+// ── per-video analytics ─────────────────────────────────────────────────────────
+
+export interface VideoAnalyticsResult {
+  /** Single-row lifetime summary: views, averageViewDuration, likes, shares, … */
+  summary: Record<string, number>;
+  /** Retention curve, 0→1 along the video. `relative` is relativeRetentionPerformance. */
+  retention: { ratio: number; watchRatio: number; relative: number }[];
+  trafficSources: { source: string; views: number; estimatedMinutesWatched: number }[];
+  demographics: { ageGroup: string; gender: string; viewerPercentage: number }[];
+}
+
+function toNum(v: string | number | undefined): number {
+  const n = typeof v === "number" ? v : Number(v ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * A report YouTube answers with 400 means it will not compute that metric for this
+ * particular video — routine on low-traffic uploads (retention/relative performance
+ * need a minimum audience). Degrade that one report to empty so it doesn't sink the
+ * other three. 401 (token) and 403 (scope/quota) still bubble so the caller can
+ * refresh or back off.
+ */
+async function softReport(fn: () => Promise<AnalyticsReport>): Promise<AnalyticsReport | null> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof YouTubeApiError && err.status === 400) return null;
+    throw err;
+  }
+}
+
+/**
+ * Four Analytics reports for a single upload, all scoped by `filters=video==id`:
+ * retention curve, lifetime summary, traffic sources, and viewer demographics.
+ * Callers wrap this in `withAccessToken` so a mid-flight 401 refreshes and retries.
+ */
+export async function fetchVideoAnalytics(
+  accessToken: string,
+  videoId: string,
+  opts: { startDate: string; endDate: string },
+): Promise<VideoAnalyticsResult> {
+  const base = { startDate: opts.startDate, endDate: opts.endDate, filters: `video==${videoId}` };
+
+  const [summaryR, retentionR, trafficR, demoR] = await Promise.all([
+    softReport(() => fetchChannelAnalytics(accessToken, {
+      ...base,
+      metrics: "views,averageViewDuration,averageViewPercentage,subscribersGained,likes,shares",
+    })),
+    softReport(() => fetchChannelAnalytics(accessToken, {
+      ...base,
+      dimensions: "elapsedVideoTimeRatio",
+      metrics: "audienceWatchRatio,relativeRetentionPerformance",
+    })),
+    softReport(() => fetchChannelAnalytics(accessToken, {
+      ...base,
+      dimensions: "insightTrafficSourceType",
+      metrics: "views,estimatedMinutesWatched",
+    })),
+    softReport(() => fetchChannelAnalytics(accessToken, {
+      ...base,
+      dimensions: "ageGroup,gender",
+      metrics: "viewerPercentage",
+    })),
+  ]);
+
+  const summary: Record<string, number> = {};
+  const srow = summaryR?.rows[0];
+  if (srow) for (const k of Object.keys(srow)) summary[k] = toNum(srow[k]);
+
+  const retention = (retentionR?.rows ?? [])
+    .map((r) => ({
+      ratio: toNum(r.elapsedVideoTimeRatio),
+      watchRatio: toNum(r.audienceWatchRatio),
+      relative: toNum(r.relativeRetentionPerformance),
+    }))
+    .sort((a, b) => a.ratio - b.ratio);
+
+  const trafficSources = (trafficR?.rows ?? []).map((r) => ({
+    source: String(r.insightTrafficSourceType ?? ""),
+    views: toNum(r.views),
+    estimatedMinutesWatched: toNum(r.estimatedMinutesWatched),
+  }));
+
+  const demographics = (demoR?.rows ?? []).map((r) => ({
+    ageGroup: String(r.ageGroup ?? ""),
+    gender: String(r.gender ?? ""),
+    viewerPercentage: toNum(r.viewerPercentage),
+  }));
+
+  return { summary, retention, trafficSources, demographics };
+}
+
+// ── comments ─────────────────────────────────────────────────────────────────────
+
+export interface YtComment {
+  id: string;
+  author: string;
+  text: string;
+  likeCount: number;
+  publishedAt: string;
+}
+
+/**
+ * Top comment threads for one video — a single relevance-ranked page. We deliberately
+ * do not paginate: 100 comments is enough signal and every extra page is more quota.
+ * Returns [] when the uploader disabled comments (403 commentsDisabled) — that is a
+ * normal state, not a failure worth retrying.
+ */
+export async function fetchVideoComments(
+  accessToken: string,
+  videoId: string,
+  maxResults = 100,
+): Promise<YtComment[]> {
+  const params = new URLSearchParams({
+    part: "snippet",
+    videoId,
+    order: "relevance",
+    maxResults: String(maxResults),
+    textFormat: "plainText",
+  });
+  const res = await fetch(`https://www.googleapis.com/youtube/v3/commentThreads?${params}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 403 && body.includes("commentsDisabled")) return [];
+    throw new YouTubeApiError(res.status, `Comment threads failed (${res.status}): ${body}`);
+  }
+  const data = (await res.json()) as {
+    items?: {
+      snippet: {
+        topLevelComment: {
+          id: string;
+          snippet: { authorDisplayName: string; textDisplay: string; likeCount: number; publishedAt: string };
+        };
+      };
+    }[];
+  };
+  return (data.items ?? []).map((it) => {
+    const c = it.snippet.topLevelComment;
+    return {
+      id: c.id,
+      author: c.snippet.authorDisplayName,
+      text: c.snippet.textDisplay,
+      likeCount: Number(c.snippet.likeCount ?? 0),
+      publishedAt: c.snippet.publishedAt,
+    };
+  });
 }

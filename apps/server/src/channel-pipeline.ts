@@ -28,6 +28,8 @@ import {
   TokenRevokedError,
   type PersistTokens,
 } from "./youtube.ts";
+import { enqueue } from "./queue.ts";
+import { HOTWATCH_POLL_MS } from "./config.ts";
 
 /** Re-sync uploads this often. Each run costs Data API quota, so don't go below this. */
 const VIDEO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -162,6 +164,17 @@ async function syncVideos(
       lastSynced: now,
     };
     await upsertChannelVideo(row);
+
+    // First time we've ever seen this upload → kick off 48h high-density polling.
+    // Deduped so a second sync before the row is committed can't double-schedule; the
+    // hotwatch job itself decides when to stop (publish age) and re-enqueues meanwhile.
+    if (!existing) {
+      await enqueue(
+        "video.hotwatch",
+        { videoId: v.videoId, channelId: ch.channelId, publishedAt: v.publishedAt },
+        { dedupeKey: `video.hotwatch:${v.videoId}`, delayMs: HOTWATCH_POLL_MS },
+      );
+    }
 
     // One snapshot per hour at most — this table is the time series behind the trend charts.
     const last = await getLatestVideoStat(v.videoId);
