@@ -40,7 +40,13 @@
   .scene { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     overflow: hidden; cursor: pointer; transition: border-color .12s, transform .12s; }
   .scene:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .scene .thumb { position: relative; }
   .scene img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background:#000; }
+  .scene .vscore { position: absolute; top: 6px; right: 6px; font-size: 12px; font-weight: 700;
+    padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.7); color: #fff;
+    border: 1px solid rgba(255,255,255,.15); }
+  .scene .vtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .scene .vtag { font-size: 10px; padding: 1px 6px; border-radius: 20px; background: var(--panel2); color: var(--mut); }
   .scene .meta { padding: 8px 10px; }
   .scene .tr { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--mut2); }
   .scene .badge { font-size: 10px; padding: 1px 6px; border-radius: 20px; }
@@ -79,7 +85,15 @@
       <div class="tab on" data-p="scenes">장면 <span id="cnt-scenes"></span></div>
       <div class="tab" data-p="script">자막 <span id="cnt-script"></span></div>
     </div>
-    <div class="pane on" id="pane-scenes"><div class="grid" id="grid"></div></div>
+    <div class="pane on" id="pane-scenes">
+      <div class="toolbar">
+        <button id="sort-time" class="on">시간순</button>
+        <button id="sort-score">시각점수순</button>
+        <button id="filter-silent">무음만</button>
+        <span style="color:var(--mut2);font-size:12px" id="scene-note"></span>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
     <div class="pane" id="pane-script">
       <div class="toolbar">
         <button id="btn-refined" class="on">정제</button>
@@ -119,19 +133,39 @@ async function load() {
 
 function seek(t) { const p = $('#player'); p.currentTime = t + 0.05; p.play(); }
 
+let sceneSort = 'time', silentOnly = false;
+const scoreColor = v => v >= 70 ? '#4ade80' : v >= 45 ? '#fbbf24' : '#9a9aa6';
+
 function renderScenes() {
   const frameUrl = f => API + '/api/lab/frames/' + f.split('/').pop();
-  $('#grid').innerHTML = DATA.scenes.map(s => `
-    <div class="scene" onclick="seek(${s.start})">
-      ${s.frame ? `<img loading="lazy" src="${frameUrl(s.frame)}" alt="">` : '<div style="aspect-ratio:16/9;background:#000"></div>'}
+  let list = DATA.scenes.slice();
+  if (silentOnly) list = list.filter(s => !s.has_dialogue);
+  if (sceneSort === 'score') list.sort((a, b) => (b.vision_score ?? -1) - (a.vision_score ?? -1));
+
+  const scored = DATA.scenes.filter(s => s.vision_score != null).length;
+  $('#scene-note').textContent = scored ? `· 시각채점 ${scored}/${DATA.scenes.length}` : '· 시각채점 전 (core.vision 실행)';
+
+  $('#grid').innerHTML = list.map(s => {
+    const v = s.vision_score;
+    const badge = v != null
+      ? `<span class="vscore" style="color:${scoreColor(v)}">${v}</span>` : '';
+    const tags = (s.vision_tags || []).map(t => `<span class="vtag">${t}</span>`).join('');
+    return `
+    <div class="scene" onclick="seek(${s.start})" title="${(s.vision_reason || '').replace(/"/g, '&quot;')}">
+      <div class="thumb">
+        ${s.frame ? `<img loading="lazy" src="${frameUrl(s.frame)}" alt="">` : '<div style="aspect-ratio:16/9;background:#000"></div>'}
+        ${badge}
+      </div>
       <div class="meta">
         <div class="tr">
           <span>${fmt(s.start)}–${fmt(s.end)} · ${s.duration.toFixed(1)}s</span>
           <span class="badge ${s.has_dialogue ? 'talk' : 'silent'}">${s.has_dialogue ? '대사' : '무음'}</span>
         </div>
+        ${tags ? `<div class="vtags">${tags}</div>` : ''}
         <div class="dlg ${s.text ? '' : 'empty'}">${s.text || '(대사 없음 — 화면으로 판단)'}</div>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function renderScript() {
@@ -163,6 +197,15 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.pane').forEach(x => x.classList.remove('on'));
   t.classList.add('on'); $('#pane-' + t.dataset.p).classList.add('on');
 });
+// scene sort/filter
+$('#sort-time').onclick = () => { sceneSort='time'; sceneBtns(); renderScenes(); };
+$('#sort-score').onclick = () => { sceneSort='score'; sceneBtns(); renderScenes(); };
+$('#filter-silent').onclick = () => { silentOnly=!silentOnly; sceneBtns(); renderScenes(); };
+function sceneBtns() {
+  $('#sort-time').classList.toggle('on', sceneSort==='time');
+  $('#sort-score').classList.toggle('on', sceneSort==='score');
+  $('#filter-silent').classList.toggle('on', silentOnly);
+}
 // transcript toggles
 $('#btn-refined').onclick = () => { mode='refined'; diffOnly=false; toggles(); };
 $('#btn-raw').onclick = () => { mode='raw'; diffOnly=false; toggles(); };
