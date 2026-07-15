@@ -70,7 +70,7 @@ export default function LandingPage() {
       {/* HERO */}
       <header className="hero">
         <div className="wrap">
-          <span className="tag">KT ENA 방송 현장에서 운영 중</span>
+          <span className="tag">STEP D 방송 현장에서 운영 중</span>
           <h1>
             콘텐츠를 자산으로,
             <br />
@@ -94,7 +94,7 @@ export default function LandingPage() {
               <span className="dot" style={{ background: "#FEBC2E" }}></span>
               <span className="dot" style={{ background: "#28C840" }}></span>
               <span style={{ marginLeft: 12, fontSize: 12, color: "var(--mut2)" }}>
-                AENA ㆍ KT ENA 실제 운영 화면
+                STEP D 실제 운영 화면
               </span>
             </div>
             <div className="mock-body" style={{ padding: 0, display: "block" }}>
@@ -129,7 +129,7 @@ export default function LandingPage() {
           </div>
           <div className="stat">
             <div className="n grad-txt">5</div>
-            <div className="l">방송·MCN·해외 협약 (KT ENA 운영 중)</div>
+            <div className="l">방송·MCN·해외 협약 (STEP D 운영 중)</div>
           </div>
         </div>
       </section>
@@ -150,7 +150,7 @@ export default function LandingPage() {
             대부분은 빅테크 API 위에서 돌아가고, 신기해 보여도 사람들은 &apos;AI라서&apos; 돈을 오래 내지 않아요. 살아남는 건 가치가 명확한 서비스뿐입니다.
           </p>
           <p style={{ maxWidth: 760, margin: "22px auto 0", fontSize: 19, fontStyle: "italic", fontWeight: 600, color: "#1B1B2F", lineHeight: 1.65 }}>
-            &quot;신기함은 팔리지 않습니다. 돈 되는 것만 팔립니다. 비용을 줄이고(운영 효율), 매출을 늘린다(생산성). 그 답을 실제 방송사 KT ENA에서 찾았습니다.&quot;
+            &quot;신기함은 팔리지 않습니다. 돈 되는 것만 팔립니다. 비용을 줄이고(운영 효율), 매출을 늘린다(생산성). 그 답을 실제 방송사 STEP D에서 찾았습니다.&quot;
           </p>
         </div>
       </section>
@@ -466,14 +466,14 @@ export default function LandingPage() {
               <br />
               K-미디어 전체와 동남아로 확장
             </h2>
-            <p className="lead">가장 검증받기 어려운 방송사(KT ENA)에서 진입하고, 그 레퍼런스를 무기로 국내 하위 시장과 동남아로 두 방향 확장합니다.</p>
+            <p className="lead">가장 검증받기 어려운 방송사(STEP D)에서 진입하고, 그 레퍼런스를 무기로 국내 하위 시장과 동남아로 두 방향 확장합니다.</p>
           </div>
           <div className="mkt-flow" style={{ display: "grid", gridTemplateColumns: "1.05fr 1fr", gap: 22, marginTop: 50, alignItems: "stretch" }}>
             <div style={{ background: "var(--grad)", borderRadius: 18, padding: "34px 32px", color: "#fff", display: "flex", flexDirection: "column", justifyContent: "center", boxShadow: "0 14px 36px rgba(108,92,231,.18)" }}>
               <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.2, opacity: 0.85 }}>LAND · 진입점</div>
               <div style={{ fontSize: 27, fontWeight: 800, marginTop: 8, lineHeight: 1.2 }}>한국 방송사 · PP</div>
               <div style={{ fontSize: 15, marginTop: 12, opacity: 0.94, lineHeight: 1.65 }}>
-                KT ENA 방송 현장 실증 ㅣ 리드타임 53%↓ (17H→8H)
+                STEP D 방송 현장 실증 ㅣ 리드타임 53%↓ (17H→8H)
                 <br />
                 누적 1,863클립 · 활성 프로그램 13
               </div>
@@ -509,7 +509,7 @@ export default function LandingPage() {
             <div style={{ background: "var(--grad)", borderRadius: 16, padding: "22px 24px", color: "#fff" }}>
               <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.85, letterSpacing: 0.5 }}>우리 진입</div>
               <div style={{ fontSize: 21, fontWeight: 800, marginTop: 4 }}>국내 방송사·MCN 900곳</div>
-              <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>단가는 KT ENA 실측 · 3년차 50곳+B2C 2만 = 156억</div>
+              <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>단가는 STEP D 실측 · 3년차 50곳+B2C 2만 = 156억</div>
             </div>
           </div>
           <div style={{ marginTop: 22, background: "rgba(14,165,196,.07)", border: "1px solid rgba(14,165,196,.22)", borderRadius: 14, padding: "18px 26px", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
@@ -534,7 +534,7 @@ export default function LandingPage() {
           <div style={{ textAlign: "center" }}>
             <span className="tag">숫자로 보기</span>
             <h2 style={{ marginTop: 18 }}>방송사 몇 곳만 잡으면, 매출이 이만큼</h2>
-            <p className="lead">슬라이더를 움직여 보세요. 단가는 KT ENA 실측 기반입니다.</p>
+            <p className="lead">슬라이더를 움직여 보세요. 단가는 STEP D 실측 기반입니다.</p>
           </div>
           <div style={{ maxWidth: 860, margin: "32px auto 0", background: "#fff", border: "1px solid var(--line)", borderRadius: 16, padding: 28 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#6C5CE7", marginBottom: 10 }}>B2B · 방송사·MCN</div>
@@ -583,7 +583,7 @@ export default function LandingPage() {
                   <strong style={{ color: "#6C5CE7" }}>{comma(glb)}곳</strong>
                 </div>
                 <input type="range" min={0} max={2000} step={10} value={glb} onChange={(e) => setGlb(+e.target.value)} style={{ width: "100%", marginTop: 10, accentColor: "#6C5CE7" }} />
-                <div style={{ fontSize: 12, color: "var(--mut2)" }}>동남아 → 글로벌 (KT ENA 레퍼런스 기반)</div>
+                <div style={{ fontSize: 12, color: "var(--mut2)" }}>동남아 → 글로벌 (STEP D 레퍼런스 기반)</div>
               </div>
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "var(--mut)" }}>
@@ -627,10 +627,10 @@ export default function LandingPage() {
         <div className="wrap">
           <span className="tag">신뢰</span>
           <h2 style={{ marginTop: 18 }}>현장에서 이미 쓰이고 있습니다</h2>
-          <p className="lead">KT ENA 방송 현장에서 운영 중. 그 외 파트너는 협약·예정 단계입니다.</p>
+          <p className="lead">STEP D 방송 현장에서 운영 중. 그 외 파트너는 협약·예정 단계입니다.</p>
           <div className="logos">
             <div className="lchip">
-              국내 대형 방송 <b>PP (KT ENA)</b> · 운영 중
+              국내 대형 방송 <b>PP (STEP D)</b> · 운영 중
             </div>
             <div className="lchip">
               대형 연예인 유튜브 채널 <b>구독 111만+</b> · 예정

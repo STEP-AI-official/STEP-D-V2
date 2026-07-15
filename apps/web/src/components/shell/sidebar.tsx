@@ -105,7 +105,7 @@ export function Sidebar() {
 
         <div className="border-t border-border p-3 text-xs text-muted-foreground">
           <div className="font-medium text-foreground">{user.name}</div>
-          <div>KT ENA · {user.role}</div>
+          <div>STEP D · {user.role}</div>
         </div>
       </aside>
     </>
