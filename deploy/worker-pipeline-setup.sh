@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Install the core CONTENT pipeline (Python) on the worker VM so the Node worker can
+# invoke it. Additive to worker-vm.sh (which set up the Node queue worker).
+#
+# The pipeline is GPU-free: STT_PROVIDER=gemini uses Gemini audio on Vertex AI, and
+# every other stage (refine/scenes/vision/names/recommend) is Gemini too. Auth is the
+# VM's service account via ADC — it already holds roles/aiplatform.user, so there is
+# NO key to install. This VM (e2-small, no GPU) can therefore run the whole thing.
+#
+# Run ON the VM after worker-vm.sh:
+#   gcloud compute ssh stepd-worker --zone us-central1-a --command "sudo bash /opt/stepd/deploy/worker-pipeline-setup.sh"
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/stepd}"
+VENV="${VENV:-$APP_DIR/core/.venv}"
+
+echo "==> System deps (ffmpeg, python venv)"
+sudo apt-get update -qq
+sudo apt-get install -y -qq ffmpeg python3-venv python3-pip
+
+echo "==> Python venv for the content pipeline"
+# Ubuntu 24.04 ships python3.12; the core code is 3.10+ compatible. faster-whisper is
+# NOT installed here (that's the local-GPU-only provider) — production uses Gemini STT.
+if [ ! -d "$VENV" ]; then
+  python3 -m venv "$VENV"
+fi
+"$VENV/bin/pip" install --quiet --upgrade pip
+"$VENV/bin/pip" install --quiet -r "$APP_DIR/core/requirements.txt"
+
+echo "==> Smoke test: Vertex reachable via the VM service account (ADC, no key)"
+"$VENV/bin/python" - <<'PY'
+from google import genai
+from google.genai import types
+c = genai.Client(vertexai=True, project="step-d", location="asia-northeast3")
+r = c.models.generate_content(model="gemini-2.5-flash", contents="'ok'만 답해",
+    config=types.GenerateContentConfig(max_output_tokens=50,
+        thinking_config=types.ThinkingConfig(thinking_budget=0)))
+print("   Vertex OK ->", (r.text or "").strip()[:10])
+PY
+
+echo
+echo "==> Done. Pipeline python: $VENV/bin/python"
+echo "   The Node worker invokes it as: python -m core.pipeline <video> (cwd=$APP_DIR)"
+echo "   Env for content jobs: STT_PROVIDER=gemini (default), GOOGLE_CLOUD_PROJECT=step-d,"
+echo "                         VERTEX_LOCATION=asia-northeast3, CORE_PYTHON=$VENV/bin/python"
