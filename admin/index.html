@@ -67,6 +67,20 @@
   .seg .ts { color: var(--mut2); font-size: 11px; min-width: 46px; padding-top: 2px; font-variant-numeric: tabular-nums; }
   .seg.diff { border-left: 2px solid var(--accent); }
   .empty-note { color: var(--mut2); padding: 40px; text-align: center; }
+
+  /* Shorts */
+  .short { display: flex; gap: 14px; padding: 14px; margin-bottom: 12px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; transition: border-color .12s; }
+  .short:hover { border-color: var(--accent); }
+  .short .rank { font-size: 22px; font-weight: 800; color: var(--accent); min-width: 30px; }
+  .short .body { flex: 1; min-width: 0; }
+  .short .title { font-size: 15px; font-weight: 700; color: var(--text); }
+  .short .sub { margin-top: 4px; font-size: 12px; color: var(--mut); }
+  .short .sub b { color: var(--good); font-variant-numeric: tabular-nums; }
+  .short .reason { margin-top: 6px; font-size: 13px; color: var(--mut); line-height: 1.5; }
+  .short .stags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .short .stag { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--panel2); color: var(--mut); }
+  .short .play { align-self: center; color: var(--mut2); font-size: 24px; }
 </style>
 </head>
 <body>
@@ -83,10 +97,12 @@
   </div>
   <div class="right">
     <div class="tabs">
-      <div class="tab on" data-p="scenes">장면 <span id="cnt-scenes"></span></div>
+      <div class="tab on" data-p="shorts">🔥 쇼츠 추천 <span id="cnt-shorts"></span></div>
+      <div class="tab" data-p="scenes">장면 <span id="cnt-scenes"></span></div>
       <div class="tab" data-p="script">자막 <span id="cnt-script"></span></div>
     </div>
-    <div class="pane on" id="pane-scenes">
+    <div class="pane on" id="pane-shorts"><div id="shorts"></div></div>
+    <div class="pane" id="pane-scenes">
       <div class="toolbar">
         <button id="sort-time" class="on">시간순</button>
         <button id="sort-score">시각점수순</button>
@@ -128,11 +144,35 @@ async function load() {
     <div><b>${st.segments}</b> <span>자막</span></div>`;
   $('#cnt-scenes').textContent = `(${st.scenes})`;
   $('#cnt-script').textContent = `(${st.refined || st.segments})`;
-  renderScenes(); renderScript();
+  $('#cnt-shorts').textContent = st.shorts ? `(${st.shorts})` : '';
+  renderShorts(); renderScenes(); renderScript();
   trackNow();
 }
 
 function seek(t) { const p = $('#player'); p.currentTime = t + 0.05; p.play(); }
+
+function renderShorts() {
+  const shorts = (DATA.shorts || []).slice().sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+  if (!shorts.length) {
+    $('#shorts').innerHTML = '<div class="empty-note">쇼츠 추천이 없습니다. <code>python -m core.recommend core/scenes.json</code> 실행 후 새로고침.</div>';
+    return;
+  }
+  $('#shorts').innerHTML = shorts.map(s => {
+    const dur = Math.round(s.end - s.start);
+    const tags = (s.tags || []).map(t => `<span class="stag">${t}</span>`).join('');
+    return `
+    <div class="short" onclick="seek(${s.start})">
+      <div class="rank">#${s.rank ?? '?'}</div>
+      <div class="body">
+        <div class="title">${s.title || ''}</div>
+        <div class="sub"><b>${fmt(s.start)} ~ ${fmt(s.end)}</b> · ${dur}초</div>
+        <div class="reason">${s.reason || ''}</div>
+        ${tags ? `<div class="stags">${tags}</div>` : ''}
+      </div>
+      <div class="play">▶</div>
+    </div>`;
+  }).join('');
+}
 
 let sceneSort = 'time', silentOnly = false;
 const scoreColor = v => v >= 70 ? '#4ade80' : v >= 45 ? '#fbbf24' : '#9a9aa6';
