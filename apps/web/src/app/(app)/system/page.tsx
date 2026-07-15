@@ -13,6 +13,7 @@ import { ChannelAnalysis } from "@/components/channel-analysis";
 export default function SystemPage() {
   const [channels, setChannels] = useState<YouTubeChannelInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [banner, setBanner] = useState<string | null>(null);
 
   const loadChannels = async () => {
     try {
@@ -27,6 +28,19 @@ export default function SystemPage() {
 
   useEffect(() => {
     loadChannels();
+
+    // We come back here after the OAuth round trip (return=/system). Show the result,
+    // then strip the params so a refresh doesn't repeat the banner. Reading
+    // location.search directly avoids the <Suspense> that useSearchParams would force.
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("success")) {
+      setBanner(`✅ "${params.get("channelName") ?? "채널"}" 연결 완료 · 분석을 시작했습니다`);
+    } else if (params.get("error")) {
+      setBanner(`❌ 채널 연결 실패: ${decodeURIComponent(params.get("error")!)}`);
+    }
+    if (params.get("success") || params.get("error")) {
+      window.history.replaceState(null, "", "/system");
+    }
   }, []);
 
   const handleDelete = async (channelId: string) => {
@@ -51,12 +65,18 @@ export default function SystemPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-white">YouTube 채널 연동</h2>
           <Button
-            onClick={() => { window.open(getYouTubeAuthUrl(undefined, "publish"), "_blank"); }}
+            onClick={() => { window.location.href = getYouTubeAuthUrl(undefined, "publish", "/system"); }}
             className="bg-white text-zinc-900 hover:bg-zinc-100"
           >
             + 채널 추가
           </Button>
         </div>
+
+        {banner && (
+          <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 text-sm text-zinc-200">
+            {banner}
+          </div>
+        )}
 
         {loading ? (
           <div className="text-zinc-500 text-sm">불러오는 중...</div>

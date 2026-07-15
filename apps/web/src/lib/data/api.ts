@@ -120,9 +120,14 @@ export async function fetchYouTubeChannels(): Promise<YouTubeChannelInfo[]> {
  */
 export type ConsentMode = "analytics" | "publish";
 
-export function getYouTubeAuthUrl(channelUrl?: string, mode: ConsentMode = "analytics"): string {
+export function getYouTubeAuthUrl(
+  channelUrl?: string,
+  mode: ConsentMode = "analytics",
+  returnTo?: string,
+): string {
   const params = new URLSearchParams({ mode });
   if (channelUrl) params.set("channel", channelUrl);
+  if (returnTo) params.set("return", returnTo);
   return `${API_BASE}/youtube/auth?${params}`;
 }
 

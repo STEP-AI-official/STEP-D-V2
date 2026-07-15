@@ -488,18 +488,48 @@ async function fetchYtChannelInfo(accessToken: string) {
 }
 
 
+interface OAuthState {
+  channel?: string;
+  mode?: ConsentMode;
+  /** Where to send the browser after connecting — the page the flow started from. */
+  return?: string;
+}
+
+function decodeState(raw: string | undefined): OAuthState {
+  if (!raw) return {};
+  try {
+    return JSON.parse(Buffer.from(raw, "base64").toString()) as OAuthState;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Only allow same-site relative paths as a post-OAuth destination, so a crafted
+ * `return` can't turn this into an open redirect. Anything else falls back to
+ * /register (the external-creator landing page).
+ */
+function safeReturn(path: string | undefined): string {
+  if (path && /^\/[A-Za-z0-9/_-]*$/.test(path) && !path.startsWith("//")) return path;
+  return "/register";
+}
+
 app.get("/api/youtube/auth", (c) => {
   if (!GOOGLE_CLIENT_ID) return c.json({ error: "GOOGLE_CLIENT_ID not configured" }, 500);
   const channelUrl = c.req.query("channel") ?? "";
   const mode: ConsentMode = c.req.query("mode") === "publish" ? "publish" : "analytics";
-  const state = Buffer.from(JSON.stringify({ channel: channelUrl, mode })).toString("base64");
+  const returnTo = safeReturn(c.req.query("return"));
+  const state = Buffer.from(JSON.stringify({ channel: channelUrl, mode, return: returnTo })).toString("base64");
   return c.redirect(googleAuthUrl(state, mode));
 });
 
 const oauthCallback = async (c: Context) => {
   const code = c.req.query("code");
   const error = c.req.query("error");
-  if (error) return c.redirect(`/register?error=access_denied`);
+  const st = decodeState(c.req.query("state"));
+  const returnTo = safeReturn(st.return);
+
+  if (error) return c.redirect(`${returnTo}?error=access_denied`);
   if (!code) return c.json({ error: "missing code" }, 400);
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return c.json({ error: "OAuth not configured" }, 500);
 
@@ -510,7 +540,7 @@ const oauthCallback = async (c: Context) => {
       id: channelInfo.channelId,
       channelId: channelInfo.channelId,
       channelName: channelInfo.channelName,
-      channelUrl: null,
+      channelUrl: st.channel || null,
       thumbnail: channelInfo.thumbnail,
       subscribers: channelInfo.subscribers,
       refreshToken: tokens.refresh_token,
@@ -522,14 +552,6 @@ const oauthCallback = async (c: Context) => {
       connectedAt: Date.now(),
     };
 
-    const state = c.req.query("state");
-    if (state) {
-      try {
-        const st = JSON.parse(Buffer.from(state, "base64").toString());
-        if (st.channel) channel.channelUrl = st.channel;
-      } catch { /* ignore */ }
-    }
-
     await upsertYouTubeChannel(channel);
 
     // Hand the analysis to the worker rather than starting it here: Cloud Run throttles
@@ -540,10 +562,10 @@ const oauthCallback = async (c: Context) => {
     });
 
     const params = new URLSearchParams({ success: "1", channelId: channel.channelId, channelName: channel.channelName });
-    return c.redirect(`/register?${params}`);
+    return c.redirect(`${returnTo}?${params}`);
   } catch (err: any) {
     console.error("[oauth/callback]", err);
-    return c.redirect(`/register?error=${encodeURIComponent(err.message)}`);
+    return c.redirect(`${returnTo}?error=${encodeURIComponent(err.message)}`);
   }
 };
 
