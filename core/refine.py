@@ -32,7 +32,8 @@ from google import genai
 from google.genai import types
 
 PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or "step-d"
-LOCATION = os.environ.get("VERTEX_LOCATION") or "us-central1"
+# Seoul — transcripts can carry personal info; keep processing in-country (data residency).
+LOCATION = os.environ.get("VERTEX_LOCATION") or "asia-northeast3"
 MODEL = os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
 BATCH = 40  # segments per Gemini call — small enough to stay coherent, big enough to be cheap
 

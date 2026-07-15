@@ -30,7 +30,10 @@ from google import genai
 from google.genai import types
 
 PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or "step-d"
-LOCATION = os.environ.get("VERTEX_LOCATION") or "us-central1"
+# Seoul: frames carry identifiable Korean people (biometric/sensitive data), so keep
+# them in-country to avoid a cross-border transfer with no PIPA basis. Vertex serves
+# gemini-2.5-flash here.
+LOCATION = os.environ.get("VERTEX_LOCATION") or "asia-northeast3"
 MODEL = os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
 WORKERS = 6  # concurrent Vertex calls — enough to be quick, gentle on quota
 
