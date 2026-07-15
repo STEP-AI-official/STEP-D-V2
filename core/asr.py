@@ -1,34 +1,47 @@
 """
 STEP D Core — ASR (Automatic Speech Recognition)
-Based on VideoLingo's WhisperX pipeline (Apache 2.0 license)
-Uses faster-whisper (CTranslate2 backend) for reliability.
 
-Key features:
-- Word-level timestamps via faster-whisper (whisper large-v3)
-- GPU acceleration (CUDA float16)
-- Korean + multilingual support
-- SRT export
+Two interchangeable providers behind one `transcribe()`:
+  - "gemini"  (default): managed, GPU-free — runs on the worker VM with no GPU, keeps
+    audio in-country (Vertex asia-northeast3), no extra vendor. Chosen for production.
+  - "whisper" (local): faster-whisper large-v3 on a local CUDA GPU. Faster/free where a
+    GPU exists, so handy for local dev. Requires faster-whisper + CUDA (imported lazily).
+
+Pick with STT_PROVIDER=gemini|whisper. Both return the same shape:
+    { "segments": [ {start, end, text, words} ], "language": "ko" }
+
+On a Korean variety clip, managed Google STT mangled "정우성"→"정구속"; Gemini and
+whisper both keep it — which is why Gemini is the managed default here.
 """
+import io
+import json
+import os
 import subprocess
+import tempfile
+import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-from faster_whisper import WhisperModel
+STT_PROVIDER = (os.environ.get("STT_PROVIDER") or "gemini").lower()
+
+# Gemini provider config (Vertex AI, Seoul — audio is personal data, keep it in-country)
+GEMINI_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or "step-d"
+GEMINI_LOCATION = os.environ.get("VERTEX_LOCATION") or "asia-northeast3"
+GEMINI_MODEL = os.environ.get("GEMINI_STT_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
+# Transcribe in windows so timestamps stay accurate AND each call's JSON output stays
+# within the token budget (dense speech in a long window overflows and truncates).
+STT_WINDOW_SEC = int(os.environ.get("STT_WINDOW_SEC") or 90)
+STT_WORKERS = int(os.environ.get("STT_WORKERS") or 6)
 
 
 def extract_audio(video_path: str, output_path: Optional[str] = None) -> str:
-    """Extract audio track from video using ffmpeg."""
+    """Extract a 16 kHz mono PCM WAV from the video (ffmpeg)."""
     if output_path is None:
-        output_path = str(Path(video_path).with_suffix('.wav'))
-
+        output_path = str(Path(video_path).with_suffix(".wav"))
     subprocess.run(
-        [
-            'ffmpeg', '-y', '-v', 'quiet',
-            '-i', video_path,
-            '-vn', '-acodec', 'pcm_s16le',
-            '-ar', '16000', '-ac', '1',
-            output_path,
-        ],
+        ["ffmpeg", "-y", "-v", "quiet", "-i", video_path,
+         "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
         check=True,
     )
     return output_path
@@ -36,30 +49,137 @@ def extract_audio(video_path: str, output_path: Optional[str] = None) -> str:
 
 def transcribe(
     audio_path: str,
-    language: str = 'ko',
-    model_name: str = 'large-v3',
-    device: str = 'cuda',
-    compute_type: str = 'float16',
+    language: str = "ko",
+    model_name: str = "large-v3",
+    device: str = "cuda",
+    compute_type: str = "float16",
     beam_size: int = 5,
 ) -> dict:
-    """
-    Transcribe audio with word-level timestamps.
+    """Transcribe via the configured provider. Returns {segments, language}."""
+    if STT_PROVIDER == "whisper":
+        return _transcribe_whisper(audio_path, language, model_name, device, compute_type, beam_size)
+    return _transcribe_gemini(audio_path, language)
 
-    Args:
-        audio_path: Path to audio/video file
-        language: Language code ('ko', 'en', 'ja', etc.)
-        model_name: Whisper model ('large-v3', 'large-v2', 'medium', etc.)
-        device: 'cuda' or 'cpu'
-        compute_type: 'float16' for GPU, 'int8' for CPU
-        beam_size: Beam search width (higher = more accurate, slower)
 
-    Returns:
-        dict with segments [{start, end, text, words}], language
-    """
-    # float16 is unsupported on CPU (CTranslate2 warns and falls back to float32,
-    # slowly) — use int8 there, which is what CPU inference actually wants.
-    if device != 'cuda' and compute_type == 'float16':
-        compute_type = 'int8'
+# ── Provider: Gemini (managed, GPU-free) ────────────────────────────────────────
+
+_GEMINI_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "start": {"type": "NUMBER"},
+            "end": {"type": "NUMBER"},
+            "text": {"type": "STRING"},
+        },
+        "required": ["start", "end", "text"],
+    },
+}
+
+_GEMINI_PROMPT = """이 오디오를 한국어로 정확히 전사하라. 예능/방송 대화다.
+발화(문장/호흡) 단위로 나누고, 각 발화의 시작·끝 초를 이 오디오 기준(0부터)으로 매겨라.
+고유명사·이름을 정확히. 배경음·잡음은 전사하지 마라. JSON 배열 [{start,end,text}]로만."""
+
+
+def _wav_meta(wav_path: str) -> tuple[int, int, int, float]:
+    with wave.open(wav_path, "rb") as w:
+        return w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes() / w.getframerate()
+
+
+def _slice_wav(wav_path: str, start_sec: float, dur_sec: float) -> bytes:
+    """Return a WAV blob for [start, start+dur) of a mono PCM WAV."""
+    with wave.open(wav_path, "rb") as w:
+        rate, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        w.setpos(int(start_sec * rate))
+        data = w.readframes(int(dur_sec * rate))
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as o:
+            o.setnchannels(ch); o.setsampwidth(sw); o.setframerate(rate)
+            o.writeframes(data)
+        return buf.getvalue()
+
+
+def _transcribe_gemini(audio_or_video: str, language: str) -> dict:
+    from google import genai
+    from google.genai import types
+
+    # Need a WAV. If handed a video, extract audio to a temp file first.
+    src = Path(audio_or_video)
+    tmp_wav = None
+    if src.suffix.lower() != ".wav":
+        tmp_wav = str(Path(tempfile.gettempdir()) / f"stepd_stt_{os.getpid()}.wav")
+        extract_audio(str(src), tmp_wav)
+        wav_path = tmp_wav
+    else:
+        wav_path = str(src)
+
+    client = genai.Client(vertexai=True, project=GEMINI_PROJECT, location=GEMINI_LOCATION)
+    config = types.GenerateContentConfig(
+        temperature=0,
+        response_mime_type="application/json",
+        response_schema=_GEMINI_SCHEMA,
+        max_output_tokens=8192,
+        # No reasoning needed for transcription — free the whole output budget for JSON
+        # (thinking tokens were eating into it and truncating long windows).
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    )
+
+    def do_window(start: float, dur: float, depth: int = 0) -> list[dict]:
+        try:
+            resp = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=_slice_wav(wav_path, start, dur), mime_type="audio/wav"),
+                    _GEMINI_PROMPT,
+                ],
+                config=config,
+            )
+            rows = json.loads(resp.text or "[]")
+        except Exception as e:
+            # A dense/noisy window can overflow the JSON output and truncate. Split it in
+            # half and retry so we don't lose the whole window (e.g. the intro montage).
+            if depth < 2 and dur > 20:
+                half = dur / 2
+                return do_window(start, half, depth + 1) + do_window(start + half, half, depth + 1)
+            print(f"   (STT window @{start:.0f}s+{dur:.0f}s failed, skipped: {str(e)[:70]})")
+            return []
+        out = []
+        for r in rows:
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
+            out.append({
+                "start": round(start + float(r.get("start", 0)), 3),
+                "end": round(start + float(r.get("end", 0)), 3),
+                "text": text,
+                "words": [],  # Gemini gives utterance-level, not word-level, timestamps
+            })
+        return out
+
+    try:
+        _, _, _, total = _wav_meta(wav_path)
+        starts = [i * STT_WINDOW_SEC for i in range(int(total // STT_WINDOW_SEC) + 1)]
+        starts = [s for s in starts if s < total]
+        with ThreadPoolExecutor(max_workers=STT_WORKERS) as ex:
+            results = list(ex.map(lambda s: do_window(s, min(STT_WINDOW_SEC, total - s)), starts))
+    finally:
+        if tmp_wav and os.path.exists(tmp_wav):
+            os.remove(tmp_wav)
+
+    segments = [seg for batch in results for seg in batch]
+    segments.sort(key=lambda s: s["start"])
+    return {"segments": segments, "language": language}
+
+
+# ── Provider: faster-whisper (local GPU) ────────────────────────────────────────
+
+def _transcribe_whisper(
+    audio_path: str, language: str, model_name: str, device: str, compute_type: str, beam_size: int,
+) -> dict:
+    from faster_whisper import WhisperModel  # lazy: not installed on the GPU-less worker
+
+    if device != "cuda" and compute_type == "float16":
+        compute_type = "int8"  # float16 is CPU-unsupported (CTranslate2 falls back slowly)
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
 
     segments_iter, info = model.transcribe(
@@ -67,37 +187,21 @@ def transcribe(
         language=language,
         beam_size=beam_size,
         word_timestamps=True,
-        # VAD gates out music/silence/applause. Without it, large-v3 hallucinates on
-        # the non-speech stretches of variety-show audio (observed: stray English/German
-        # words, whole-phrase repeats). This is the single biggest quality lever here.
-        vad_filter=True,
+        vad_filter=True,  # gates music/silence → kills large-v3's non-speech hallucinations
         vad_parameters={"min_silence_duration_ms": 500},
-        # Stops the decoder from looping the previous line ("자 이제 순위를…" ×2) and
-        # from letting one bad hypothesis poison the rest of the transcript.
-        condition_on_previous_text=False,
-        # Uses the word timestamps to drop hypotheses that span a long silent gap —
-        # the actual hallucination filter (no_speech/compression_ratio here would just
-        # restate faster-whisper's defaults and change nothing).
+        condition_on_previous_text=False,  # stops phrase-repeat loops
         hallucination_silence_threshold=2.0,
     )
 
     segments = []
     for seg in segments_iter:
         words = [
-            {'word': w.word, 'start': w.start, 'end': w.end, 'probability': w.probability}
+            {"word": w.word, "start": w.start, "end": w.end, "probability": w.probability}
             for w in (seg.words or [])
         ]
-        segments.append({
-            'start': seg.start,
-            'end': seg.end,
-            'text': seg.text.strip(),
-            'words': words,
-        })
+        segments.append({"start": seg.start, "end": seg.end, "text": seg.text.strip(), "words": words})
 
     del model
-    # Best-effort VRAM release. torch is not a declared dependency (faster-whisper uses
-    # CTranslate2, not PyTorch), so treat it as optional — and it's a no-op for the
-    # CTranslate2 allocator anyway, hence best-effort.
     try:
         import torch
         torch.cuda.empty_cache()
@@ -105,25 +209,22 @@ def transcribe(
         pass
 
     return {
-        'segments': segments,
-        'language': info.language,
-        'language_probability': info.language_probability,
+        "segments": segments,
+        "language": info.language,
+        "language_probability": info.language_probability,
     }
 
 
+# ── Shared helpers ──────────────────────────────────────────────────────────────
+
 def result_to_srt(result: dict) -> str:
-    """Convert transcription result to SRT subtitle format."""
-    srt_lines = []
-    for i, seg in enumerate(result['segments'], 1):
-        start = _format_timestamp(seg['start'])
-        end = _format_timestamp(seg['end'])
-        text = seg['text'].strip()
-        srt_lines.append(f"{i}\n{start} --> {end}\n{text}\n")
-    return '\n'.join(srt_lines)
+    lines = []
+    for i, seg in enumerate(result["segments"], 1):
+        lines.append(f"{i}\n{_format_timestamp(seg['start'])} --> {_format_timestamp(seg['end'])}\n{seg['text'].strip()}\n")
+    return "\n".join(lines)
 
 
 def _format_timestamp(seconds: float) -> str:
-    """Convert seconds to SRT timestamp (HH:MM:SS,mmm)."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
@@ -132,13 +233,7 @@ def _format_timestamp(seconds: float) -> str:
 
 
 def get_segments(result: dict) -> list[dict]:
-    """Extract clean segment list from transcription result."""
     return [
-        {
-            'start': seg['start'],
-            'end': seg['end'],
-            'text': seg['text'].strip(),
-            'words': seg.get('words', []),
-        }
-        for seg in result['segments']
+        {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip(), "words": seg.get("words", [])}
+        for seg in result["segments"]
     ]

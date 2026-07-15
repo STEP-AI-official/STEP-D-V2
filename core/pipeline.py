@@ -84,8 +84,9 @@ def run_pipeline(
     print(f"   Model: {model_name} on {device}")
     print()
 
-    # 1. Transcribe with WhisperX
-    print("🎤 [1/3] Transcribing with WhisperX...")
+    # 1. Transcribe (provider from STT_PROVIDER: gemini managed / whisper local GPU)
+    import os as _os
+    print(f"🎤 [1/3] Transcribing (STT={_os.environ.get('STT_PROVIDER') or 'gemini'})...")
     result = transcribe(
         video_path,
         language=language,

@@ -1,27 +1,25 @@
 # STEP D Core — AI Speech Recognition & Clip Recommendation Pipeline
-# Based on VideoLingo's WhisperX pipeline (Apache 2.0).
-# Runtime uses faster-whisper (CTranslate2 backend), not WhisperX/PyTorch.
+# Based on VideoLingo's WhisperX pipeline reference (Apache 2.0).
 
-# STT — faster-whisper on CTranslate2
-faster-whisper>=1.0.0
-
-# YouTube download (downloader.py)
-yt-dlp>=2024.0
-
-# Transcript refinement (refine.py) — Gemini on Vertex AI.
-# Auth via ADC (gcloud auth application-default login), no API key.
+# ── Production deps (GPU-free — runs on the worker VM) ───────────────────────────
+# STT (default STT_PROVIDER=gemini), refine, vision, name-OCR, recommend all use
+# Gemini on Vertex AI. Auth via ADC (gcloud auth application-default login), no API key.
 google-genai>=1.0.0
 
 # Scene segmentation (scenes.py) — shot-change detection + frame extraction
 scenedetect>=0.6
 opencv-python>=4.8
 
-# ── GPU (CUDA) ────────────────────────────────────────────────────────────────
-# faster-whisper on GPU needs the CUDA 12 cuDNN runtime. Install for CUDA inference:
-#   pip install nvidia-cudnn-cu12==8.9.7.29
-# (9.x fails with a missing-symbol error — see WHISPERX_GUIDE.md.)
-# PyTorch is NOT required — asr.py only touches torch opportunistically to free VRAM
-# and no-ops without it.
+# YouTube download (downloader.py)
+yt-dlp>=2024.0
 
-# ── Optional ──────────────────────────────────────────────────────────────────
-# google-genai>=1.0.0   # Gemini API for visual scoring (not yet wired in)
+# ffmpeg/ffprobe must be on PATH (system install), used for audio/frame extraction.
+
+# ── Optional: local GPU STT (STT_PROVIDER=whisper) ──────────────────────────────
+# Only for running faster-whisper large-v3 on a CUDA GPU (local dev). Production uses
+# the managed Gemini provider, so the worker VM does NOT need these.
+#   pip install faster-whisper>=1.0.0
+#   pip install nvidia-cudnn-cu12==8.9.7.29   # CUDA 12 cuDNN (9.x fails — see WHISPERX_GUIDE.md)
+
+# ── Admin lab server (apps/server serves it; only if running the Python admin) ──
+# fastapi / uvicorn — not needed in production (apps/server is the one backend).
