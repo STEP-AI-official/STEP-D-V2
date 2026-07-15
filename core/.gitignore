@@ -12,6 +12,13 @@
 *.vtt
 *.ass
 
+# Scene detection artifacts
+scenes.json
+scene_frames/
+*.jpg
+*.jpeg
+*.png
+
 # Pipeline outputs
 pipeline_output.json
 whisperx_result*.json

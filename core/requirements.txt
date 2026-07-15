@@ -12,6 +12,10 @@ yt-dlp>=2024.0
 # Auth via ADC (gcloud auth application-default login), no API key.
 google-genai>=1.0.0
 
+# Scene segmentation (scenes.py) — shot-change detection + frame extraction
+scenedetect>=0.6
+opencv-python>=4.8
+
 # ── GPU (CUDA) ────────────────────────────────────────────────────────────────
 # faster-whisper on GPU needs the CUDA 12 cuDNN runtime. Install for CUDA inference:
 #   pip install nvidia-cudnn-cu12==8.9.7.29
