@@ -15,6 +15,7 @@
 # Pipeline outputs
 pipeline_output.json
 whisperx_result*.json
+refined_*.json
 test_transcript.srt
 
 # Python
