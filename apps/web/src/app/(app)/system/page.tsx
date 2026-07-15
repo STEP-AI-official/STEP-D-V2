@@ -8,6 +8,7 @@ import { Youtube } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { YouTubeChannelInfo } from "@/lib/data/api";
 import { fetchYouTubeChannels, getYouTubeAuthUrl, deleteYouTubeChannel } from "@/lib/data/api";
+import { ChannelAnalysis } from "@/components/channel-analysis";
 
 export default function SystemPage() {
   const [channels, setChannels] = useState<YouTubeChannelInfo[]>([]);
@@ -70,38 +71,44 @@ export default function SystemPage() {
         ) : (
           <div className="grid gap-3">
             {channels.map((ch) => (
-              <Card key={ch.channelId} className="flex items-center justify-between p-4">
-                <div className="flex items-center gap-3">
-                  {ch.thumbnail ? (
-                    <img src={ch.thumbnail} alt={ch.channelName} className="w-10 h-10 rounded-full" />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-zinc-700 flex items-center justify-center text-zinc-400 text-sm">
-                      {ch.channelName.charAt(0)}
-                    </div>
-                  )}
-                  <div>
-                    <div className="text-sm font-medium text-white">{ch.channelName}</div>
-                    <div className="text-xs text-zinc-500">
-                      구독자 {ch.subscribers ?? "?"}명
-                      {ch.connectedAt && ` · ${new Date(ch.connectedAt).toLocaleDateString("ko-KR")} 연결`}
+              <Card key={ch.channelId} className="p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {ch.thumbnail ? (
+                      <img src={ch.thumbnail} alt={ch.channelName} className="w-10 h-10 rounded-full" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-zinc-700 flex items-center justify-center text-zinc-400 text-sm">
+                        {ch.channelName.charAt(0)}
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-sm font-medium text-white">{ch.channelName}</div>
+                      <div className="text-xs text-zinc-500">
+                        구독자 {ch.subscribers ?? "?"}명
+                        {ch.connectedAt && ` · ${new Date(ch.connectedAt).toLocaleDateString("ko-KR")} 연결`}
+                      </div>
                     </div>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs px-2 py-1 rounded-full ${
+                      ch.status === "active"
+                        ? "bg-emerald-900/40 text-emerald-400"
+                        : ch.status === "revoked"
+                          ? "bg-amber-900/40 text-amber-400"
+                          : "bg-red-900/40 text-red-400"
+                    }`}>
+                      {ch.status === "active" ? "활성" : ch.status === "revoked" ? "재연결 필요" : "오류"}
+                    </span>
+                    <button
+                      onClick={() => handleDelete(ch.channelId)}
+                      className="text-xs text-zinc-500 hover:text-red-400 transition px-2 py-1"
+                    >
+                      삭제
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-xs px-2 py-1 rounded-full ${
-                    ch.status === "active"
-                      ? "bg-emerald-900/40 text-emerald-400"
-                      : "bg-red-900/40 text-red-400"
-                  }`}>
-                    {ch.status === "active" ? "활성" : "오류"}
-                  </span>
-                  <button
-                    onClick={() => handleDelete(ch.channelId)}
-                    className="text-xs text-zinc-500 hover:text-red-400 transition px-2 py-1"
-                  >
-                    삭제
-                  </button>
-                </div>
+
+                <ChannelAnalysis channelId={ch.channelId} />
               </Card>
             ))}
           </div>

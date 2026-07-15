@@ -149,6 +149,53 @@ export async function deleteYouTubeChannel(channelId: string): Promise<void> {
   await fetch(`${API_BASE}/youtube/channels/${channelId}`, { method: "DELETE" });
 }
 
+/**
+ * Ask the worker to (re)analyze a channel now. Returns immediately — the run happens
+ * in the background. `queued: false` means a run for this channel is already in flight.
+ */
+export async function triggerChannelAnalysis(
+  channelId: string,
+): Promise<{ ok: boolean; queued: boolean; note: string }> {
+  const res = await fetch(`${API_BASE}/youtube/pipeline/run/${channelId}`, { method: "POST" });
+  if (!res.ok) throw new Error(`analysis trigger failed (${res.status})`);
+  return res.json();
+}
+
+export interface ChannelDailyRow {
+  channelId: string;
+  day: string;
+  views: number;
+  estimatedMinutesWatched: number;
+  averageViewDuration: number;
+  averageViewPercentage: number;
+  subscribersGained: number;
+  subscribersLost: number;
+  fetchedAt: number;
+}
+
+/** Stored daily analytics the worker has collected (served from our DB, not YouTube). */
+export async function fetchChannelDaily(
+  channelId: string,
+  days = 90,
+): Promise<ChannelDailyRow[]> {
+  const res = await fetch(`${API_BASE}/youtube/analytics/${channelId}/daily?days=${days}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { rows: Record<string, unknown>[] };
+  // Postgres BIGINT comes back as a string over JSON (node-postgres avoids precision
+  // loss), so coerce the numeric fields — otherwise `+=` in the UI concatenates.
+  return (data.rows ?? []).map((r) => ({
+    channelId: String(r.channelId),
+    day: String(r.day),
+    views: Number(r.views),
+    estimatedMinutesWatched: Number(r.estimatedMinutesWatched),
+    averageViewDuration: Number(r.averageViewDuration),
+    averageViewPercentage: Number(r.averageViewPercentage),
+    subscribersGained: Number(r.subscribersGained),
+    subscribersLost: Number(r.subscribersLost),
+    fetchedAt: Number(r.fetchedAt),
+  }));
+}
+
 // ── Channel video sync & trends ────────────────────────────────────────────────
 
 import type {
