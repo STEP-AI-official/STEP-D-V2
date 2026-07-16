@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { ChevronLeft, FileVideo, Search, Sparkles, Clapperboard, Send } from "lucide-react";
+import { ChevronLeft, FileVideo, Search, Sparkles, Clapperboard, Send, Loader2 } from "lucide-react";
+import { getMediaAnalysis, type MediaAnalysis } from "@/lib/data/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
@@ -139,7 +140,7 @@ export function EpisodeDetail({
       </div>
 
       {tab === "source" && <SourceTab episodeId={episodeId} />}
-      {tab === "analyze" && <AnalyzeTab />}
+      {tab === "analyze" && <AnalyzeTab episodeId={episodeId} />}
 
       {tab === "recommend" && (
         <div>
@@ -305,32 +306,99 @@ function SourceTab({ episodeId }: { episodeId: string }) {
   );
 }
 
-/** Representative 3-Pass analysis view (mock; wired to analysis_results at M6). */
-function AnalyzeTab() {
-  const scenes = [
-    { t: 120, desc: "오프닝 · 게스트 등장", tags: ["유재석"] },
-    { t: 742, desc: "이영자 리액션 하이라이트", tags: ["이영자", "웃음"] },
-    { t: 1210, desc: "몸개그 시퀀스", tags: ["홍현희"] },
-  ];
+/** Real 3-Pass scene analysis from the content pipeline (content_analysis). */
+function AnalyzeTab({ episodeId }: { episodeId: string }) {
+  const { mediaForEpisode } = useAppData();
+  const master = mediaForEpisode(episodeId, "master");
+  const [analysis, setAnalysis] = useState<MediaAnalysis | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!master) return;
+    let cancelled = false;
+    const load = () =>
+      getMediaAnalysis(master.id)
+        .then((a) => !cancelled && setAnalysis(a))
+        .catch(() => !cancelled && setAnalysis(null));
+    setLoading(true);
+    load().finally(() => !cancelled && setLoading(false));
+    // While the worker is still analyzing, re-poll every 20s so it lights up on its own.
+    const timer = setInterval(async () => {
+      const a = await getMediaAnalysis(master.id).catch(() => null);
+      if (!cancelled && a) {
+        setAnalysis(a);
+        if (a.status === "done" || a.status === "failed") clearInterval(timer);
+      }
+    }, 20_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [master?.id]);
+
+  if (!master) {
+    return (
+      <EmptyState
+        icon={Search}
+        title="분석할 영상이 없어요"
+        description="영상을 업로드하면 AI가 장면을 분석합니다."
+      />
+    );
+  }
+
+  const scenes = analysis?.data?.scenes ?? [];
+  const status = analysis?.status;
+
+  if (loading && !analysis) {
+    return <Card className="p-8 text-center text-sm text-muted-foreground">분석 정보를 불러오는 중…</Card>;
+  }
+  if (status === "failed") {
+    return (
+      <EmptyState
+        icon={Search}
+        title="분석에 실패했어요"
+        description={analysis?.error ?? "잠시 후 다시 시도해 주세요."}
+      />
+    );
+  }
+  if (!scenes.length) {
+    return (
+      <EmptyState
+        icon={Loader2}
+        title="AI가 장면을 분석하고 있어요"
+        description="STT → 장면 분할 → 시각 채점 → 쇼츠 추천. 완료되면 이 탭과 추천 탭에 자동으로 표시됩니다."
+      />
+    );
+  }
+
   return (
     <Card className="overflow-hidden">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-sm font-semibold">
-        <Search className="size-4" /> 장면 분석 (3-Pass)
+        <Search className="size-4" /> 장면 분석 · {scenes.length}개
       </div>
       <ul className="divide-y divide-border">
-        {scenes.map((s) => (
-          <li key={s.t} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-            <span className="tabular-nums text-xs text-muted-foreground">{formatTimecode(s.t)}</span>
-            <span className="flex-1">{s.desc}</span>
-            <span className="flex gap-1">
-              {s.tags.map((t) => (
-                <Badge key={t} className="text-muted-foreground">
-                  {t}
-                </Badge>
-              ))}
-            </span>
-          </li>
-        ))}
+        {scenes.map((s, i) => {
+          const names = s.on_screen_names ?? [];
+          const desc = s.vision_reason || s.text || `장면 ${s.index ?? i + 1}`;
+          return (
+            <li key={s.index ?? i} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+              <span className="tabular-nums text-xs text-muted-foreground">{formatTimecode(s.start)}</span>
+              <span className="flex-1 truncate">{desc}</span>
+              {typeof s.vision_score === "number" && (
+                <span className="tabular-nums text-xs text-muted-foreground">{s.vision_score}</span>
+              )}
+              {names.length > 0 && (
+                <span className="flex shrink-0 gap-1">
+                  {names.slice(0, 3).map((t) => (
+                    <Badge key={t} className="text-muted-foreground">
+                      {t}
+                    </Badge>
+                  ))}
+                </span>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </Card>
   );

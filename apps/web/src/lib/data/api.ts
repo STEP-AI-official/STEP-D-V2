@@ -37,6 +37,29 @@ export async function fetchState(signal?: AbortSignal): Promise<ServerState> {
   return json<ServerState>(res);
 }
 
+export interface AnalysisScene {
+  index?: number;
+  start: number;
+  end?: number;
+  duration?: number;
+  text?: string;
+  vision_reason?: string;
+  vision_score?: number;
+  on_screen_names?: string[];
+}
+export interface MediaAnalysis {
+  status: "pending" | "done" | "failed" | null;
+  data?: { transcript?: unknown[]; scenes?: AnalysisScene[]; shorts?: unknown[] } | null;
+  error?: string | null;
+}
+
+/** Content-pipeline result for one uploaded media (STT → scenes → shorts). */
+export async function getMediaAnalysis(mediaId: string): Promise<MediaAnalysis> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/analysis`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`analysis fetch failed (${res.status})`);
+  return res.json();
+}
+
 export interface CreateProgramInput {
   title: string;
   section?: string;
