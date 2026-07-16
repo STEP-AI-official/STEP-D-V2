@@ -22,7 +22,6 @@ import {
   listMedia,
   getMedia,
   insertMedia,
-  updateMediaThumb,
   mediaPublic,
   listYouTubeChannels,
   getYouTubeChannelByChannelId,
@@ -72,6 +71,8 @@ import {
   createReadStream,
   parseObjectPath,
   useGcs,
+  createResumableSession,
+  signedReadUrl,
 } from "./storage-gcs.ts";
 
 // Sync init — no CPU throttling issues on Cloud Run
@@ -168,41 +169,23 @@ app.get("/api/media/:id/analysis", async (c) => {
 });
 
 // ── upload a real video → episode + master media + heuristic recommendations ───
-app.post("/api/media/upload", async (c) => {
-  const body = await c.req.parseBody();
-  const file = body["file"];
-  if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
+// Shared tail of the upload flow: create the episode, master media row, heuristic
+// recommendations, and enqueue content analysis. Both the legacy multipart upload and
+// the direct-to-GCS finalize path funnel through here so the two stay in lockstep.
+async function buildEpisodeAndMedia(opts: {
+  mediaId: string;
+  programId: string;
+  program: { id: string; title: string; targetAge: number };
+  storedPath: string;
+  filename: string;
+  title: string;
+  mime: string;
+  size: number;
+  meta: { durationSec: number; width: number; height: number; codec: string; hasAudio: boolean };
+  thumbPath: string | null;
+}) {
+  const { mediaId, programId, program, storedPath, filename, title, mime, size, meta } = opts;
 
-  const programId = typeof body["programId"] === "string" && body["programId"] ? String(body["programId"]) : "p1";
-  const program = await getEntity<{ id: string; title: string; targetAge: number }>("program", programId);
-  if (!program) return c.json({ error: "program not found" }, 400);
-
-  const mediaId = newId("m");
-  const ext = path.extname(file.name) || ".mp4";
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const objPath = uploadPath(mediaId, ext);
-
-  // Write to GCS (or local fallback)
-  const storedPath = await writeFile(objPath, buffer);
-
-  // Probe real metadata (local temp file needed for ffmpeg).
-  let meta = { durationSec: 0, width: 0, height: 0, codec: "", hasAudio: false };
-  if (FFMPEG) {
-    // Save to temp for ffmpeg probe
-    const tmpDir = path.resolve("/tmp/stepd-uploads");
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpPath = path.join(tmpDir, `${mediaId}${ext}`);
-    fs.writeFileSync(tmpPath, buffer);
-    try {
-      meta = await probe(tmpPath);
-    } catch {
-      /* keep zeros */
-    }
-  }
-
-  const title = typeof body["title"] === "string" && body["title"] ? String(body["title"]) : file.name;
-
-  // New episode for this source.
   const state = await getState();
   const episodes = state.episodes as Array<{ programId: string; episodeNumber: number }>;
   const nextEpNum =
@@ -221,47 +204,24 @@ app.post("/api/media/upload", async (c) => {
   };
   await prependEntity("episode", episodeId, episode);
 
-  // Master media row.
   const row: MediaRow = {
     id: mediaId,
     episodeId,
     role: "master",
     title,
-    filename: file.name,
+    filename,
     path: storedPath,
-    mime: file.type || "video/mp4",
-    size: file.size,
+    mime: mime || "video/mp4",
+    size,
     durationSec: meta.durationSec,
     width: meta.width,
     height: meta.height,
     codec: meta.codec,
     hasAudio: meta.hasAudio ? 1 : 0,
-    thumbPath: null,
+    thumbPath: opts.thumbPath,
     createdAt: Date.now(),
   };
   await insertMedia(row);
-
-  // Thumbnail at ~10%.
-  if (FFMPEG) {
-    const tmpDir = path.resolve("/tmp/stepd-uploads");
-    const tmpPath = path.join(tmpDir, `${mediaId}${ext}`);
-    if (fs.existsSync(tmpPath)) {
-      const thumbTmp = path.join(tmpDir, `${mediaId}.jpg`);
-      try {
-        const thumbObjPath = thumbPath(mediaId);
-        await captureThumbnail(tmpPath, Math.max(1, meta.durationSec * 0.1), thumbTmp);
-        const thumbStored = await uploadFile(thumbObjPath, thumbTmp);
-        await updateMediaThumb(mediaId, thumbStored);
-        row.thumbPath = thumbStored;
-      } catch {
-        /* optional */
-      } finally {
-        // /tmp is RAM-backed on Cloud Run — the source must go even if thumbnailing failed.
-        try { fs.unlinkSync(tmpPath); } catch {}
-        try { fs.unlinkSync(thumbTmp); } catch {}
-      }
-    }
-  }
 
   // Heuristic recommendations tied to the real duration.
   const recs = buildRecommendations(episodeId, meta.durationSec || 300);
@@ -270,7 +230,6 @@ app.post("/api/media/upload", async (c) => {
   }
 
   // Kick the AI content pipeline (STT→refine→scenes→vision→shorts) on the worker.
-  // Enqueue = one INSERT; the GPU-free pipeline runs off-request on the worker VM.
   try {
     await markContentAnalysisPending(mediaId);
     await enqueue("content.analyze", { mediaId }, { dedupeKey: `content.analyze:${mediaId}` });
@@ -278,7 +237,151 @@ app.post("/api/media/upload", async (c) => {
     console.error("[upload] failed to enqueue content.analyze", err);
   }
 
-  return c.json({ media: mediaPublic(row), episode, recommendations: recs });
+  return { media: mediaPublic(row), episode, recommendations: recs };
+}
+
+// ── large upload, step 1: open a resumable session — bytes go browser → GCS directly ──
+// The file never passes through Cloud Run, so the 32 MB request cap, in-memory buffering,
+// and the 600 s request timeout no longer apply. Multi-hour masters upload fine.
+app.post("/api/media/upload-init", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const programId =
+    typeof body.programId === "string" && body.programId ? String(body.programId) : "p1";
+  const program = await getEntity<{ id: string; title: string; targetAge: number }>("program", programId);
+  if (!program) return c.json({ error: "program not found" }, 400);
+
+  const filename =
+    typeof body.filename === "string" && body.filename ? String(body.filename) : "video.mp4";
+  const contentType =
+    typeof body.contentType === "string" && body.contentType ? String(body.contentType) : "video/mp4";
+  const mediaId = newId("m");
+  const ext = path.extname(filename) || ".mp4";
+  const objectPath = uploadPath(mediaId, ext);
+
+  // Local dev (no GCS): there is no direct upload target — tell the client to fall back
+  // to the legacy multipart /upload endpoint (fine for the small files used in dev).
+  if (!useGcs()) return c.json({ mode: "multipart", mediaId, objectPath });
+
+  try {
+    const origin = c.req.header("origin") || undefined;
+    const sessionUrl = await createResumableSession(objectPath, contentType, origin);
+    return c.json({ mode: "resumable", mediaId, objectPath, sessionUrl });
+  } catch (err) {
+    console.error("[upload-init] resumable session failed", err);
+    return c.json({ error: "failed to init upload" }, 500);
+  }
+});
+
+// ── large upload, step 2: bytes are already in GCS → build episode/media, probe via signed URL ──
+app.post("/api/media/finalize", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const mediaId = typeof body.mediaId === "string" ? String(body.mediaId) : "";
+  const objectPath = typeof body.objectPath === "string" ? String(body.objectPath) : "";
+  if (!mediaId || !objectPath) return c.json({ error: "mediaId and objectPath required" }, 400);
+  if (!useGcs()) return c.json({ error: "finalize is GCS-mode only" }, 400);
+
+  const programId =
+    typeof body.programId === "string" && body.programId ? String(body.programId) : "p1";
+  const program = await getEntity<{ id: string; title: string; targetAge: number }>("program", programId);
+  if (!program) return c.json({ error: "program not found" }, 400);
+
+  // Confirm the object actually landed in GCS before we build rows around it.
+  if (!(await fileExists(objectPath))) return c.json({ error: "upload not found in storage" }, 400);
+
+  const filename =
+    typeof body.filename === "string" && body.filename ? String(body.filename) : `${mediaId}.mp4`;
+  const title = typeof body.title === "string" && body.title ? String(body.title) : filename;
+  const mime =
+    typeof body.contentType === "string" && body.contentType ? String(body.contentType) : "video/mp4";
+  const size =
+    typeof body.size === "number" && body.size > 0 ? body.size : await fileSize(objectPath).catch(() => 0);
+  const storedPath = `gs://${process.env.GCS_BUCKET}/${objectPath}`;
+
+  // Probe + thumbnail by handing ffmpeg a short-lived signed URL. ffmpeg range-reads only
+  // the bytes it needs (header for probe, one frame for the thumb) — no multi-GB download,
+  // so Cloud Run memory stays flat regardless of source length.
+  let meta = { durationSec: 0, width: 0, height: 0, codec: "", hasAudio: false };
+  let thumbStored: string | null = null;
+  if (FFMPEG) {
+    try {
+      const readUrl = await signedReadUrl(objectPath);
+      meta = await probe(readUrl).catch((e) => {
+        console.error("[finalize] probe failed", e);
+        return meta;
+      });
+      const tmpDir = path.resolve("/tmp/stepd-uploads");
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const thumbTmp = path.join(tmpDir, `${mediaId}.jpg`);
+      try {
+        await captureThumbnail(readUrl, Math.max(1, meta.durationSec * 0.1), thumbTmp);
+        thumbStored = await uploadFile(thumbPath(mediaId), thumbTmp);
+      } catch (e) {
+        console.error("[finalize] thumbnail failed", e);
+      } finally {
+        // /tmp is RAM-backed on Cloud Run — clear the thumb temp regardless of outcome.
+        try { fs.unlinkSync(thumbTmp); } catch {}
+      }
+    } catch (err) {
+      // Most likely the runtime SA lacks signBlob — degrade gracefully (duration 0 → default recs).
+      console.error("[finalize] signed-url probe unavailable (grant signBlob to the Cloud Run SA):", err);
+    }
+  }
+
+  const result = await buildEpisodeAndMedia({
+    mediaId, programId, program, storedPath,
+    filename, title, mime, size, meta, thumbPath: thumbStored,
+  });
+  return c.json(result);
+});
+
+app.post("/api/media/upload", async (c) => {
+  const body = await c.req.parseBody();
+  const file = body["file"];
+  if (!(file instanceof File)) return c.json({ error: "file field required" }, 400);
+
+  const programId = typeof body["programId"] === "string" && body["programId"] ? String(body["programId"]) : "p1";
+  const program = await getEntity<{ id: string; title: string; targetAge: number }>("program", programId);
+  if (!program) return c.json({ error: "program not found" }, 400);
+
+  const mediaId = newId("m");
+  const ext = path.extname(file.name) || ".mp4";
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const objPath = uploadPath(mediaId, ext);
+
+  // Write to GCS (or local fallback). NOTE: this path buffers the whole file in memory
+  // and is subject to Cloud Run's ~32 MB request cap — it's only for small/local uploads.
+  // Large masters go through /upload-init + /finalize (direct-to-GCS resumable).
+  const storedPath = await writeFile(objPath, buffer);
+
+  // Probe + thumbnail from a local temp copy (ffmpeg reads the filesystem).
+  let meta = { durationSec: 0, width: 0, height: 0, codec: "", hasAudio: false };
+  let thumbStored: string | null = null;
+  if (FFMPEG) {
+    const tmpDir = path.resolve("/tmp/stepd-uploads");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = path.join(tmpDir, `${mediaId}${ext}`);
+    fs.writeFileSync(tmpPath, buffer);
+    const thumbTmp = path.join(tmpDir, `${mediaId}.jpg`);
+    try {
+      meta = await probe(tmpPath);
+      await captureThumbnail(tmpPath, Math.max(1, meta.durationSec * 0.1), thumbTmp);
+      thumbStored = await uploadFile(thumbPath(mediaId), thumbTmp);
+    } catch {
+      /* probe/thumb are best-effort */
+    } finally {
+      // /tmp is RAM-backed on Cloud Run — clear both temps even if probe/thumb failed.
+      try { fs.unlinkSync(tmpPath); } catch {}
+      try { fs.unlinkSync(thumbTmp); } catch {}
+    }
+  }
+
+  const title = typeof body["title"] === "string" && body["title"] ? String(body["title"]) : file.name;
+  const result = await buildEpisodeAndMedia({
+    mediaId, programId, program, storedPath,
+    filename: file.name, title, mime: file.type || "video/mp4", size: file.size,
+    meta, thumbPath: thumbStored,
+  });
+  return c.json(result);
 });
 
 // ── adopt recommendation → clip (real trim-encode when a master video exists) ──
@@ -322,15 +425,10 @@ app.post("/api/recommendations/:id/adopt", async (c) => {
         const clipObjPath = clipPath(clipMediaId);
         const tmpPath = path.join(tmpDir, `${clipMediaId}.mp4`);
 
-        // ffmpeg reads from the local filesystem, so a GCS master has to come down first.
-        let srcPath = master.path;
-        if (useGcs()) {
-          srcPath = path.join(tmpDir, `${clipMediaId}-src.mp4`);
-          const { Storage } = await import("@google-cloud/storage");
-          const storage = new Storage();
-          const bucket = storage.bucket(process.env.GCS_BUCKET!);
-          await bucket.file(masterObjPath).download({ destination: srcPath });
-        }
+        // ffmpeg reads the master directly. For GCS we hand it a short-lived signed URL
+        // and let trimEncode seek via HTTP range (-ss before -i) — only the requested
+        // segment is fetched, so a multi-hour master never lands in Cloud Run's RAM.
+        const srcPath = useGcs() ? await signedReadUrl(masterObjPath) : master.path;
 
         await trimEncode(srcPath, rec.startTime, rec.endTime, tmpPath);
         const cmeta = await probe(tmpPath).catch(() => ({
@@ -361,10 +459,9 @@ app.post("/api/recommendations/:id/adopt", async (c) => {
         clip.videoUrl = `/api/media/${clipMediaId}/stream`;
         clip.sourceMediaId = master.id;
 
-        // Cleanup temp
+        // Cleanup temp (srcPath is now either a signed URL or the local master — nothing to delete).
         try { fs.unlinkSync(tmpPath); } catch {}
         try { fs.unlinkSync(thumbTmp); } catch {}
-        if (srcPath !== master.path) { try { fs.unlinkSync(srcPath); } catch {} }
       } catch (err) {
         console.error("[adopt] trim-encode failed:", err);
       }

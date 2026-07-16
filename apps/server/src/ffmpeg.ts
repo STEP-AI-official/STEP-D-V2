@@ -23,7 +23,9 @@ export function hasFfmpeg(): boolean {
 
 export function probe(filePath: string): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
-    if (!fs.existsSync(filePath)) {
+    // filePath may be a signed https:// URL (GCS range-read) — only guard local paths.
+    const isUrl = /^https?:\/\//i.test(filePath);
+    if (!isUrl && !fs.existsSync(filePath)) {
       return reject(new Error(`File not found: ${filePath}`));
     }
     execFile(

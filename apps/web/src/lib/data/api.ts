@@ -47,13 +47,172 @@ export async function saveClipEditor(clipId: string, editorState: EditorState): 
   await json<{ ok: boolean }>(res);
 }
 
+type UploadResult = { episode: { id: string }; media: unknown; recommendations: unknown[] };
+
+// GCS resumable chunk size. MUST be a multiple of 256 KiB (GCS requirement); 16 MiB = 64×256 KiB.
+const RESUMABLE_CHUNK = 16 * 1024 * 1024;
+const CHUNK_RETRIES = 4;
+
+/**
+ * Upload a (possibly multi-hour, multi-GB) master video.
+ *
+ * The server first hands us a direct-to-GCS resumable session — the bytes stream
+ * straight to Cloud Storage in chunks, bypassing Cloud Run entirely (no 32 MB request
+ * cap, no server-side buffering, no request timeout, and a dropped chunk retries instead
+ * of restarting the whole upload). We then call /finalize to build the episode + recs.
+ *
+ * On local dev (no GCS) the server replies mode:"multipart" and we fall back to the
+ * old single-request upload, which is fine for the small files used there.
+ */
 export async function uploadVideo(
   file: File,
   programId: string,
   title?: string,
   onProgress?: (pct: number) => void,
-): Promise<{ episode: { id: string }; media: unknown; recommendations: unknown[] }> {
-  // XHR for upload progress (fetch has no upload progress in browsers).
+): Promise<UploadResult> {
+  const init = await json<
+    | { mode: "resumable"; mediaId: string; objectPath: string; sessionUrl: string }
+    | { mode: "multipart"; mediaId: string; objectPath: string }
+  >(
+    await fetch(`${API_BASE}/media/upload-init`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: file.name,
+        contentType: file.type || "video/mp4",
+        programId,
+        title,
+      }),
+    }),
+  );
+
+  if (init.mode === "multipart") return uploadVideoMultipart(file, programId, title, onProgress);
+
+  await uploadResumable(init.sessionUrl, file, onProgress);
+
+  return json<UploadResult>(
+    await fetch(`${API_BASE}/media/finalize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mediaId: init.mediaId,
+        objectPath: init.objectPath,
+        programId,
+        title,
+        filename: file.name,
+        contentType: file.type || "video/mp4",
+        size: file.size,
+      }),
+    }),
+  );
+}
+
+/** PUT the file to a GCS resumable session URI in chunks, resuming on transient failures. */
+async function uploadResumable(
+  sessionUrl: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<void> {
+  const total = file.size;
+  let offset = 0;
+
+  while (offset < total) {
+    const end = Math.min(offset + RESUMABLE_CHUNK, total);
+    const chunk = file.slice(offset, end);
+
+    let res: ChunkResponse | null = null;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < CHUNK_RETRIES; attempt++) {
+      try {
+        res = await putChunk(sessionUrl, chunk, offset, end - 1, total, (loaded) => {
+          if (onProgress) onProgress(Math.min(99, Math.round(((offset + loaded) / total) * 100)));
+        });
+        break;
+      } catch (err) {
+        // Network drop mid-chunk — re-sync the committed offset from GCS, then retry.
+        lastErr = err;
+        const committed = await queryCommittedOffset(sessionUrl, total).catch(() => null);
+        if (committed !== null && committed > offset) {
+          offset = committed;
+          if (offset >= total) return;
+        }
+      }
+    }
+    if (!res) throw new Error(`upload chunk failed after retries: ${lastErr ?? "unknown error"}`);
+
+    if (res.status === 200 || res.status === 201) {
+      offset = total;
+    } else if (res.status === 308) {
+      // Chunk accepted, more to come. Trust the Range header if CORS exposes it; else advance.
+      const next = parseRangeEnd(res.range);
+      offset = next !== null ? next + 1 : end;
+    } else {
+      throw new Error(`upload chunk rejected: ${res.status} ${res.body}`);
+    }
+  }
+  if (onProgress) onProgress(100);
+}
+
+type ChunkResponse = { status: number; range: string | null; body: string };
+
+function putChunk(
+  sessionUrl: string,
+  chunk: Blob,
+  start: number,
+  endInclusive: number,
+  total: number,
+  onProgress?: (loaded: number) => void,
+): Promise<ChunkResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", sessionUrl);
+    xhr.setRequestHeader("Content-Range", `bytes ${start}-${endInclusive}/${total}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded);
+    };
+    xhr.onload = () =>
+      resolve({ status: xhr.status, range: xhr.getResponseHeader("Range"), body: xhr.responseText });
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
+    xhr.send(chunk);
+  });
+}
+
+/** Ask GCS how many bytes it has committed (PUT with an empty body + `bytes *​/total`). */
+function queryCommittedOffset(sessionUrl: string, total: number): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", sessionUrl);
+    xhr.setRequestHeader("Content-Range", `bytes */${total}`);
+    xhr.onload = () => {
+      if (xhr.status === 308) {
+        const next = parseRangeEnd(xhr.getResponseHeader("Range"));
+        resolve(next !== null ? next + 1 : 0);
+      } else if (xhr.status === 200 || xhr.status === 201) {
+        resolve(total); // already complete
+      } else {
+        resolve(null);
+      }
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.send();
+  });
+}
+
+/** "bytes=0-16777215" → 16777215. Returns null when the header is absent (CORS not exposing it). */
+function parseRangeEnd(range: string | null): number | null {
+  if (!range) return null;
+  const m = /bytes=\d+-(\d+)/.exec(range);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/** Legacy single-request multipart upload — used only in local dev (no GCS). */
+function uploadVideoMultipart(
+  file: File,
+  programId: string,
+  title: string | undefined,
+  onProgress?: (pct: number) => void,
+): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append("file", file);

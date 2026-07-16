@@ -74,6 +74,48 @@ export async function uploadFile(objectPath: string, localPath: string): Promise
   return local;
 }
 
+// ── direct-to-GCS upload (large files bypass the server) ─────────────────────────
+
+/**
+ * Initiate a resumable upload session and return the session URI.
+ * The browser PUTs the file in chunks straight to this URI — the bytes never pass
+ * through Cloud Run, so there is no 32 MB request cap, no in-memory buffering, and
+ * no request timeout. Multi-hour / multi-GB masters upload fine.
+ *
+ * Uses the runtime service account (ADC) to open the session — no signBlob needed
+ * for this call. The bucket must allow the browser origin via CORS (PUT + Content-Range).
+ */
+export async function createResumableSession(
+  objectPath: string,
+  contentType: string,
+  origin?: string,
+): Promise<string> {
+  const b = getBucket();
+  if (!b) throw new Error("resumable upload requires GCS mode (GCS_BUCKET unset)");
+  const [uri] = await b.file(objectPath).createResumableUpload({
+    metadata: { contentType: contentType || "application/octet-stream" },
+    ...(origin ? { origin } : {}),
+  });
+  return uri;
+}
+
+/**
+ * Short-lived signed READ URL so ffmpeg/ffprobe can range-read a GCS object over
+ * https without downloading it whole (probe reads the header; the thumbnail seeks to
+ * one frame). Requires the runtime service account to have signBlob permission
+ * (roles/iam.serviceAccountTokenCreator on itself) — Cloud Run ADC has no private key.
+ */
+export async function signedReadUrl(objectPath: string, ttlMs = 60 * 60 * 1000): Promise<string> {
+  const b = getBucket();
+  if (!b) throw new Error("signed URL requires GCS mode (GCS_BUCKET unset)");
+  const [url] = await b.file(objectPath).getSignedUrl({
+    version: "v4",
+    action: "read",
+    expires: Date.now() + ttlMs,
+  });
+  return url;
+}
+
 // ── read / stream ──────────────────────────────────────────────────────────────
 
 export async function fileSize(objectPath: string): Promise<number> {
