@@ -49,9 +49,24 @@ function fmtDur(sec: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** USD amount (YouTube revenue metrics are USD). */
-function fmtUsd(n: number): string {
-  return n >= 1000 ? `$${(n / 1000).toFixed(1)}K` : `$${n.toFixed(2)}`;
+/**
+ * YouTube revenue metrics come back in USD (the Analytics API default). We display them
+ * in KRW to match YouTube Studio, converting at an approximate spot rate. Display-only
+ * estimate — Studio sums per-day historical rates, so figures differ slightly.
+ */
+const USD_TO_KRW = 1485; // ~2026-07 spot rate (researched); update as it moves
+
+/** Convert a USD revenue figure to KRW and format with 억/만 units. */
+function fmtKrw(usd: number): string {
+  const won = (usd ?? 0) * USD_TO_KRW;
+  if (won >= 100_000_000) return `₩${(won / 100_000_000).toFixed(1)}억`;
+  if (won >= 10_000) return `₩${Math.round(won / 10_000).toLocaleString("ko-KR")}만`;
+  return `₩${Math.round(won).toLocaleString("ko-KR")}`;
+}
+
+/** Revenue per 1,000 views (YouTube RPM), USD. */
+function rpm(revenue?: number, views?: number): number {
+  return views && views > 0 ? ((revenue ?? 0) / views) * 1000 : 0;
 }
 
 /** Growth display: huge % on a tiny prior base reads like a bug, so show it as a
@@ -290,9 +305,34 @@ export default function ChannelTrendsPage() {
               <Wallet className="size-4" /> 수익 대시보드 (예상)
             </div>
             {(summary.channelRevenue ?? 0) > 0 ? (
-              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                <span className="text-2xl font-bold text-status-done">{fmtUsd(summary.channelRevenue ?? 0)}</span>
-                <span className="text-xs text-muted-foreground">최근 {periodDays}일 채널 예상 수익 · 영상 클릭 시 영상별 수익</span>
+              <div>
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <span className="text-2xl font-bold text-status-done">{fmtKrw(summary.channelRevenue ?? 0)}</span>
+                  <span className="text-xs text-muted-foreground">최근 {periodDays}일 채널 예상 수익</span>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <StatTile
+                    icon={Coins}
+                    label="RPM (1천뷰당)"
+                    value={fmtKrw(rpm(summary.channelRevenue, summary.recentPeriodViews))}
+                    sub="수익 ÷ 조회수 × 1000"
+                  />
+                  <StatTile
+                    icon={DollarSign}
+                    label="일 평균 수익"
+                    value={fmtKrw((summary.channelRevenue ?? 0) / periodDays)}
+                    sub={`${periodDays}일 평균`}
+                  />
+                  <StatTile
+                    icon={Eye}
+                    label="기간 조회수"
+                    value={fmt(summary.recentPeriodViews)}
+                    sub={`최근 ${periodDays}일`}
+                  />
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  영상 클릭 시 영상별 상세 수익(광고수익·총수익·CPM·RPM) · YouTube는 USD로 집계, 환율 ₩{USD_TO_KRW.toLocaleString("ko-KR")}/$ 적용(예상)
+                </p>
               </div>
             ) : selectedChannel?.hasMonetaryScope === false ? (
               <p className="text-xs leading-relaxed text-muted-foreground">
@@ -558,11 +598,22 @@ export default function ChannelTrendsPage() {
                 <DollarSign className="size-3.5" /> 수익 (예상)
               </h4>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <StatTile icon={DollarSign} tone="done" label="예상 수익" value={fmtUsd(videoAnalytics.summary.estimatedRevenue ?? 0)} />
+                <StatTile icon={DollarSign} tone="done" label="예상 수익" value={fmtKrw(videoAnalytics.summary.estimatedRevenue ?? 0)} />
+                {videoAnalytics.summary.estimatedAdRevenue != null && (
+                  <StatTile icon={DollarSign} label="광고 수익" value={fmtKrw(videoAnalytics.summary.estimatedAdRevenue ?? 0)} />
+                )}
+                {videoAnalytics.summary.grossRevenue != null && (
+                  <StatTile icon={Wallet} label="총수익(Gross)" value={fmtKrw(videoAnalytics.summary.grossRevenue ?? 0)} />
+                )}
                 <StatTile
                   icon={Coins}
                   label="CPM"
-                  value={fmtUsd(videoAnalytics.summary.playbackBasedCpm ?? videoAnalytics.summary.cpm ?? 0)}
+                  value={fmtKrw(videoAnalytics.summary.playbackBasedCpm ?? videoAnalytics.summary.cpm ?? 0)}
+                />
+                <StatTile
+                  icon={TrendingUp}
+                  label="RPM (1천뷰당)"
+                  value={fmtKrw(rpm(videoAnalytics.summary.estimatedRevenue, videoAnalytics.video.viewCount))}
                 />
                 <StatTile icon={Eye} label="광고 노출" value={fmt(videoAnalytics.summary.adImpressions ?? 0)} />
                 <StatTile icon={Play} label="수익 재생" value={fmt(videoAnalytics.summary.monetizedPlaybacks ?? 0)} />
