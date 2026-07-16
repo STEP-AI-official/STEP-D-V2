@@ -9,21 +9,21 @@ import { useAppData } from "@/lib/data/store";
 import { useToast } from "@/components/ui/toast";
 
 /** Header action: open the real-video upload dialog (needs the backend). */
-export function UploadVideoButton() {
+export function UploadVideoButton({ programId, variant = "outline" }: { programId?: string; variant?: "outline" | "default" } = {}) {
   const { serverConnected } = useAppData();
   const [open, setOpen] = useState(false);
   return (
     <>
       <Button
         size="sm"
-        variant="outline"
+        variant={variant}
         onClick={() => setOpen(true)}
         disabled={!serverConnected}
         title={serverConnected ? "실제 영상 업로드" : "백엔드 서버가 필요합니다 (pnpm dev:server)"}
       >
         <Upload /> 영상 업로드
       </Button>
-      {open && <UploadDialog onClose={() => setOpen(false)} />}
+      {open && <UploadDialog onClose={() => setOpen(false)} defaultProgramId={programId} />}
     </>
   );
 }
@@ -43,11 +43,11 @@ function fmtEta(sec: number): string {
   return `약 ${h}시간 ${m}분`;
 }
 
-function UploadDialog({ onClose }: { onClose: () => void }) {
+function UploadDialog({ onClose, defaultProgramId }: { onClose: () => void; defaultProgramId?: string }) {
   const { programs, uploadVideo } = useAppData();
   const { toast } = useToast();
   const router = useRouter();
-  const [programId, setProgramId] = useState(programs[0]?.id ?? "");
+  const [programId, setProgramId] = useState(defaultProgramId ?? programs[0]?.id ?? "");
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);

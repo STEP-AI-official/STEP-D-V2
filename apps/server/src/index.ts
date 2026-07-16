@@ -49,7 +49,7 @@ import {
   type ChannelVideo,
 } from "./db-pg.ts";
 import { hasFfmpeg, probe, captureThumbnail, trimEncode } from "./ffmpeg.ts";
-import { buildRecommendations, newId } from "./pipeline.ts";
+import { newId } from "./pipeline.ts";
 import {
   syncChannelVideos,
   fetchChannelAnalytics,
@@ -73,6 +73,7 @@ import {
   useGcs,
   createResumableSession,
   signedReadUrl,
+  deleteFile,
 } from "./storage-gcs.ts";
 
 // Sync init — no CPU throttling issues on Cloud Run
@@ -138,6 +139,26 @@ app.post("/api/programs", async (c) => {
   };
   await prependEntity("program", id, program);
   return c.json({ program });
+});
+
+// ── admin: wipe all content (programs/episodes/recommendations/clips + media). Irreversible. ──
+app.post("/api/admin/reset", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  if (body.confirm !== "RESET") return c.json({ error: "body.confirm must be 'RESET'" }, 400);
+
+  // Remove stored files first (best-effort) so GCS/local don't accrue orphans.
+  const media = await listMedia();
+  for (const m of media) {
+    try { await deleteFile(parseObjectPath(m.path)); } catch {}
+    if (m.thumbPath) { try { await deleteFile(parseObjectPath(m.thumbPath)); } catch {} }
+  }
+
+  const pool = getPool();
+  await pool.query("DELETE FROM entities WHERE kind IN ('program','episode','recommendation','clip')");
+  await pool.query("DELETE FROM media");
+  try { await pool.query("DELETE FROM content_analysis"); } catch {}
+
+  return c.json({ ok: true, deletedMedia: media.length });
 });
 
 // ── video streaming (HTTP range) ──────────────────────────────────────────────
@@ -264,13 +285,8 @@ async function buildEpisodeAndMedia(opts: {
   };
   await insertMedia(row);
 
-  // Heuristic recommendations tied to the real duration.
-  const recs = buildRecommendations(episodeId, meta.durationSec || 300);
-  for (const r of recs) {
-    await prependEntity("recommendation", r.id, r);
-  }
-
-  // Kick the AI content pipeline (STT→refine→scenes→vision→shorts) on the worker.
+  // No heuristic placeholder recommendations — real segments come from the AI content
+  // pipeline (content.analyze) on the worker. Uploads start with an empty recommend board.
   try {
     await markContentAnalysisPending(mediaId);
     await enqueue("content.analyze", { mediaId }, { dedupeKey: `content.analyze:${mediaId}` });
@@ -278,7 +294,7 @@ async function buildEpisodeAndMedia(opts: {
     console.error("[upload] failed to enqueue content.analyze", err);
   }
 
-  return { media: mediaPublic(row), episode, recommendations: recs };
+  return { media: mediaPublic(row), episode, recommendations: [] };
 }
 
 // ── large upload, step 1: open a resumable session — bytes go browser → GCS directly ──
@@ -497,7 +513,7 @@ app.post("/api/recommendations/:id/adopt", async (c) => {
         };
         await insertMedia(cRow);
         clip.mediaId = clipMediaId;
-        clip.videoUrl = `/api/media/${clipMediaId}/stream`;
+        clip.videoUrl = `/media/${clipMediaId}/stream`;
         clip.sourceMediaId = master.id;
 
         // Cleanup temp (srcPath is now either a signed URL or the local master — nothing to delete).

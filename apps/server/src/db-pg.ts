@@ -772,8 +772,10 @@ export function mediaPublic(m: MediaRow) {
     height: m.height,
     codec: m.codec,
     hasAudio: Boolean(m.hasAudio),
-    streamUrl: `/api/media/${m.id}/stream`,
-    thumbUrl: m.thumbPath ? `/api/media/${m.id}/thumb` : null,
+    // Relative to the web's API_BASE (which already ends in /api) — no /api prefix here,
+    // else `${apiBase}${streamUrl}` doubles to /api/api/... and 404s.
+    streamUrl: `/media/${m.id}/stream`,
+    thumbUrl: m.thumbPath ? `/media/${m.id}/thumb` : null,
     createdAt: m.createdAt,
   };
 }
