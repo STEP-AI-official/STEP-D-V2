@@ -123,7 +123,15 @@ interface AppData extends AppState {
   /** Upload a real video → creates an episode + recommendations. Returns episodeId. */
   uploadVideo: (file: File, programId: string, title?: string, onProgress?: (pct: number) => void) => Promise<string>;
   /** Create a program (content root). Returns the new programId. */
-  createProgram: (input: { title: string; section?: string; targetAge?: number; cast?: string[] }) => Promise<string>;
+  createProgram: (input: {
+    title: string;
+    section?: string;
+    targetAge?: number;
+    cast?: string[];
+    programCode?: string;
+    category?: string;
+    weekdays?: number[];
+  }) => Promise<string>;
   refresh: () => Promise<void>;
 }
 
@@ -443,22 +451,35 @@ export function AppDataProvider({
   );
 
   const createProgram = useCallback(
-    async (input: { title: string; section?: string; targetAge?: number; cast?: string[] }): Promise<string> => {
+    async (input: {
+      title: string;
+      section?: string;
+      targetAge?: number;
+      cast?: string[];
+      programCode?: string;
+      category?: string;
+      weekdays?: number[];
+    }): Promise<string> => {
       if (connectedRef.current) {
         const res = await apiCreateProgram(input);
         await refresh();
         return res.program.id;
       }
       // Mock mode: keep the demo working standalone by adding to local state.
+      const smr: NonNullable<Program["smr"]> = {};
+      if (input.programCode?.trim()) smr.programCode = input.programCode.trim().toLowerCase();
+      if (input.category?.trim()) smr.category = input.category.trim();
+      if (input.weekdays?.length) smr.weekdays = input.weekdays;
       const id = `p-${Date.now()}`;
-      const program = {
+      const program: Program = {
         id,
         title: input.title,
         section: input.section ?? "예능",
         targetAge: (input.targetAge ?? 0) as Program["targetAge"],
         cast: input.cast ?? [],
         episodeCount: 0,
-        status: "active" as const,
+        status: "active",
+        ...(Object.keys(smr).length ? { smr } : {}),
       };
       setState((prev) => ({ ...prev, programs: [program, ...prev.programs] }));
       return id;

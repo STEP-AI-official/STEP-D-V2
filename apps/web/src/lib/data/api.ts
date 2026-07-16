@@ -42,6 +42,10 @@ export interface CreateProgramInput {
   section?: string;
   targetAge?: number;
   cast?: string[];
+  /** SMR feed metadata (program-level). */
+  programCode?: string;
+  category?: string;
+  weekdays?: number[];
 }
 
 /** Create a program (content root). Required before any episode/upload can exist. */

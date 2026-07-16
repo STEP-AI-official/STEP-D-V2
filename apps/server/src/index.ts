@@ -112,8 +112,30 @@ app.post("/api/programs", async (c) => {
     ? body.cast.filter((x: unknown): x is string => typeof x === "string")
     : [];
 
+  // SMR feed metadata (program-level, set once — docs/publish-fields-ux-plan.md §5.1③).
+  const smr: { programCode?: string; category?: string; weekdays?: number[] } = {};
+  if (typeof body.programCode === "string" && body.programCode.trim()) {
+    smr.programCode = body.programCode.trim().toLowerCase();
+  }
+  if (typeof body.category === "string" && body.category.trim()) {
+    smr.category = body.category.trim();
+  }
+  if (Array.isArray(body.weekdays)) {
+    const days = body.weekdays.filter((n: unknown): n is number => typeof n === "number" && n >= 0 && n <= 6);
+    if (days.length) smr.weekdays = days;
+  }
+
   const id = newId("p");
-  const program = { id, title, section, targetAge, cast, episodeCount: 0, status: "active" as const };
+  const program = {
+    id,
+    title,
+    section,
+    targetAge,
+    cast,
+    episodeCount: 0,
+    status: "active" as const,
+    ...(Object.keys(smr).length ? { smr } : {}),
+  };
   await prependEntity("program", id, program);
   return c.json({ program });
 });
