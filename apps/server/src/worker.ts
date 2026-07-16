@@ -364,6 +364,17 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // A long content.analyze (many minutes of Gemini calls) must survive a stray async error —
+  // e.g. an unhandled stream 'error' or a rejected promise from a background tick — which
+  // would otherwise kill the whole worker mid-job and leave it crash-looping. Log loudly and
+  // keep going; the per-job try/catch already parks genuine job failures.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[worker] unhandledRejection (surviving):", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[worker] uncaughtException (surviving):", err);
+  });
+
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     console.error("[worker] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are required");
     process.exit(1);

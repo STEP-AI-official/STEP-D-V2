@@ -29,7 +29,6 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { href: "/", label: "대시보드", icon: Inbox, badgeKey: "inbox" },
   { href: "/programs", label: "콘텐츠", icon: LayoutGrid },
-  { href: "/recommendations", label: "추천 & 채택", icon: Sparkles, badgeKey: "recommendations" },
   { href: "/clips", label: "클립", icon: Clapperboard },
   { href: "/distribution", label: "배포현황", icon: Send, badgeKey: "distributionFailed" },
   { href: "/analytics", label: "성과", icon: BarChart3, roles: ["admin", "superadmin"] },
