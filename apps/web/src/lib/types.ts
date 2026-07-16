@@ -6,6 +6,7 @@
  * API (milestone M6) both satisfy these shapes behind a single data seam (lib/data/repo).
  */
 
+import type { EditorState } from "@/lib/editor/presets";
 import type {
   AspectRatio,
   ClipCategory,
@@ -127,6 +128,8 @@ export interface Clip {
   status: "editing" | "encoding" | "ready" | "published";
   /** Lineage back-references. */
   sourceRecommendationId?: string;
+  /** Serialized editor decisions (revision JSON) — persisted on save, no render (plan §2.4). */
+  editorState?: EditorState;
   distributions: DistributionState[];
 }
 

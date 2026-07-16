@@ -5,6 +5,7 @@
  */
 import type { DistributionChannel } from "@/lib/constants";
 import type { MetaPlatform } from "@/lib/types";
+import type { EditorState } from "@/lib/editor/presets";
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "/api";
@@ -34,6 +35,16 @@ async function json<T>(res: Response): Promise<T> {
 export async function fetchState(signal?: AbortSignal): Promise<ServerState> {
   const res = await fetch(`${API_BASE}/state`, { signal, cache: "no-store" });
   return json<ServerState>(res);
+}
+
+/** Persist the editor's decision blob on a clip (metadata only — no render, plan §2.4). */
+export async function saveClipEditor(clipId: string, editorState: EditorState): Promise<void> {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/editor`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ editorState }),
+  });
+  await json<{ ok: boolean }>(res);
 }
 
 export async function uploadVideo(
@@ -240,6 +251,48 @@ export async function fetchChannelTrends(channelId: string, days = 30): Promise<
 export async function fetchVideoTrend(videoId: string, days = 30): Promise<VideoTrend> {
   const res = await fetch(`${API_BASE}/youtube/trends/video/${videoId}?days=${days}`);
   return json<VideoTrend>(res);
+}
+
+export interface VideoAnalyticsSummary {
+  views?: number;
+  likes?: number;
+  shares?: number;
+  subscribersGained?: number;
+  averageViewDuration?: number; // seconds
+  averageViewPercentage?: number; // 0–100
+  estimatedMinutesWatched?: number;
+}
+export interface VideoTrafficSource {
+  source: string;
+  views: number;
+  estimatedMinutesWatched?: number;
+}
+export interface VideoDemographic {
+  ageGroup?: string;
+  gender?: string;
+  percentage?: number;
+}
+export interface VideoComment {
+  author: string;
+  text: string;
+  likeCount: number;
+  publishedAt: string;
+}
+export interface VideoAnalytics {
+  video: YouTubeChannelVideo;
+  summary: VideoAnalyticsSummary;
+  trafficSources: VideoTrafficSource[];
+  demographics: VideoDemographic[];
+  retention: { ratio: number; watchRatio: number }[];
+  comments: VideoComment[];
+  fetchedAt: number | null;
+}
+
+/** Rich per-video analytics (avg view duration/%, traffic sources, demographics,
+ *  retention curve, top comments) collected by the video.analyze / video.comments jobs. */
+export async function fetchVideoAnalytics(videoId: string): Promise<VideoAnalytics> {
+  const res = await fetch(`${API_BASE}/youtube/videos/${videoId}/analytics`);
+  return json<VideoAnalytics>(res);
 }
 
 export async function deleteTrackedVideo(videoId: string): Promise<void> {

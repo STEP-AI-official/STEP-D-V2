@@ -30,6 +30,12 @@ export interface EditorElement {
   x: number; // %
   y: number; // %
   text: string;
+  size?: number; // font px; falls back to a per-type default
+}
+
+/** Default font size (px) for a freshly added element. */
+export function defaultElementSize(type: ElementType): number {
+  return type === "arrow" ? 40 : 14;
 }
 
 export interface EditorState {

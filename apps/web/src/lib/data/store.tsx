@@ -41,7 +41,9 @@ import {
   rejectRec,
   publishClips,
   retryDist,
+  saveClipEditor as saveClipEditorApi,
 } from "@/lib/data/api";
+import type { EditorState } from "@/lib/editor/presets";
 
 interface AppState {
   programs: Program[];
@@ -108,6 +110,8 @@ interface AppData extends AppState {
   mediaForEpisode: (episodeId: string, role?: string) => MediaAsset | undefined;
   // actions
   adoptRecommendation: (id: string) => Promise<string>;
+  /** Persist the editor's decision blob on a clip (metadata only, no render). */
+  saveClipEditor: (clipId: string, editorState: EditorState) => Promise<void>;
   rejectRecommendation: (id: string, reason: string) => void;
   selectThumbnail: (recId: string, thumbId: string) => void;
   publishClip: (clipId: string, channels: DistributionChannel[], opts?: PublishOpts) => void;
@@ -435,6 +439,17 @@ export function AppDataProvider({
     [refresh],
   );
 
+  const saveClipEditor = useCallback(async (clipId: string, editorState: EditorState) => {
+    // Persist locally first so reopening restores the edit even in mock mode.
+    setState((prev) => ({
+      ...prev,
+      clips: prev.clips.map((c) => (c.id === clipId ? { ...c, editorState } : c)),
+    }));
+    if (connectedRef.current) {
+      await saveClipEditorApi(clipId, editorState);
+    }
+  }, []);
+
   const value = useMemo<AppData>(() => {
     const inbox = deriveInbox(state);
     return {
@@ -452,6 +467,7 @@ export function AppDataProvider({
       mediaForEpisode: (episodeId, role = "master") =>
         media.find((m) => m.episodeId === episodeId && m.role === role),
       adoptRecommendation,
+      saveClipEditor,
       rejectRecommendation,
       selectThumbnail,
       publishClip,
@@ -466,6 +482,7 @@ export function AppDataProvider({
     media,
     serverConnected,
     adoptRecommendation,
+    saveClipEditor,
     rejectRecommendation,
     selectThumbnail,
     publishClip,

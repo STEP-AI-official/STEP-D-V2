@@ -5,51 +5,93 @@ import { Play, Pause, Scissors, Gauge, Volume2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTimecode } from "@/lib/utils";
 import type { EditorState } from "@/lib/editor/presets";
+import { useAudioPeaks, Waveform } from "@/components/editor/editor-waveform";
+import { TimecodeInput } from "@/components/editor/editable-timecode";
 
 type Update = (patch: Partial<EditorState>) => void;
 const SPEEDS = [0.5, 1, 1.5, 2];
 
-/** Bottom transport: playhead (rAF), trim handles, speed, hook tools, ±sync fine-tune. */
+/** Bottom transport: drives the real <video>, trim handles, speed, hook tools, ±sync.
+ *  The <video> element is the source of truth — the playhead reads its currentTime and
+ *  playback loops inside [trimIn, trimOut] (render-free segment preview, plan §2.4). */
 export function EditorTimeline({
   state,
   update,
   duration,
+  video,
+  videoUrl,
+  onTogglePlay,
 }: {
   state: EditorState;
   update: Update;
   duration: number;
+  video: HTMLVideoElement | null;
+  videoUrl?: string;
+  onTogglePlay: () => void;
 }) {
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
   const raf = useRef<number | undefined>(undefined);
-  const last = useRef<number>(0);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const peaks = useAudioPeaks(videoUrl);
 
+  // Mirror the element's play state + position (it is the source of truth).
   useEffect(() => {
-    if (!playing) return;
-    last.current = performance.now();
-    const loop = (now: number) => {
-      const dt = ((now - last.current) / 1000) * state.speed;
-      last.current = now;
-      setT((prev) => {
-        const next = prev + dt;
-        return next >= state.trimOut ? state.trimIn : next;
-      });
+    if (!video) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    const onTime = () => setT(video.currentTime);
+    video.addEventListener("play", onPlay);
+    video.addEventListener("pause", onPause);
+    video.addEventListener("seeked", onTime);
+    setPlaying(!video.paused);
+    setT(video.currentTime);
+    return () => {
+      video.removeEventListener("play", onPlay);
+      video.removeEventListener("pause", onPause);
+      video.removeEventListener("seeked", onTime);
+    };
+  }, [video]);
+
+  // While playing, advance the playhead from the element and loop within the trim window.
+  useEffect(() => {
+    if (!video || !playing) return;
+    const loop = () => {
+      if (video.currentTime >= state.trimOut) video.currentTime = state.trimIn;
+      setT(video.currentTime);
       raf.current = requestAnimationFrame(loop);
     };
     raf.current = requestAnimationFrame(loop);
     return () => {
       if (raf.current) cancelAnimationFrame(raf.current);
     };
-  }, [playing, state.speed, state.trimIn, state.trimOut]);
+  }, [video, playing, state.trimIn, state.trimOut]);
+
+  // Keep playback speed in sync with the transport.
+  useEffect(() => {
+    if (video) video.playbackRate = state.speed;
+  }, [video, state.speed]);
 
   const pct = (v: number) => `${(v / Math.max(1, duration)) * 100}%`;
   const trimmedLen = Math.max(0, state.trimOut - state.trimIn);
+
+  function seekTo(sec: number) {
+    const clamped = Math.max(0, Math.min(sec, duration));
+    if (video) video.currentTime = clamped;
+    setT(clamped);
+  }
+  function onTrackClick(e: React.MouseEvent<HTMLDivElement>) {
+    const el = trackRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    seekTo(((e.clientX - rect.left) / rect.width) * duration);
+  }
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <button
-          onClick={() => setPlaying((v) => !v)}
+          onClick={onTogglePlay}
           className="flex size-9 items-center justify-center rounded-full bg-white text-black"
         >
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
@@ -73,15 +115,20 @@ export function EditorTimeline({
         </div>
       </div>
 
-      {/* track with trim window + playhead */}
-      <div className="relative h-9 rounded-md bg-zinc-800">
+      {/* track: waveform (speech boundaries) + trim window + playhead — click to seek */}
+      <div
+        ref={trackRef}
+        onClick={onTrackClick}
+        className="relative h-12 cursor-pointer overflow-hidden rounded-md bg-zinc-800"
+      >
+        <Waveform peaks={peaks} className="pointer-events-none absolute inset-0 h-full w-full opacity-80" />
         <div
-          className="absolute inset-y-0 rounded-md border border-emerald-500/60 bg-emerald-500/15"
+          className="pointer-events-none absolute inset-y-0 rounded-md border border-emerald-500/60 bg-emerald-500/15"
           style={{ left: pct(state.trimIn), width: pct(trimmedLen) }}
         >
           <Scissors className="absolute -left-2 top-1/2 size-3.5 -translate-y-1/2 text-emerald-400" />
         </div>
-        <div className="absolute top-0 h-full w-0.5 bg-white" style={{ left: pct(t) }} />
+        <div className="pointer-events-none absolute top-0 h-full w-0.5 bg-white" style={{ left: pct(t) }} />
       </div>
 
       {/* trim controls + fine-tune */}
@@ -94,10 +141,23 @@ export function EditorTimeline({
             max={duration}
             step={0.1}
             value={state.trimIn}
-            onChange={(e) => update({ trimIn: Math.min(Number(e.target.value), state.trimOut - 0.5) })}
+            onChange={(e) => {
+              const v = Math.min(Number(e.target.value), state.trimOut - 0.5);
+              update({ trimIn: v });
+              seekTo(v);
+            }}
             className="w-32"
           />
-          <span className="tabular-nums">{formatTimecode(state.trimIn)}</span>
+          <TimecodeInput
+            value={state.trimIn}
+            min={0}
+            max={state.trimOut - 0.1}
+            onCommit={(v) => {
+              update({ trimIn: v });
+              seekTo(v);
+            }}
+            className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center tabular-nums text-zinc-200 outline-none focus:border-zinc-500"
+          />
         </label>
         <label className="flex items-center gap-2">
           OUT
@@ -110,7 +170,13 @@ export function EditorTimeline({
             onChange={(e) => update({ trimOut: Math.max(Number(e.target.value), state.trimIn + 0.5) })}
             className="w-32"
           />
-          <span className="tabular-nums">{formatTimecode(state.trimOut)}</span>
+          <TimecodeInput
+            value={state.trimOut}
+            min={state.trimIn + 0.1}
+            max={duration}
+            onCommit={(v) => update({ trimOut: v })}
+            className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center tabular-nums text-zinc-200 outline-none focus:border-zinc-500"
+          />
         </label>
 
         <div className="ml-auto flex items-center gap-1.5">

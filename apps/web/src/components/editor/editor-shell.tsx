@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Save, Send, Info, Check, Sparkles } from "lucide-react";
 import { useAppData } from "@/lib/data/store";
@@ -17,7 +17,7 @@ import { EditorAiPanel } from "@/components/editor/editor-ai-panel";
 import type { Recommendation } from "@/lib/types";
 
 export function EditorShell({ clipId }: { clipId: string }) {
-  const { clips, recsForEpisode, apiBase, mediaForEpisode } = useAppData();
+  const { clips, recsForEpisode, apiBase, mediaForEpisode, saveClipEditor } = useAppData();
   const clip = clips.find((c) => c.id === clipId);
 
   const title = clip?.title ?? "새 클립";
@@ -29,8 +29,35 @@ export function EditorShell({ clipId }: { clipId: string }) {
   const videoRel = clip?.videoUrl ?? master?.streamUrl;
   const videoUrl = videoRel ? `${apiBase}${videoRel}` : undefined;
 
-  const [state, setState] = useState<EditorState>(() => makeInitialEditorState(title, duration));
+  const [state, setState] = useState<EditorState>(
+    () => clip?.editorState ?? makeInitialEditorState(title, duration),
+  );
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Hydrate from a previously saved revision once the clip lands (async store load /
+  // hard refresh). Keyed on clip id so it runs on first arrival, never clobbering edits.
+  useEffect(() => {
+    if (clip?.editorState) {
+      setState(clip.editorState);
+      setSaved(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip?.id]);
+
+  async function save() {
+    if (!clip) {
+      setSaved(true);
+      return;
+    }
+    setSaving(true);
+    try {
+      await saveClipEditor(clip.id, state);
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const update = (patch: Partial<EditorState>) => {
     setState((s) => ({ ...s, ...patch }));
@@ -47,6 +74,34 @@ export function EditorShell({ clipId }: { clipId: string }) {
     }));
     setSaved(false);
   }
+
+  // The real <video> element is the transport's source of truth; both the preview
+  // (which mounts it) and the timeline (which drives it) share this handle.
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
+  const timelineDuration = videoDuration ?? duration;
+
+  const togglePlay = useCallback(() => {
+    const v = videoEl;
+    if (!v) return;
+    if (v.paused) {
+      // Snap into the trim window before playing so preview stays render-free (§2.4).
+      if (v.currentTime < state.trimIn || v.currentTime >= state.trimOut - 0.05) {
+        v.currentTime = state.trimIn;
+      }
+      void v.play();
+    } else {
+      v.pause();
+    }
+  }, [videoEl, state.trimIn, state.trimOut]);
+
+  const handleDuration = useCallback(
+    (d: number) => {
+      setVideoDuration(d);
+      if (state.trimOut > d) update({ trimOut: d });
+    },
+    [state.trimOut],
+  );
 
   const backHref = clip ? `/episodes/${clip.episodeId}?tab=clips` : "/clips";
 
@@ -65,11 +120,12 @@ export function EditorShell({ clipId }: { clipId: string }) {
         <div className="flex shrink-0 items-center gap-2">
           <MetadataButton state={state} duration={duration} />
           <button
-            onClick={() => setSaved(true)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+            onClick={save}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
           >
             {saved ? <Check className="size-4 text-emerald-400" /> : <Save className="size-4" />}
-            {saved ? "저장됨" : "저장"}
+            {saving ? "저장 중…" : saved ? "저장됨" : "저장"}
           </button>
           <Link
             href="/distribution"
@@ -88,7 +144,14 @@ export function EditorShell({ clipId }: { clipId: string }) {
         </aside>
 
         <div className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-zinc-900 p-4 sm:p-6">
-          <EditorPreview state={state} videoUrl={videoUrl} />
+          <EditorPreview
+            state={state}
+            update={update}
+            videoUrl={videoUrl}
+            videoRef={setVideoEl}
+            onDuration={handleDuration}
+            onTogglePlay={togglePlay}
+          />
         </div>
 
         <aside className="hidden w-72 shrink-0 border-l border-zinc-800 md:block xl:w-80">
@@ -98,7 +161,14 @@ export function EditorShell({ clipId }: { clipId: string }) {
 
       {/* timeline */}
       <footer className="shrink-0 border-t border-zinc-800 p-3">
-        <EditorTimeline state={state} update={update} duration={duration} />
+        <EditorTimeline
+          state={state}
+          update={update}
+          duration={timelineDuration}
+          video={videoEl}
+          videoUrl={videoUrl}
+          onTogglePlay={togglePlay}
+        />
       </footer>
     </div>
   );

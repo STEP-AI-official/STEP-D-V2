@@ -11,6 +11,7 @@ import {
   COLOR_SWATCHES,
   ELEMENT_DEFAULTS,
   TEMPLATE_PRESETS,
+  defaultElementSize,
   type AspectKey,
   type CaptionStyle,
   type EditorElement,
@@ -260,7 +261,7 @@ function CaptionsTab({ state, update }: { state: EditorState; update: Update }) 
 
 function ElementsTab({ state, update }: { state: EditorState; update: Update }) {
   function add(type: ElementType) {
-    const el: EditorElement = { id: `e${Date.now()}`, type, x: 50, y: 55, text: ELEMENT_DEFAULTS[type] };
+    const el: EditorElement = { id: `e${Date.now()}`, type, x: 50, y: 55, text: ELEMENT_DEFAULTS[type], size: defaultElementSize(type) };
     update({ elements: [...state.elements, el] });
   }
   const buttons: { type: ElementType; label: string }[] = [

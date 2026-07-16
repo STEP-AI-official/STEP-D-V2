@@ -443,6 +443,25 @@ app.patch("/api/clips/:id/link-video", async (c) => {
   return c.json({ ok: true, clipId, publishedVideoId: videoId, videoKnown });
 });
 
+// ── persist the editor's decision blob (revision JSON) ────────────────────────
+//
+// Save = metadata only, never a render (plan §2.4 deferred-render invariant). We store
+// the whole EditorState on the clip entity; the actual 9:16 + subtitle bake happens
+// once, later, at final export. Reopening the editor restores from this.
+app.patch("/api/clips/:id/editor", async (c) => {
+  const clipId = c.req.param("id");
+  const clip = await getEntity<Record<string, unknown>>("clip", clipId);
+  if (!clip) return c.json({ error: "clip not found" }, 404);
+
+  const body = await c.req.json<{ editorState?: unknown }>().catch(() => ({ editorState: undefined }));
+  if (typeof body.editorState !== "object" || body.editorState === null) {
+    return c.json({ error: "editorState is required" }, 400);
+  }
+
+  await putEntity("clip", clipId, { ...clip, editorState: body.editorState });
+  return c.json({ ok: true, clipId });
+});
+
 // ── YouTube OAuth & channel management ────────────────────────────────────────
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
@@ -887,8 +906,14 @@ app.get("/api/youtube/trends/video/:videoId", async (c) => {
 
   const dailyData = new Map<string, { views: number; likes: number; comments: number }>();
   for (const s of stats) {
-    const date = new Date(s.snapshotAt).toISOString().slice(0, 10);
-    dailyData.set(date, { views: s.viewCount, likes: s.likeCount, comments: s.commentCount });
+    // snapshotAt is BIGINT → node-postgres returns it as a string; new Date(str) would be
+    // Invalid Date and .toISOString() throws (500). Coerce to number (infra.md §3 함정2).
+    const date = new Date(Number(s.snapshotAt)).toISOString().slice(0, 10);
+    dailyData.set(date, {
+      views: Number(s.viewCount),
+      likes: Number(s.likeCount),
+      comments: Number(s.commentCount),
+    });
   }
 
   const trend = Array.from(dailyData.entries()).map(([date, d]) => ({
