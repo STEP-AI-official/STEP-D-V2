@@ -96,8 +96,13 @@ export async function enqueue(
  * Take the next due job. SKIP LOCKED means concurrent workers step over each other's
  * rows instead of blocking, so this is safe to call from many processes at once.
  */
-export async function claimJob(): Promise<Job | null> {
+export async function claimJob(types?: JobType[]): Promise<Job | null> {
   const now = Date.now();
+  // Optional lane filter: a worker claims ONLY its job types, so content and YouTube work
+  // drain on separate processes without starving each other (SKIP LOCKED keeps them from
+  // ever touching the same row). No filter → claim any type (single-worker fallback).
+  const laneFilter = types && types.length ? "AND type = ANY($2::text[])" : "";
+  const params: unknown[] = types && types.length ? [now, types] : [now];
   const { rows } = await getPool().query(
     `UPDATE job_queue SET
        status    = 'running',
@@ -106,7 +111,7 @@ export async function claimJob(): Promise<Job | null> {
        updatedAt = $1
      WHERE id = (
        SELECT id FROM job_queue
-        WHERE status = 'pending' AND runAfter <= $1
+        WHERE status = 'pending' AND runAfter <= $1 ${laneFilter}
         ORDER BY runAfter ASC, createdAt ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -115,7 +120,7 @@ export async function claimJob(): Promise<Job | null> {
                maxattempts AS "maxAttempts", runafter AS "runAfter",
                lockedat AS "lockedAt", error,
                createdat AS "createdAt", updatedat AS "updatedAt"`,
-    [now],
+    params,
   );
   return (rows[0] as Job | undefined) ?? null;
 }

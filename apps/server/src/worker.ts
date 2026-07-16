@@ -54,6 +54,24 @@ const IDLE_POLL_MS = 5_000;
 /** How often to sweep every channel and enqueue the ones that are due. */
 const TICK_INTERVAL_MS = 15 * 60 * 1000;
 
+/**
+ * Job-type lanes so content and YouTube work run on SEPARATE worker processes and never
+ * starve each other (run one process with WORKER_JOBS=content, another with =youtube). A
+ * heavy content.analyze (STT/vision, minutes) no longer blocks the flood of light video.*
+ * jobs, and vice versa. Unset / "all" keeps the legacy single worker that drains everything.
+ */
+const JOB_LANES: Record<"content" | "youtube", JobType[]> = {
+  content: ["content.analyze"],
+  youtube: ["channel.analyze", "video.analyze", "video.hotwatch", "video.comments"],
+};
+const WORKER_JOBS = (process.env.WORKER_JOBS ?? "all").trim().toLowerCase();
+const CLAIM_TYPES: JobType[] | undefined =
+  WORKER_JOBS === "content" ? JOB_LANES.content
+  : WORKER_JOBS === "youtube" ? JOB_LANES.youtube
+  : undefined; // "all" → claim every type
+/** The channel sweep enqueues YouTube work, so a content-only worker must not run it. */
+const RUNS_SWEEP = WORKER_JOBS !== "content";
+
 let stopping = false;
 
 /** Analytics reports need this scope; channels connected before the split lack it. */
@@ -303,7 +321,7 @@ async function loop(): Promise<void> {
   while (!stopping) {
     let job: Job | null = null;
     try {
-      job = await claimJob();
+      job = await claimJob(CLAIM_TYPES);
     } catch (err) {
       console.error("[worker] claim failed", err);
       await sleep(IDLE_POLL_MS);
@@ -361,9 +379,9 @@ async function main(): Promise<void> {
 
   console.log("[worker] queue:", JSON.stringify(await queueStats()));
 
-  await sweepDueChannels();
+  if (RUNS_SWEEP) await sweepDueChannels();
   const tick = setInterval(() => {
-    void sweepDueChannels().catch((err) => console.error("[worker] sweep failed", err));
+    if (RUNS_SWEEP) void sweepDueChannels().catch((err) => console.error("[worker] sweep failed", err));
     void requeueStale().catch((err) => console.error("[worker] requeue failed", err));
   }, TICK_INTERVAL_MS);
 
@@ -376,7 +394,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  console.log("[worker] polling for jobs");
+  console.log(
+    `[worker] lane=${WORKER_JOBS} · claims=${CLAIM_TYPES ? CLAIM_TYPES.join(",") : "all"} · sweep=${RUNS_SWEEP} — polling for jobs`,
+  );
   await loop();
   console.log("[worker] stopped");
   process.exit(0);

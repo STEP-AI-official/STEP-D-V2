@@ -116,9 +116,11 @@ if ($doWorker) {
       "cd $WorkerDir",
       "sudo git fetch --depth 1 origin main",
       "sudo git reset --hard origin/main",
-      "sudo systemctl restart stepd-worker",
+      # Two-lane split (stepd-worker-youtube / -content). Falls back to the legacy single
+      # worker until worker-vm.sh has been re-run on the VM to create the lane services.
+      "if systemctl list-unit-files | grep -q stepd-worker-youtube; then sudo systemctl restart stepd-worker-youtube stepd-worker-content; else sudo systemctl restart stepd-worker; fi",
       "sleep 3",
-      "sudo systemctl is-active stepd-worker"
+      "systemctl is-active stepd-worker-youtube stepd-worker-content 2>/dev/null || systemctl is-active stepd-worker"
     ) -join "; "
 
     gcloud compute ssh $WorkerVm --zone $WorkerZone --project $Project --command $remote

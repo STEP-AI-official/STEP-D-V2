@@ -81,16 +81,21 @@ sudo mkdir -p /etc/stepd
 } | sudo tee /etc/stepd/worker.env >/dev/null
 sudo chmod 600 /etc/stepd/worker.env
 
-echo "==> Worker service"
-sudo tee /etc/systemd/system/stepd-worker.service >/dev/null <<EOF
+echo "==> Worker services (two lanes on one VM: youtube + content)"
+# Two processes so a heavy content.analyze (STT/vision, minutes) never blocks the flood of
+# light YouTube video.* jobs, and vice versa. WORKER_JOBS tells each process which job types
+# to claim from the shared queue (FOR UPDATE SKIP LOCKED keeps them off each other's rows).
+write_worker_service() {  # $1 = lane (youtube|content)
+  sudo tee "/etc/systemd/system/stepd-worker-$1.service" >/dev/null <<EOF
 [Unit]
-Description=STEP-D queue worker
+Description=STEP-D queue worker ($1 lane)
 After=cloud-sql-proxy.service
 Requires=cloud-sql-proxy.service
 
 [Service]
 WorkingDirectory=${APP_DIR}/apps/server
 EnvironmentFile=/etc/stepd/worker.env
+Environment=WORKER_JOBS=$1
 ExecStart=/usr/bin/npx tsx src/worker.ts
 Restart=always
 RestartSec=10
@@ -98,18 +103,24 @@ RestartSec=10
 TimeoutStopSec=120
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=stepd-worker
+SyslogIdentifier=stepd-worker-$1
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+write_worker_service youtube
+write_worker_service content
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now cloud-sql-proxy.service
-sudo systemctl restart stepd-worker.service
-sudo systemctl enable stepd-worker.service
+# Retire the old single-lane worker if present — its work is now split across the two lanes.
+sudo systemctl disable --now stepd-worker.service 2>/dev/null || true
+sudo systemctl enable stepd-worker-youtube.service stepd-worker-content.service
+sudo systemctl restart stepd-worker-youtube.service stepd-worker-content.service
 
 echo
-echo "==> Done."
-echo "    logs:    sudo journalctl -u stepd-worker -f"
-echo "    status:  sudo systemctl status stepd-worker"
+echo "==> Done. Two worker lanes running on this VM."
+echo "    youtube logs:  sudo journalctl -u stepd-worker-youtube -f"
+echo "    content logs:  sudo journalctl -u stepd-worker-content -f"
+echo "    status:        sudo systemctl status 'stepd-worker-*'"
