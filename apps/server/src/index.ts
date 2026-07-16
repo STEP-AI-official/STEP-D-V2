@@ -254,6 +254,21 @@ app.get("/api/media/:id/stream", async (c) => {
   });
 });
 
+// ── signed playback URL (browser sets <video src> to this → streams straight from GCS,
+//    no proxy/redirect in the byte path; the reliable way to serve media). ──
+app.get("/api/media/:id/stream-url", async (c) => {
+  const m = await getMedia(c.req.param("id"));
+  if (!m) return c.json({ error: "media not found" }, 404);
+  const objPath = parseObjectPath(m.path);
+  if (!(await fileExists(objPath))) return c.json({ error: "media file not found" }, 404);
+  if (useGcs()) {
+    const url = await signedReadUrl(objPath, 6 * 60 * 60 * 1000); // 6h
+    return c.json({ url, direct: true });
+  }
+  // Local dev: no GCS — fall back to the chunked stream endpoint (web prefixes apiBase).
+  return c.json({ url: `/media/${m.id}/stream`, direct: false });
+});
+
 // ── thumbnail ─────────────────────────────────────────────────────────────────
 app.get("/api/media/:id/thumb", async (c) => {
   const m = await getMedia(c.req.param("id"));

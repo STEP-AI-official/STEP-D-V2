@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Save, Send, Info, Check, Sparkles } from "lucide-react";
 import { useAppData } from "@/lib/data/store";
+import { getStreamUrl } from "@/lib/data/api";
 import {
   applyTemplate,
   makeInitialEditorState,
@@ -17,17 +18,26 @@ import { EditorAiPanel } from "@/components/editor/editor-ai-panel";
 import type { Recommendation } from "@/lib/types";
 
 export function EditorShell({ clipId }: { clipId: string }) {
-  const { clips, recsForEpisode, apiBase, mediaForEpisode, saveClipEditor } = useAppData();
+  const { clips, recsForEpisode, mediaForEpisode, saveClipEditor } = useAppData();
   const clip = clips.find((c) => c.id === clipId);
 
   const title = clip?.title ?? "새 클립";
   const duration = clip?.durationSec ?? 40;
   const recs = clip ? recsForEpisode(clip.episodeId) : [];
 
-  // Real footage: the encoded clip video, else the episode's uploaded master.
+  // Real footage: the encoded clip video, else the episode's uploaded master — fetched as a
+  // signed GCS URL the player streams directly from Cloud Storage (no proxy in the byte path).
   const master = clip ? mediaForEpisode(clip.episodeId, "master") : undefined;
-  const videoRel = clip?.videoUrl ?? master?.streamUrl;
-  const videoUrl = videoRel ? `${apiBase}${videoRel}` : undefined;
+  const mediaId = clip?.mediaId ?? master?.id;
+  const [videoUrl, setVideoUrl] = useState<string>();
+  useEffect(() => {
+    let cancelled = false;
+    if (mediaId) getStreamUrl(mediaId).then((u) => !cancelled && setVideoUrl(u)).catch(() => {});
+    else setVideoUrl(undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [mediaId]);
 
   const [state, setState] = useState<EditorState>(
     () => clip?.editorState ?? makeInitialEditorState(title, duration),

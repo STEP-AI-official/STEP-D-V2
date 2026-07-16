@@ -60,6 +60,17 @@ export async function getMediaAnalysis(mediaId: string): Promise<MediaAnalysis> 
   return res.json();
 }
 
+/**
+ * A playable video URL for a media id. In production this is a short-lived signed GCS URL
+ * the <video> element streams directly from Cloud Storage (no proxy/redirect in the byte
+ * path). In local dev it falls back to the server's chunked stream endpoint.
+ */
+export async function getStreamUrl(mediaId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/stream-url`, { cache: "no-store" });
+  const data = await json<{ url: string; direct: boolean }>(res);
+  return data.direct ? data.url : `${API_BASE}${data.url}`;
+}
+
 export interface CreateProgramInput {
   title: string;
   section?: string;

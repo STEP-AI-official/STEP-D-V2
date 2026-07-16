@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { ChevronLeft, FileVideo, Search, Sparkles, Clapperboard, Send, Loader2 } from "lucide-react";
-import { getMediaAnalysis, type MediaAnalysis } from "@/lib/data/api";
+import { getMediaAnalysis, getStreamUrl, type MediaAnalysis } from "@/lib/data/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
@@ -253,8 +253,22 @@ export function EpisodeDetail({
 
 /** Source view — plays the real uploaded master when present, else the mock segments. */
 function SourceTab({ episodeId }: { episodeId: string }) {
-  const { mediaForEpisode, apiBase } = useAppData();
+  const { mediaForEpisode } = useAppData();
   const master = mediaForEpisode(episodeId, "master");
+  const [videoSrc, setVideoSrc] = useState<string>();
+
+  useEffect(() => {
+    if (!master) return;
+    let cancelled = false;
+    getStreamUrl(master.id)
+      .then((u) => {
+        if (!cancelled) setVideoSrc(u);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [master?.id]);
 
   if (master) {
     return (
@@ -264,7 +278,8 @@ function SourceTab({ episodeId }: { episodeId: string }) {
         </div>
         <div className="bg-black">
           <video
-            src={`${apiBase}${master.streamUrl}`}
+            key={videoSrc}
+            src={videoSrc}
             controls
             playsInline
             className="mx-auto max-h-[60vh] w-full object-contain"
