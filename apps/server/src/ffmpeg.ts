@@ -113,6 +113,72 @@ export function remuxFaststart(input: string, outputPath: string): Promise<void>
   });
 }
 
+export type RenderShortOpts = {
+  inputPath: string;
+  /** Absolute source seconds. */
+  startTime: number;
+  endTime: number;
+  outputPath: string;
+  /** Target frame size (e.g. 1080×1920 for 9:16). */
+  width: number;
+  height: number;
+  /** Optional ASS file to burn (title/channel/overlays). Requires a CJK font in the image. */
+  assPath?: string | null;
+};
+
+/**
+ * Render construct F (plan §2.4 — the single expensive render). Reframes the trimmed
+ * segment to the target aspect with a blurred-cover background + centered fit foreground
+ * (scale+boxblur+overlay filtergraph), then burns the ASS overlay via libass. One ffmpeg
+ * pass. `inputPath` may be a local path or an https signed URL (range-seek via -ss).
+ */
+export function renderShort(opts: RenderShortOpts): Promise<void> {
+  const { inputPath, startTime, endTime, outputPath, width: W, height: H, assPath } = opts;
+  const duration = endTime - startTime;
+  if (duration <= 0) return Promise.reject(new Error("Invalid render duration"));
+
+  // Blurred cover behind a fit-to-frame foreground → 9:16 (or any target) with no letterbox.
+  let vf =
+    `split=2[a][b];` +
+    `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1[bg];` +
+    `[b]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg];` +
+    `[bg][fg]overlay=(W-w)/2:(H-h)/2[v]`;
+  let vout = "[v]";
+  if (assPath) {
+    // Escape the path for the filtergraph (backslash, colon, single-quote).
+    const esc = assPath.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
+    vf += `;[v]ass='${esc}'[vout]`;
+    vout = "[vout]";
+  }
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ffmpeg",
+      [
+        "-y",
+        "-ss", String(startTime),
+        "-i", inputPath,
+        "-t", String(duration),
+        "-filter_complex", vf,
+        "-map", vout,
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        outputPath,
+      ],
+      { timeout: 300_000 },
+      (err) => {
+        if (err) return reject(err);
+        if (!fs.existsSync(outputPath)) return reject(new Error("Render output not produced"));
+        resolve();
+      },
+    );
+  });
+}
+
 export function trimEncode(
   inputPath: string,
   startTime: number,

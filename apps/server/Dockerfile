@@ -3,9 +3,13 @@
 
 FROM node:22-bookworm-slim AS base
 
-# Install ffmpeg + build deps for native modules
+# Install ffmpeg + build deps for native modules.
+# fonts-noto-cjk + fontconfig: libass needs a CJK font installed or Korean subtitle
+# burn-in (construct F, /clips/:id/export) renders tofu boxes (□) instead of 한글.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    fonts-noto-cjk \
+    fontconfig \
     python3 \
     make \
     g++ \
