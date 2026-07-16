@@ -54,11 +54,13 @@ def transcribe(
     device: str = "cuda",
     compute_type: str = "float16",
     beam_size: int = 5,
+    on_progress=None,
 ) -> dict:
-    """Transcribe via the configured provider. Returns {segments, language}."""
+    """Transcribe via the configured provider. Returns {segments, language}.
+    on_progress(done, total) fires per completed window (gemini provider only)."""
     if STT_PROVIDER == "whisper":
         return _transcribe_whisper(audio_path, language, model_name, device, compute_type, beam_size)
-    return _transcribe_gemini(audio_path, language)
+    return _transcribe_gemini(audio_path, language, on_progress=on_progress)
 
 
 # ── Provider: Gemini (managed, GPU-free) ────────────────────────────────────────
@@ -99,7 +101,7 @@ def _slice_wav(wav_path: str, start_sec: float, dur_sec: float) -> bytes:
         return buf.getvalue()
 
 
-def _transcribe_gemini(audio_or_video: str, language: str) -> dict:
+def _transcribe_gemini(audio_or_video: str, language: str, on_progress=None) -> dict:
     from google import genai
     from google.genai import types
 
@@ -160,8 +162,17 @@ def _transcribe_gemini(audio_or_video: str, language: str) -> dict:
         _, _, _, total = _wav_meta(wav_path)
         starts = [i * STT_WINDOW_SEC for i in range(int(total // STT_WINDOW_SEC) + 1)]
         starts = [s for s in starts if s < total]
+        done = [0]
+
+        def run_window(s: float) -> list[dict]:
+            rows = do_window(s, min(STT_WINDOW_SEC, total - s))
+            done[0] += 1
+            if on_progress:
+                on_progress(done[0], len(starts))
+            return rows
+
         with ThreadPoolExecutor(max_workers=STT_WORKERS) as ex:
-            results = list(ex.map(lambda s: do_window(s, min(STT_WINDOW_SEC, total - s)), starts))
+            results = list(ex.map(run_window, starts))
     finally:
         if tmp_wav and os.path.exists(tmp_wav):
             os.remove(tmp_wav)

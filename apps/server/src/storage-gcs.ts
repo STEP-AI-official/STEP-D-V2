@@ -161,6 +161,24 @@ export function createReadStream(objectPath: string, start?: number, end?: numbe
 
 // ── delete ─────────────────────────────────────────────────────────────────────
 
+/** Delete every object under a prefix (e.g. analysis/{mediaId}/). Best-effort. */
+export async function deletePrefix(prefix: string): Promise<void> {
+  const b = getBucket();
+  if (b) {
+    try {
+      await b.deleteFiles({ prefix, force: true }); // force: keep going past per-file errors
+    } catch {
+      // ignore — orphan cleanup must never fail the caller
+    }
+    return;
+  }
+  try {
+    fs.rmSync(path.join(DEV_STORAGE, prefix), { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+}
+
 export async function deleteFile(objectPath: string): Promise<void> {
   const b = getBucket();
   if (b) {

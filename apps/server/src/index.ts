@@ -79,6 +79,7 @@ import {
   createResumableSession,
   signedReadUrl,
   deleteFile,
+  deletePrefix,
 } from "./storage-gcs.ts";
 
 // Sync init — no CPU throttling issues on Cloud Run
@@ -156,6 +157,8 @@ app.post("/api/admin/reset", async (c) => {
   for (const m of media) {
     try { await deleteFile(parseObjectPath(m.path)); } catch {}
     if (m.thumbPath) { try { await deleteFile(parseObjectPath(m.thumbPath)); } catch {} }
+    // Analysis artifacts (scene frames + stage outputs) live under analysis/{mediaId}/.
+    try { await deletePrefix(`analysis/${m.id}`); } catch {}
   }
 
   const pool = getPool();
@@ -314,6 +317,22 @@ app.get("/api/media/:id/analysis", async (c) => {
   const row = await getContentAnalysis(c.req.param("id"));
   if (!row) return c.json({ status: "none" }, 404);
   return c.json(row);
+});
+
+// ── stored scene frames (uploaded by the worker to analysis/{mediaId}/scene_frames/) ──
+// scenes[].frame in the analysis data is "scene_frames/scene_0001.jpg" — the web/Lab
+// fetch it here. 404 for pre-persistence analyses (framesStored !== true).
+app.get("/api/media/:id/analysis/frames/:name", async (c) => {
+  const name = c.req.param("name");
+  if (!/^scene_\d+\.jpg$/.test(name)) return c.json({ error: "bad frame name" }, 400);
+
+  const objPath = `analysis/${c.req.param("id")}/scene_frames/${name}`;
+  if (!(await fileExists(objPath))) return c.json({ error: "not found" }, 404);
+
+  return new Response(createReadStream(objPath), {
+    status: 200,
+    headers: { "Content-Type": "image/jpeg", "Cache-Control": "max-age=86400" },
+  });
 });
 
 // ── upload a real video → episode + master media + heuristic recommendations ───
@@ -1275,7 +1294,9 @@ app.get("/api/lab/data", (c) => {
   const pipe = (labJson("pipeline_output.json") as any) || {};
   const refined = (labJson("refined_segments.json") as any[]) || [];
   const scenes = (labJson("scenes.json") as any[]) || [];
-  const shorts = (labJson("shorts.json") as any[]) || [];
+  // shorts.json: legacy bare array, or {genre, shorts} since the two-phase recommender.
+  const shortsRaw = labJson("shorts.json") as any;
+  const shorts: any[] = Array.isArray(shortsRaw) ? shortsRaw : (shortsRaw?.shorts ?? []);
   const raw = pipe.segments || [];
   const videoName = pipe.video ? path.basename(pipe.video) : null;
   const talk = scenes.filter((s) => s?.has_dialogue).length;

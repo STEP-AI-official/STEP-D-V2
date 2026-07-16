@@ -1,23 +1,35 @@
 """
-STEP D Core — Shorts recommendation (fusion)
+STEP D Core — Shorts recommendation (two-phase, genre-aware)
 
 Reads the analyzed scene timeline (scenes.json: per-scene visual analysis + dialogue
-+ name captions + vision score) and asks Gemini to pick the best short-form clips —
-grouping consecutive scenes into complete, self-contained bits (hook → payoff).
++ name captions + vision score) and picks the best short-form clips in TWO passes:
 
-This is the product payoff: everything upstream (STT → refine → scenes → vision →
-names) feeds one reasoning call that outputs "cut THIS 30s as a short, because …".
+  Phase 1 후보 추출 — the timeline is split into chunks (~80 scenes / ~10 min each,
+    small overlap) and each chunk is scanned independently for candidate moments.
+    Chunking keeps every scene inside a small, fully-attended context — late scenes
+    no longer fade at the end of one giant prompt — and chunks run in parallel.
+  Phase 2 합성 — one reasoning call sees ALL candidates (with evidence) and selects,
+    merges, and ranks the final N, scoring each 1–5 on viral appeal. The appeal score
+    is the model's judgment, not a mechanical rank inversion.
 
-    scenes.json (장면별 분석 타임라인)  →  Gemini 추론  →  쇼츠 추천 [start,end,제목,이유]
+Genre matters: a sports highlight and a talk-show punchline are cut differently.
+The prompt carries a per-genre pack (GENRE_PACKS); pass --genre or let "auto"
+classify the content from the transcript sample first.
+
+Temperature 0 everywhere: re-running the same video yields the same picks, so the
+DELETE+INSERT re-wire on the recommendation board is stable across retries.
 
 Run:
     python -m core.recommend core/scenes.json
-    python -m core.recommend core/scenes.json --n 8
+    python -m core.recommend core/scenes.json --n 8 --genre variety
 """
 import json
 import os
 import sys
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable, Optional
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -32,44 +44,125 @@ PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or "step-d"
 LOCATION = os.environ.get("VERTEX_LOCATION") or "asia-northeast3"
 MODEL = os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
 
-SYSTEM = """너는 예능 숏폼(쇼츠) 편집 전문가다. 아래는 한 예능 영상을 장면 단위로 분석한
+WORKERS = 4          # parallel Phase-1 chunk calls
+CHUNK_SCENES = 80    # max scenes per Phase-1 chunk (keeps the prompt fully attended)
+CHUNK_MAX_SEC = 600  # …or max 10 minutes of footage, whichever comes first
+CHUNK_OVERLAP = 6    # scenes repeated from the previous chunk so a bit spanning the cut isn't lost
+PER_CHUNK = 6        # candidate cap per chunk (Phase 2 prunes)
+MIN_SHORT_SEC = 3    # anything shorter is a glitch, not a short
+MAX_SHORT_SEC = 180  # anything longer isn't a short
+
+# ── genre packs ─────────────────────────────────────────────────────────────────
+# What "터지는 구간" means differs by genre; the pack swaps the editorial judgment,
+# the mechanics (완결 단위, 훅, 15~60s) stay shared.
+
+GENRE_PACKS: dict[str, dict[str, str]] = {
+    "variety": {
+        "label": "예능/버라이어티",
+        "guidance": """- 리액션·표정·몸개그·폭소 순간과 그 직전 빌드업을 한 단위로 묶어라.
+- 방송 자막(밈 자막·상황 자막)이 박힌 순간은 편집자가 이미 찍은 포인트다 — 우선 포함.
+- 훅(초반 시선강탈) → 전개 → 펀치라인/마무리가 서는 완결된 재미 단위만.
+- 단순 정보전달/평범한 대화/인트로는 제외.""",
+    },
+    "talk": {
+        "label": "토크/인터뷰",
+        "guidance": """- 질문 → 핵심 답변(폭탄발언·의외의 고백·명언)을 한 단위로. 답변만 자르면 맥락이 죽는다.
+- 게스트의 감정 변화(웃음·정색·울컥)가 드러나는 리액션 컷을 포함하라.
+- 한 주제의 완결된 문답 단위. 주제를 넘나드는 긴 구간은 피한다.""",
+    },
+    "drama": {
+        "label": "드라마/연기",
+        "guidance": """- 감정의 절정(고백·오열·분노·반전)과 명대사를 중심으로, 이해에 필요한 최소 맥락만 앞에 붙여라.
+- 관계가 뒤집히는 전환점, 시청자가 멈추게 되는 표정 클로즈업 우선.
+- 스포일러가 되어도 임팩트가 최우선이다. 잔잔한 설명 신은 제외.""",
+    },
+    "sports": {
+        "label": "스포츠",
+        "guidance": """- 득점·역전·슈퍼플레이·결정적 실책 순간과 그 직전 빌드업(세트업 플레이)을 한 단위로.
+- 세리머니·벤치/관중 리액션·리플레이가 이어지면 함께 포함하라.
+- 해설의 샤우팅이 있는 순간은 강한 신호다. 경기 흐름 설명 구간은 제외.""",
+    },
+    "news": {
+        "label": "뉴스/시사",
+        "guidance": """- 핵심 발언·단독 정보·팩트 요약이 한 문장으로 서는 구간을 골라라.
+- 발언은 오해가 생기지 않도록 앞뒤 맥락을 포함한 완결 단위로 자른다 (왜곡 금지).
+- 자극적이기만 하고 정보가 없는 구간, 앵커 멘트만 있는 구간은 제외.""",
+    },
+    "music": {
+        "label": "음악/공연",
+        "guidance": """- 후렴·고음·댄스브레이크·킬링파트 등 무대의 하이라이트를 중심으로.
+- 무대 전 긴장/무대 후 리액션(심사평·관객 반응)이 강하면 함께 후보로.
+- 곡의 마디가 어색하게 끊기지 않는 지점에서 자른다.""",
+    },
+    "documentary": {
+        "label": "다큐/교양",
+        "guidance": """- 놀라운 사실 하나가 완결되게 전달되는 '지식 한 조각' 단위로 잘라라.
+- 비주얼 스펙터클(자연·현장)과 감동적 순간(인물 서사의 절정) 우선.
+- 도입부의 배경 설명은 최소화하고 핵심 장면으로 바로 들어가는 구간을 골라라.""",
+    },
+}
+DEFAULT_GENRE = "variety"
+
+
+def _pack(genre: str) -> dict[str, str]:
+    return GENRE_PACKS.get(genre, GENRE_PACKS[DEFAULT_GENRE])
+
+
+def _base_system(genre: str) -> str:
+    p = _pack(genre)
+    return f"""너는 {p['label']} 콘텐츠의 숏폼(쇼츠) 편집 전문가다. 아래는 영상을 장면 단위로 분석한
 타임라인이다. 각 줄: [장면번호] 시각~시각 (길이) | 화면분석 | 대사 | 등장인물(화면자막) | 시각점수(0-100).
 
-이 영상에서 쇼츠로 만들면 가장 터질 구간을 골라라.
-규칙:
-- 하나의 쇼츠는 완결된 재미/서사 단위여야 한다: 훅(초반 시선강탈) → 전개 → 펀치라인/마무리.
+이 장르에서 쇼츠로 터지는 구간의 기준:
+{p['guidance']}
+
+공통 규칙:
+- 하나의 쇼츠는 완결된 단위여야 한다: 훅(초반 시선강탈) → 전개 → 마무리.
 - 여러 장면을 자연스럽게 이어 붙여 하나의 구간으로 (start=첫 장면 시작, end=끝 장면 끝).
 - 길이는 15~60초 권장 (짧은 임팩트 컷은 15초 미만도 허용).
-- 시각점수가 높은 리액션·표정·방송자막 순간을 우선 포함하되, 대사 맥락으로 '왜 웃긴지'가 서는 구간.
-- 단순 정보전달/평범한 대화/인트로는 제외.
+- appeal은 바이럴 잠재력의 절대평가다: 5=확실히 터진다, 4=강함, 3=쓸만함, 2=약함, 1=비추천."""
 
-각 추천에 대해: rank, start(초), end(초), title(클릭 유도되는 한국어 제목), reason(왜 터지는지 한 문장),
-scene_from/scene_to(포함 장면번호 범위), tags(리액션/폭소/반전/서사/자막 등)."""
 
-SCHEMA = {
+# ── genre auto-detection ────────────────────────────────────────────────────────
+
+_DETECT_SCHEMA = {
     "type": "OBJECT",
-    "properties": {
-        "shorts": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "rank": {"type": "INTEGER"},
-                    "start": {"type": "NUMBER"},
-                    "end": {"type": "NUMBER"},
-                    "title": {"type": "STRING"},
-                    "reason": {"type": "STRING"},
-                    "scene_from": {"type": "INTEGER"},
-                    "scene_to": {"type": "INTEGER"},
-                    "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
-                },
-                "required": ["rank", "start", "end", "title", "reason"],
-            },
-        },
-    },
-    "required": ["shorts"],
+    "properties": {"genre": {"type": "STRING", "enum": list(GENRE_PACKS.keys())}},
+    "required": ["genre"],
 }
 
+
+def detect_genre(client, scenes: list[dict]) -> str:
+    """One cheap text call: classify the content from a transcript/vision sample."""
+    dialogue = [s["text"].strip() for s in scenes if (s.get("text") or "").strip()][:50]
+    visions = [s["vision_reason"] for s in scenes if s.get("vision_reason")][:15]
+    names = Counter(nm for s in scenes for nm in s.get("on_screen_names", []))
+    texts = Counter(t for s in scenes for t in s.get("on_screen_text", []))
+    sample = (
+        "대사 샘플:\n" + "\n".join(f"- {d[:80]}" for d in dialogue)
+        + "\n\n화면 분석 샘플:\n" + "\n".join(f"- {v[:80]}" for v in visions)
+        + "\n\n화면 자막 인물: " + (", ".join(n for n, _ in names.most_common(10)) or "-")
+        + "\n화면 텍스트 샘플: " + ("; ".join(t for t, _ in texts.most_common(10)) or "-")
+    )
+    labels = ", ".join(f"{k}({v['label']})" for k, v in GENRE_PACKS.items())
+    try:
+        resp = client.models.generate_content(
+            model=MODEL,
+            contents=f"다음은 한 영상의 분석 샘플이다. 이 콘텐츠의 장르를 하나 골라라: {labels}\n\n{sample}",
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                response_schema=_DETECT_SCHEMA,
+            ),
+        )
+        g = json.loads(resp.text).get("genre", DEFAULT_GENRE)
+        return g if g in GENRE_PACKS else DEFAULT_GENRE
+    except Exception as e:
+        print(f"   (장르 감지 실패 → {DEFAULT_GENRE}: {str(e)[:80]})")
+        return DEFAULT_GENRE
+
+
+# ── timeline formatting + chunking ──────────────────────────────────────────────
 
 def _mmss(s: float) -> str:
     return f"{int(s // 60)}:{int(s % 60):02d}"
@@ -89,44 +182,247 @@ def build_timeline(scenes: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def recommend(scenes: list[dict], n: int = 5) -> list[dict]:
-    client = genai.Client(vertexai=True, project=PROJECT, location=LOCATION)
-    timeline = build_timeline(scenes)
+def chunk_scenes(
+    scenes: list[dict],
+    max_scenes: int = CHUNK_SCENES,
+    max_sec: float = CHUNK_MAX_SEC,
+    overlap: int = CHUNK_OVERLAP,
+) -> list[list[dict]]:
+    """Split the timeline into overlapping windows small enough to stay fully attended."""
+    if not scenes:
+        return []
+    chunks: list[list[dict]] = []
+    i = 0
+    while i < len(scenes):
+        start_t = scenes[i]["start"]
+        j = i
+        while j < len(scenes) and (j - i) < max_scenes and (scenes[j]["end"] - start_t) <= max_sec:
+            j += 1
+        if j == i:  # a single scene longer than max_sec — take it alone
+            j = i + 1
+        chunks.append(scenes[i:j])
+        if j >= len(scenes):
+            break
+        # Step back a little so a bit spanning the cut isn't split — but never more
+        # than a third of the chunk, or short chunks would advance one scene at a time.
+        i = j - min(overlap, (j - i) // 3)
+    return chunks
+
+
+# ── Phase 1: per-chunk candidate extraction ─────────────────────────────────────
+
+_CANDIDATE_FIELDS = {
+    "start": {"type": "NUMBER"},
+    "end": {"type": "NUMBER"},
+    "title": {"type": "STRING"},
+    "reason": {"type": "STRING"},
+    "appeal": {"type": "INTEGER"},
+    "scene_from": {"type": "INTEGER"},
+    "scene_to": {"type": "INTEGER"},
+    "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+}
+
+_PHASE1_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "candidates": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": _CANDIDATE_FIELDS,
+                "required": ["start", "end", "title", "reason", "appeal"],
+            },
+        },
+    },
+    "required": ["candidates"],
+}
+
+
+def _extract_candidates(client, chunk: list[dict], genre: str) -> list[dict]:
+    system = _base_system(genre) + f"""
+
+지금 보는 타임라인은 전체 영상의 일부 구간이다. 이 구간 안에서만 후보를 골라라.
+- 최대 {PER_CHUNK}개. 확신 없는 구간은 넣지 마라 — 0개도 답이다.
+- 각 후보: start(초), end(초), title(클릭 유도 한국어 제목), reason(왜 터지는지 한 문장),
+  appeal(1-5 절대평가), scene_from/scene_to(포함 장면번호), tags(리액션/폭소/반전/서사/자막 등)."""
     resp = client.models.generate_content(
         model=MODEL,
-        contents=f"쇼츠 {n}개를 추천하라.\n\n=== 장면 타임라인 ===\n{timeline}",
+        contents=f"이 구간에서 쇼츠 후보를 골라라.\n\n=== 장면 타임라인 ({_mmss(chunk[0]['start'])}~{_mmss(chunk[-1]['end'])}) ===\n{build_timeline(chunk)}",
         config=types.GenerateContentConfig(
-            system_instruction=SYSTEM,
-            temperature=0.3,
+            system_instruction=system,
+            temperature=0,
             response_mime_type="application/json",
-            response_schema=SCHEMA,
+            response_schema=_PHASE1_SCHEMA,
         ),
     )
-    data = json.loads(resp.text)
-    return data.get("shorts", [])
+    return json.loads(resp.text).get("candidates", [])
+
+
+# ── Phase 2: global synthesis ───────────────────────────────────────────────────
+
+_PHASE2_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "shorts": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {"rank": {"type": "INTEGER"}, **_CANDIDATE_FIELDS},
+                "required": ["rank", "start", "end", "title", "reason", "appeal"],
+            },
+        },
+    },
+    "required": ["shorts"],
+}
+
+
+def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: float) -> list[dict]:
+    lines = []
+    for i, c in enumerate(sorted(candidates, key=lambda c: c.get("start", 0)), 1):
+        tags = "/".join(c.get("tags", []))
+        lines.append(
+            f"[후보{i}] {_mmss(c.get('start', 0))}~{_mmss(c.get('end', 0))}"
+            f" | appeal:{c.get('appeal', '-')} | {c.get('title', '')} | {c.get('reason', '')}"
+            f" | 장면:{c.get('scene_from', '-')}~{c.get('scene_to', '-')} | {tags or '-'}"
+        )
+    system = _base_system(genre) + f"""
+
+아래는 영상 전체({_mmss(duration)})를 구간별로 스캔해 뽑은 쇼츠 후보 목록이다.
+이 중에서 최종 {n}개를 골라 순위를 매겨라.
+- 겹치거나 바로 이어지는 후보는 하나로 병합해도 된다 (start/end를 병합 범위로).
+- 후보 목록에 없는 새로운 구간을 만들지 마라.
+- 비슷한 종류만 몰리지 않게, 영상 전체를 대표하도록 다양성도 고려하라.
+- 각 항목: rank(1=최고), start, end, title, reason, appeal(1-5 절대평가 — 순위와 별개),
+  scene_from/scene_to, tags."""
+    resp = client.models.generate_content(
+        model=MODEL,
+        contents=f"최종 쇼츠 {n}개를 골라라.\n\n=== 후보 목록 ===\n" + "\n".join(lines),
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=_PHASE2_SCHEMA,
+        ),
+    )
+    return json.loads(resp.text).get("shorts", [])
+
+
+# ── validation ──────────────────────────────────────────────────────────────────
+
+def validate_shorts(shorts: list[dict], duration: float, n: int) -> list[dict]:
+    """Clamp/normalize the model output; drop degenerate spans instead of 'fixing' them."""
+    out = []
+    for s in shorts:
+        try:
+            start = max(0.0, float(s.get("start", 0)))
+            end = float(s.get("end", 0))
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            start = min(start, duration)
+            end = min(end, duration)
+        if end - start < MIN_SHORT_SEC or end - start > MAX_SHORT_SEC:
+            print(f"   (후보 제외 — 길이 {end - start:.1f}s: {s.get('title', '')[:30]})")
+            continue
+        appeal = s.get("appeal")
+        try:
+            appeal = max(1, min(5, int(appeal)))
+        except (TypeError, ValueError):
+            appeal = None
+        out.append({**s, "start": round(start, 1), "end": round(end, 1), "appeal": appeal})
+
+    # Order by the model's rank when present, else by appeal — then re-number 1..n.
+    out.sort(key=lambda s: (s.get("rank") if isinstance(s.get("rank"), int) else 99, -(s.get("appeal") or 0)))
+    out = out[:n]
+    for i, s in enumerate(out, 1):
+        s["rank"] = i
+        if s["appeal"] is None:
+            s["appeal"] = max(1, 6 - i)  # last-resort fallback, not the normal path
+    return out
+
+
+# ── entrypoint ──────────────────────────────────────────────────────────────────
+
+def recommend(
+    scenes: list[dict],
+    n: int = 5,
+    genre: str = "auto",
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> dict:
+    """Two-phase shorts pick. Returns {"genre": resolved, "shorts": [...]}."""
+    if not scenes:
+        return {"genre": DEFAULT_GENRE, "shorts": []}
+    client = genai.Client(vertexai=True, project=PROJECT, location=LOCATION)
+
+    if genre == "auto" or genre not in GENRE_PACKS:
+        genre = detect_genre(client, scenes)
+        print(f"   장르 감지: {genre} ({_pack(genre)['label']})")
+
+    duration = scenes[-1]["end"]
+    chunks = chunk_scenes(scenes)
+    print(f"   1단계: {len(chunks)} 구간에서 후보 추출…")
+    done = [0]
+
+    def scan(chunk: list[dict]) -> list[dict]:
+        try:
+            cands = _extract_candidates(client, chunk, genre)
+        except Exception as e:
+            print(f"   (구간 {_mmss(chunk[0]['start'])}~ 후보 추출 실패, 스킵: {str(e)[:80]})")
+            cands = []
+        done[0] += 1
+        if on_progress:
+            on_progress(done[0], len(chunks))
+        return cands
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        per_chunk = list(ex.map(scan, chunks))
+    candidates = [c for batch in per_chunk for c in batch]
+    print(f"   후보 {len(candidates)}개")
+
+    if not candidates:
+        return {"genre": genre, "shorts": []}
+
+    if len(chunks) == 1:
+        # Single chunk = Phase 1 already saw the whole video; a synthesis pass adds
+        # nothing but latency. Rank by the model's own appeal.
+        shorts = sorted(candidates, key=lambda c: -(c.get("appeal") or 0))
+        for i, s in enumerate(shorts, 1):
+            s["rank"] = i
+    else:
+        print(f"   2단계: 합성 — 최종 {n}개 선별…")
+        shorts = _synthesize(client, candidates, n, genre, duration)
+        if not shorts:  # synthesis flaked — degrade to best candidates, not to nothing
+            print("   (합성 결과 없음 → 후보 appeal 순으로 대체)")
+            shorts = sorted(candidates, key=lambda c: -(c.get("appeal") or 0))
+            for i, s in enumerate(shorts, 1):
+                s["rank"] = i
+
+    return {"genre": genre, "shorts": validate_shorts(shorts, duration, n)}
 
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python -m core.recommend <scenes.json> [--n 5]")
+        print("Usage: python -m core.recommend <scenes.json> [--n 5] [--genre auto|variety|talk|drama|sports|news|music|documentary]")
         sys.exit(1)
 
     src = Path(sys.argv[1])
     n = int(sys.argv[sys.argv.index("--n") + 1]) if "--n" in sys.argv else 5
+    genre = sys.argv[sys.argv.index("--genre") + 1] if "--genre" in sys.argv else "auto"
 
     scenes = json.loads(src.read_text(encoding="utf-8"))
-    print(f"쇼츠 추천: {len(scenes)} 장면 분석 → {n}개 · {MODEL} (Vertex AI {PROJECT}/{LOCATION})")
+    print(f"쇼츠 추천: {len(scenes)} 장면 → {n}개 · 장르 {genre} · {MODEL} (Vertex AI {PROJECT}/{LOCATION})")
 
-    shorts = recommend(scenes, n=n)
+    result = recommend(scenes, n=n, genre=genre)
+    shorts = result["shorts"]
 
     out = src.parent / "shorts.json"
-    out.write_text(json.dumps(shorts, ensure_ascii=False, indent=2), encoding="utf-8")
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"\n=== 추천 쇼츠 {len(shorts)}개 ===")
+    print(f"\n=== 추천 쇼츠 {len(shorts)}개 (장르: {result['genre']}) ===")
     for s in sorted(shorts, key=lambda x: x.get("rank", 99)):
         dur = s["end"] - s["start"]
         tags = "/".join(s.get("tags", []))
-        print(f"  #{s.get('rank')} [{_mmss(s['start'])}~{_mmss(s['end'])}] {dur:.0f}s · {tags}")
+        print(f"  #{s.get('rank')} [{_mmss(s['start'])}~{_mmss(s['end'])}] {dur:.0f}s · appeal {s.get('appeal')} · {tags}")
         print(f"     『{s['title']}』")
         print(f"     {s['reason']}")
     print(f"\n  → {out}")

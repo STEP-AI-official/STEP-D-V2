@@ -15,10 +15,13 @@
       ▼
 워커 VM(stepd-worker, e2-small, GPU 없음)  ── content-pipeline.ts
       │  GCS에서 영상 다운로드 → python -m core.analyze
-      │  (STT→정제→장면→시각채점→이름자막→쇼츠추천, 전부 관리형 Gemini)
+      │  (STT→정제→장면→프레임분석[시각채점+이름자막 통합 1호출]→쇼츠추천[장르 자동감지·후보→합성 2단계])
+      │  · 단계별 체크포인트(stt/refined/scenes/shorts.json) — 재시도 시 완료 단계부터 재개
+      │  · @@PROGRESS 라인 → episode.pipeline에 단계별 진행률 실시간 반영
       ▼
    content_analysis(mediaId, data=결과JSON) ← saveContentAnalysis
-      ├─ AI 쇼츠 → 회차 추천 보드에 기록 (writeRecommendationsFromShorts, 멱등)
+      ├─ 프레임+단계 산출물 → GCS analysis/{mediaId}/ 영구 저장 (data.framesBase)
+      ├─ AI 쇼츠 → 회차 추천 보드에 기록 (writeRecommendationsFromShorts, 멱등·appeal은 AI 산출)
       └─ episode.pipeline={stage:recommend, stageStatus:done, progress:100}
       ▼
 웹: 회차 상세 분석 탭이 GET /api/media/:id/analysis 조회 + 추천 & 채택 보드에 쇼츠 노출
@@ -38,7 +41,7 @@ GPU VM 불필요.
 |------|------|
 | `core/analyze.py` | 전 스테이지 오케스트레이터(단일 진입점). `python -m core.analyze <video> --out <dir>` → analysis.json |
 | `core/asr.py` | STT provider 스위치. `STT_PROVIDER=gemini`(기본, 관리형) / `whisper`(로컬 GPU) |
-| `apps/server/src/content-pipeline.ts` | 워커측 실행기: 영상 다운로드 → analyze.py 스폰 → 결과 DB 저장 + 추천 보드 기록 + episode.pipeline 갱신 |
+| `apps/server/src/content-pipeline.ts` | 워커측 실행기: 영상 다운로드 → analyze.py 스폰(진행률 파싱) → 결과 DB 저장 + 프레임/산출물 GCS 영구 저장 + 추천 보드 기록 + episode.pipeline 갱신. 미디어별 고정 작업 디렉토리(`$TMP/stepd-content/<mediaId>`)로 재시도 시 체크포인트 재개, 48h TTL 청소 |
 | `apps/server/src/queue.ts` | `content.analyze` 잡 타입 + `job_queue` 런타임 생성 |
 | `apps/server/src/worker.ts` | `content.analyze` 케이스 → `runContentAnalyze` 호출 |
 | `apps/server/src/db-pg.ts` | `content_analysis` 테이블(런타임 생성) + `markContentAnalysisPending`/`saveContentAnalysis`/`getContentAnalysis` |
@@ -55,14 +58,18 @@ GPU VM 불필요.
 
 - **진행 상태** — `content_analysis.status`(pending/done/failed)와 별개로, 워커가
   **episode.pipeline**에 실제 상태를 기록한다. 업로드 시 서버가
-  `{stage:'analyze', stageStatus:'progress', progress:30}`으로 시작하고(index.ts), 워커가 완료
-  시 `{stage:'recommend', stageStatus:'done', progress:100, note:'AI 쇼츠 추천 N건'}`으로
-  뒤집는다(content-pipeline.ts). 스테이지별 세분 진행률(STT 몇 %…)은 아직 없다.
+  `{stage:'analyze', stageStatus:'progress', progress:30}`으로 시작하고(index.ts), 이후
+  analyze.py가 stdout으로 내보내는 `@@PROGRESS {stage,pct,note}` 라인을 워커가 파싱해
+  단계별 진행률("음성 인식 12/40 윈도우", "프레임 분석 60/182" 등)을 실시간 반영한다
+  (2% 또는 3초 간격 스로틀). 완료 시
+  `{stage:'recommend', stageStatus:'done', progress:100, note:'AI 쇼츠 추천 N건'}`.
 - **실패 경로** — 오류 시 워커가 `content_analysis`에 `status='failed'` + `error`(메시지
-  1000자 절단)를 저장하고, episode.pipeline을
-  `{stage:'analyze', stageStatus:'error', blockedReason:'AI 분석 실패 — 재시도 필요'}`로
-  남긴다. 잡 자체는 throw로 실패해 큐가 지수 백오프로 재시도하고(기본 maxAttempts 5), 소진되면
-  `job_queue`에 `failed`로 남는다 — 무엇이 깨졌는지의 기록이다.
+  1000자 절단)를 저장하되, **완료된 단계의 결과는 유실하지 않는다**: 작업 디렉토리의
+  체크포인트에서 transcript/scenes를 회수해 `data={partial:true, stagesDone, …}`로 같이
+  저장하고, 디렉토리 자체도 남겨 둔다. 큐가 지수 백오프로 재시도하면(기본 maxAttempts 5)
+  같은 디렉토리의 체크포인트에서 **완료 단계를 건너뛰고 재개**한다 — STT 완료 후 vision에서
+  죽어도 STT 비용을 다시 내지 않는다. 소진되면 `job_queue`에 `failed`로 남고, 작업
+  디렉토리는 48h TTL 청소가 회수한다.
 
 ## 워커 VM 배포
 
@@ -112,18 +119,20 @@ VM에 SSH해 `git fetch` + `git reset --hard origin/main` + `systemctl restart s
 
 ## 남은 것 (v1 이후)
 
-1. **장면 프레임 호스팅** — 지금 v1은 프레임을 워커 임시디렉터리에서 시각채점에만 쓰고 버린다.
-   analysis.json엔 프레임 경로가 있지만 프로덕션에선 해석 안 됨. admin 썸네일이 필요하면
-   프레임을 GCS 업로드 + `/api/media/:id/frames/:name` 서빙 추가.
-   (쇼츠 추천·자막·장면 점수/텍스트는 프레임 없이도 다 나옴 — 핵심 가치는 이미 저장됨.)
-2. **처리량** — 8분 영상이 vision+names 182 Gemini 호출로 수 분 소요. 90분 회차는 1000+ 호출.
-   비동기 배치라 문제는 아니나, 동시 회차가 몰리면 Vertex 리전 쿼터가 천장(리뷰 R5).
-   전역 레이트리미터·배치 API 오프로드 검토.
-3. **진행 상태 세분화** — episode.pipeline 반영으로 UI 표시는 해결됐고(위 섹션),
-   스테이지별 진행률(%)만 남음.
+1. ~~장면 프레임 호스팅~~ — **완료(2026-07-16).** 워커가 성공 시 프레임+단계 산출물을
+   `analysis/{mediaId}/`로 GCS 업로드하고(`persistArtifacts`), 서버가
+   `GET /api/media/:id/analysis/frames/:name`으로 스트리밍한다. admin reset이 prefix째 지운다.
+   웹/Lab UI에서 이 프레임을 실제로 그리는 화면은 아직 없음(다음 단계).
+2. **처리량** — 시각채점+이름자막을 프레임당 1호출로 통합해 이미지 호출이 절반이 됐다
+   (8분 영상 182→91). 90분 회차도 ~500 호출 수준. 동시 회차가 몰리면 Vertex 리전 쿼터가
+   천장(리뷰 R5) — 전역 레이트리미터·배치 API 오프로드 검토는 유효.
+3. ~~진행 상태 세분화~~ — **완료(2026-07-16).** analyze.py `@@PROGRESS` → 워커 파싱 →
+   episode.pipeline 반영 (위 섹션).
 4. ~~admin 연결~~ — **완료(2026-07-16).** 회차 상세 분석 탭이
    `getMediaAnalysis`(apps/web/src/lib/data/api.ts)로 `/api/media/:id/analysis`(DB)를 읽어
    실제 content_analysis를 렌더한다(apps/web/src/components/episode-detail.tsx).
+5. **장르 수동 지정** — 추천 장르는 현재 자동 감지(`--genre auto`)뿐. 프로그램/회차에
+   장르 필드를 붙여 `content.analyze`에 넘기면 감지 호출 1회를 아끼고 오분류를 막는다.
 
 ## 로컬 테스트
 

@@ -2,8 +2,22 @@
  * Content-analysis job runner (worker side).
  *
  * Pulls the uploaded video, runs the GPU-free Python pipeline (core/analyze.py:
- * STT → refine → scenes → vision → names → shorts), and stores the result JSON in
- * content_analysis. Kept in its own module so worker.ts only needs a one-line case.
+ * STT → refine → scenes → frame analysis(vision+names) → two-phase shorts), and
+ * stores the result JSON in content_analysis. Kept in its own module so worker.ts
+ * only needs a one-line case.
+ *
+ * Failure recovery: each media gets a STABLE work dir (not a fresh mkdtemp), and
+ * core/analyze.py checkpoints every stage into it — so a queue retry resumes from
+ * the last finished stage instead of re-paying STT/vision. The dir is removed on
+ * success and swept after 48h either way.
+ *
+ * Progress: the pipeline emits `@@PROGRESS {stage,pct,note}` lines on stdout; we
+ * mirror them onto the episode's pipeline field so the UI shows real stage progress
+ * instead of an eternal "분석 중…".
+ *
+ * Persistence: scene frames + stage outputs are uploaded to storage under
+ * analysis/{mediaId}/ after a successful run (framesBase in the saved data), so
+ * frames survive for the Lab/editor and a future re-analysis can start from them.
  *
  * The pipeline is spawned as `python -m core.analyze` — set CORE_PYTHON to the
  * worker's venv (core/.venv/bin/python); locally it defaults to core/.venv310.
@@ -12,17 +26,53 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 
 import { getMedia, saveContentAnalysis, prependEntity, getPool, getEntity, putEntity } from "./db-pg.ts";
-import { createReadStream, parseObjectPath } from "./storage-gcs.ts";
+import { createReadStream, parseObjectPath, uploadFile } from "./storage-gcs.ts";
 import { newId } from "./pipeline.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const CORE_PYTHON =
   process.env.CORE_PYTHON ||
   path.join(REPO_ROOT, "core", ".venv310", "Scripts", "python.exe");
+
+/** Stable per-media work dirs live here so a retry can resume from checkpoints. */
+const WORK_ROOT = path.join(os.tmpdir(), "stepd-content");
+/** Work dirs older than this are dead (job gave up or succeeded long ago) — sweep. */
+const WORK_DIR_TTL_MS = 48 * 60 * 60 * 1000;
+
+/** Stage outputs core/analyze.py checkpoints into the work dir (upload order). */
+const CHECKPOINT_FILES = ["analysis.json", "scenes.json", "shorts.json", "refined.json", "stt.json", "manifest.json"];
+
+function workDirFor(mediaId: string): string {
+  return path.join(WORK_ROOT, mediaId.replace(/[^a-zA-Z0-9_-]/g, "_"));
+}
+
+/** Remove abandoned work dirs so failed-forever jobs don't fill the VM disk. */
+function sweepStaleWorkDirs(): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(WORK_ROOT, { withFileTypes: true });
+  } catch {
+    return; // root doesn't exist yet
+  }
+  const cutoff = Date.now() - WORK_DIR_TTL_MS;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const dir = path.join(WORK_ROOT, e.name);
+    try {
+      if (fs.statSync(dir).mtimeMs < cutoff) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        console.log(`[worker] content.analyze: swept stale work dir ${e.name}`);
+      }
+    } catch {
+      // raced/locked — next sweep gets it
+    }
+  }
+}
 
 async function downloadToTemp(storedPath: string, dest: string): Promise<void> {
   // Works for both GCS and the local-storage fallback (createReadStream abstracts it).
@@ -38,7 +88,10 @@ async function downloadToTemp(storedPath: string, dest: string): Promise<void> {
   });
 }
 
-function runAnalyze(videoPath: string, outDir: string): Promise<void> {
+/** Pipeline progress line: `@@PROGRESS {"stage":"stt","pct":12,"note":"…"}`. */
+type Progress = { stage?: string; pct?: number; note?: string };
+
+function runAnalyze(videoPath: string, outDir: string, onProgress: (p: Progress) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       CORE_PYTHON,
@@ -54,9 +107,22 @@ function runAnalyze(videoPath: string, outDir: string): Promise<void> {
           GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || "step-d",
           VERTEX_LOCATION: process.env.VERTEX_LOCATION || "asia-northeast3",
         },
-        stdio: ["ignore", "inherit", "inherit"],
+        stdio: ["ignore", "pipe", "inherit"],
       },
     );
+    // Parse progress markers out of stdout; everything else passes through to the log.
+    const rl = readline.createInterface({ input: proc.stdout! });
+    rl.on("line", (line) => {
+      if (line.startsWith("@@PROGRESS ")) {
+        try {
+          onProgress(JSON.parse(line.slice("@@PROGRESS ".length)) as Progress);
+        } catch {
+          // mangled marker — ignore, it's progress not data
+        }
+        return;
+      }
+      console.log(`[core] ${line}`);
+    });
     proc.on("close", (code) =>
       code === 0 ? resolve() : reject(new Error(`core.analyze exited ${code}`)),
     );
@@ -65,21 +131,28 @@ function runAnalyze(videoPath: string, outDir: string): Promise<void> {
 }
 
 // One AI-recommended short from core/recommend.py.
-type Short = { rank?: number; start?: number; end?: number; title?: string; reason?: string; tags?: string[] };
+type Short = {
+  rank?: number; appeal?: number; start?: number; end?: number;
+  title?: string; reason?: string; tags?: string[];
+};
+
+const MIN_SHORT_SEC = 3;
 
 /** Map an AI short → a recommendation entity matching the web's board shape. */
 function recFromShort(episodeId: string, s: Short) {
   const start = Number(s.start) || 0;
-  const end = Math.max(start + 1, Number(s.end) || start + 1);
+  const end = Number(s.end) || 0;
   const id = newId("r");
   const mid = start + (end - start) * 0.4;
   const rank = typeof s.rank === "number" ? s.rank : 3;
+  // The model scores appeal itself (1–5, 절대평가); 6-rank is only the legacy fallback.
+  const appeal = typeof s.appeal === "number" ? s.appeal : 6 - rank;
   return {
     id,
     episodeId,
     kind: "short",
     title: s.title || "쇼츠 추천",
-    appeal: Math.max(1, Math.min(5, 6 - rank)), // rank 1 → appeal 5 (surfaced first)
+    appeal: Math.max(1, Math.min(5, appeal)),
     startTime: start,
     endTime: end,
     editNote: s.reason || "",
@@ -98,14 +171,25 @@ function recFromShort(episodeId: string, s: Short) {
 /**
  * Surface the AI shorts on the episode's recommendation board.
  * Idempotent: clears any prior recs for the episode first, so a re-run replaces
- * rather than duplicates.
+ * rather than duplicates. Degenerate spans are dropped, not silently stretched.
  */
-async function writeRecommendationsFromShorts(episodeId: string, shorts: Short[]): Promise<number> {
+async function writeRecommendationsFromShorts(
+  episodeId: string,
+  shorts: Short[],
+  durationSec: number,
+): Promise<number> {
+  const valid = shorts.filter((s) => {
+    const start = Number(s.start) || 0;
+    const end = Number(s.end) || 0;
+    const ok = end - start >= MIN_SHORT_SEC && (!durationSec || start < durationSec);
+    if (!ok) console.warn(`[worker] dropping invalid short ${start}~${end}s "${s.title ?? ""}"`);
+    return ok;
+  });
   await getPool().query(
     "DELETE FROM entities WHERE kind = 'recommendation' AND data->>'episodeId' = $1",
     [episodeId],
   );
-  const sorted = [...shorts].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+  const sorted = [...valid].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
   // Insert worst-rank first so prepend leaves rank 1 at the front of the board.
   for (let i = sorted.length - 1; i >= 0; i--) {
     const rec = recFromShort(episodeId, sorted[i]);
@@ -120,35 +204,142 @@ async function setEpisodePipeline(episodeId: string, pipeline: Record<string, un
   if (ep) await putEntity("episode", episodeId, { ...ep, pipeline });
 }
 
+/**
+ * Upload the run's artifacts (stage outputs + scene frames) to storage under
+ * analysis/{mediaId}/ so they outlive the work dir. Returns the object-path base,
+ * or null if nothing could be uploaded — persistence failure must not fail the job.
+ */
+async function persistArtifacts(work: string, mediaId: string): Promise<{ base: string; frames: number } | null> {
+  const base = `analysis/${mediaId}`;
+  try {
+    for (const name of CHECKPOINT_FILES) {
+      const local = path.join(work, name);
+      if (fs.existsSync(local)) await uploadFile(`${base}/${name}`, local);
+    }
+    const framesDir = path.join(work, "scene_frames");
+    let frames: string[] = [];
+    if (fs.existsSync(framesDir)) {
+      frames = fs.readdirSync(framesDir).filter((f) => f.endsWith(".jpg"));
+      const CONCURRENCY = 8;
+      for (let i = 0; i < frames.length; i += CONCURRENCY) {
+        await Promise.all(
+          frames.slice(i, i + CONCURRENCY).map((f) =>
+            uploadFile(`${base}/scene_frames/${f}`, path.join(framesDir, f)),
+          ),
+        );
+      }
+    }
+    return { base, frames: frames.length };
+  } catch (e) {
+    console.error(`[worker] content.analyze ${mediaId}: artifact persistence failed (continuing)`, e);
+    return null;
+  }
+}
+
+/** Read a checkpoint JSON from the work dir, or undefined. */
+function readCheckpoint<T>(work: string, name: string): T | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(work, name), "utf-8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * On failure, salvage whatever stages DID finish into content_analysis so partial
+ * work (a full transcript, scored scenes) is visible and never silently lost —
+ * the checkpoints also stay on disk for the retry to resume from.
+ */
+function collectPartial(work: string): Record<string, unknown> | undefined {
+  const refined = readCheckpoint<unknown[]>(work, "refined.json");
+  const stt = readCheckpoint<{ segments?: unknown[] }>(work, "stt.json");
+  const scenes = readCheckpoint<unknown[]>(work, "scenes.json");
+  const transcript = refined ?? stt?.segments;
+  if (!transcript && !scenes) return undefined;
+  return {
+    partial: true,
+    stagesDone: [
+      ...(stt?.segments ? ["stt"] : []),
+      ...(refined ? ["refine"] : []),
+      ...(scenes ? ["scenes"] : []),
+    ],
+    ...(transcript ? { transcript } : {}),
+    ...(scenes ? { scenes } : {}),
+  };
+}
+
 /** Run the full content pipeline for one uploaded media and persist the result. */
 export async function runContentAnalyze(mediaId: string): Promise<void> {
   const media = await getMedia(mediaId);
   if (!media) throw new Error(`content.analyze: media ${mediaId} not found`);
 
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), `stepd-content-${mediaId}-`));
+  sweepStaleWorkDirs();
+  const work = workDirFor(mediaId);
+  fs.mkdirSync(work, { recursive: true });
   const videoPath = path.join(work, `source${path.extname(media.filename) || ".mp4"}`);
 
   try {
-    await downloadToTemp(media.path, videoPath);
-    await runAnalyze(videoPath, work);
+    // A retry reuses the already-downloaded source (size must match — a mismatch
+    // means the previous download was cut off, so pull it again).
+    const have = fs.existsSync(videoPath) ? fs.statSync(videoPath).size : -1;
+    if (have === media.size && have > 0) {
+      console.log(`[worker] content.analyze ${mediaId}: reusing downloaded source (resume)`);
+    } else {
+      await downloadToTemp(media.path, videoPath);
+    }
+
+    // Mirror pipeline progress onto the episode (throttled — every line is a DB write).
+    let lastPct = -10;
+    let lastWrite = 0;
+    let chain = Promise.resolve();
+    const onProgress = (p: Progress) => {
+      const pct = Math.max(0, Math.min(99, Number(p.pct) || 0));
+      const now = Date.now();
+      if (pct - lastPct < 2 && now - lastWrite < 3000) return;
+      lastPct = pct;
+      lastWrite = now;
+      if (!media.episodeId) return;
+      chain = chain
+        .then(() =>
+          setEpisodePipeline(media.episodeId!, {
+            stage: "analyze",
+            stageStatus: "progress",
+            note: p.note || "AI 분석 중…",
+            progress: pct,
+          }),
+        )
+        .catch((e) => console.error("[worker] progress update failed", e));
+    };
+
+    await runAnalyze(videoPath, work, onProgress);
+    await chain.catch(() => {});
 
     const analysis = JSON.parse(fs.readFileSync(path.join(work, "analysis.json"), "utf-8"));
-    // Scene frames live under work/scene_frames and are discarded with the temp dir.
-    // v1 stores transcript + scenes(metadata/scores) + shorts; frame hosting comes later.
-    await saveContentAnalysis(mediaId, { data: analysis });
+
+    // Persist frames + stage outputs before anything can throw them away — they power
+    // the Lab/editor views and let a future re-analysis start from stored stages.
+    const stored = await persistArtifacts(work, mediaId);
+    await saveContentAnalysis(mediaId, {
+      data: {
+        ...analysis,
+        ...(stored ? { framesBase: stored.base, framesStored: stored.frames > 0 } : { framesStored: false }),
+      },
+    });
 
     const shorts: Short[] = Array.isArray(analysis?.shorts) ? analysis.shorts : [];
     // Surface the AI shorts on the episode's recommendation board (the product payoff).
     let wrote = 0;
     if (media.episodeId && shorts.length) {
       try {
-        wrote = await writeRecommendationsFromShorts(media.episodeId, shorts);
+        wrote = await writeRecommendationsFromShorts(media.episodeId, shorts, media.durationSec ?? 0);
       } catch (e) {
         console.error(`[worker] content.analyze ${mediaId}: failed to write recommendations`, e);
       }
     }
     console.log(
-      `[worker] content.analyze ${mediaId}: ${analysis?.scenes?.length ?? 0} scenes, ${shorts.length} shorts, ${wrote} recs`,
+      `[worker] content.analyze ${mediaId}: ${analysis?.scenes?.length ?? 0} scenes, ` +
+      `${shorts.length} shorts, ${wrote} recs, genre=${analysis?.genre ?? "-"}, ` +
+      `frames=${stored ? stored.frames : "not-stored"}`,
     );
 
     if (media.episodeId) {
@@ -159,17 +350,25 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
         progress: 100,
       }).catch((e) => console.error("[worker] failed to update episode pipeline", e));
     }
+
+    // Success — the work dir (video + frames + checkpoints) has served its purpose.
+    fs.rmSync(work, { recursive: true, force: true });
   } catch (err: any) {
-    await saveContentAnalysis(mediaId, { error: String(err?.message ?? err).slice(0, 1000) });
+    const partial = collectPartial(work);
+    await saveContentAnalysis(mediaId, {
+      error: String(err?.message ?? err).slice(0, 1000),
+      ...(partial ? { data: partial } : {}),
+    });
     if (media.episodeId) {
       await setEpisodePipeline(media.episodeId, {
         stage: "analyze",
         stageStatus: "error",
-        blockedReason: "AI 분석 실패 — 재시도 필요",
+        blockedReason: "AI 분석 실패 — 재시도 대기 (완료된 단계는 보존됨)",
       }).catch(() => {});
     }
+    // Keep the work dir: the queue retry resumes from its checkpoints. The 48h sweep
+    // cleans it up if the job never comes back.
+    console.log(`[worker] content.analyze ${mediaId}: work dir kept for resume (${work})`);
     throw err;
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
   }
 }
