@@ -4,7 +4,7 @@
  * standalone — this module is only used once a live server is detected.
  */
 import type { DistributionChannel } from "@/lib/constants";
-import type { MetaPlatform } from "@/lib/types";
+import type { MetaPlatform, Program } from "@/lib/types";
 import type { EditorState } from "@/lib/editor/presets";
 
 export const API_BASE =
@@ -35,6 +35,24 @@ async function json<T>(res: Response): Promise<T> {
 export async function fetchState(signal?: AbortSignal): Promise<ServerState> {
   const res = await fetch(`${API_BASE}/state`, { signal, cache: "no-store" });
   return json<ServerState>(res);
+}
+
+export interface CreateProgramInput {
+  title: string;
+  section?: string;
+  targetAge?: number;
+  cast?: string[];
+}
+
+/** Create a program (content root). Required before any episode/upload can exist. */
+export async function createProgram(input: CreateProgramInput): Promise<{ program: Program }> {
+  return json(
+    await fetch(`${API_BASE}/programs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
 }
 
 /** Persist the editor's decision blob on a clip (metadata only — no render, plan §2.4). */

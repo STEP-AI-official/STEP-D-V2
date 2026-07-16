@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -12,6 +11,7 @@ import { useAppData } from "@/lib/data/store";
 import { PIPELINE_STAGE_LABELS, targetAgeLabel } from "@/lib/constants";
 import { programSmrChecks } from "@/lib/publish/requirements";
 import { UploadVideoButton } from "@/components/upload-video-dialog";
+import { NewProgramButton } from "@/components/new-program-dialog";
 import type { Program } from "@/lib/types";
 
 export default function ProgramsPage() {
@@ -25,7 +25,7 @@ export default function ProgramsPage() {
         actions={
           <>
             <UploadVideoButton />
-            <Button size="sm">＋ 새 프로그램</Button>
+            <NewProgramButton />
           </>
         }
       />

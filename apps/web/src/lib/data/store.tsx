@@ -37,6 +37,7 @@ import {
   API_BASE,
   fetchState,
   uploadVideo as apiUploadVideo,
+  createProgram as apiCreateProgram,
   adoptRec,
   rejectRec,
   publishClips,
@@ -121,6 +122,8 @@ interface AppData extends AppState {
   retryDistribution: (clipId: string, channel: DistributionChannel) => void;
   /** Upload a real video → creates an episode + recommendations. Returns episodeId. */
   uploadVideo: (file: File, programId: string, title?: string, onProgress?: (pct: number) => void) => Promise<string>;
+  /** Create a program (content root). Returns the new programId. */
+  createProgram: (input: { title: string; section?: string; targetAge?: number; cast?: string[] }) => Promise<string>;
   refresh: () => Promise<void>;
 }
 
@@ -439,6 +442,30 @@ export function AppDataProvider({
     [refresh],
   );
 
+  const createProgram = useCallback(
+    async (input: { title: string; section?: string; targetAge?: number; cast?: string[] }): Promise<string> => {
+      if (connectedRef.current) {
+        const res = await apiCreateProgram(input);
+        await refresh();
+        return res.program.id;
+      }
+      // Mock mode: keep the demo working standalone by adding to local state.
+      const id = `p-${Date.now()}`;
+      const program = {
+        id,
+        title: input.title,
+        section: input.section ?? "예능",
+        targetAge: (input.targetAge ?? 0) as Program["targetAge"],
+        cast: input.cast ?? [],
+        episodeCount: 0,
+        status: "active" as const,
+      };
+      setState((prev) => ({ ...prev, programs: [program, ...prev.programs] }));
+      return id;
+    },
+    [refresh],
+  );
+
   const saveClipEditor = useCallback(async (clipId: string, editorState: EditorState) => {
     // Persist locally first so reopening restores the edit even in mock mode.
     setState((prev) => ({
@@ -475,6 +502,7 @@ export function AppDataProvider({
       publishToChannel,
       retryDistribution,
       uploadVideo,
+      createProgram,
       refresh,
     };
   }, [
@@ -490,6 +518,7 @@ export function AppDataProvider({
     publishToChannel,
     retryDistribution,
     uploadVideo,
+    createProgram,
     refresh,
   ]);
 

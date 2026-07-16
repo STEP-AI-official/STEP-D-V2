@@ -99,6 +99,25 @@ app.get("/health", async (c) => {
 // ── full state (web InitialData + media) ──────────────────────────────────────
 app.get("/api/state", async (c) => c.json(await getState()));
 
+// ── create a program (content root — must exist before any upload) ──
+app.post("/api/programs", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  if (!title) return c.json({ error: "title required" }, 400);
+
+  const section =
+    typeof body.section === "string" && body.section.trim() ? body.section.trim() : "예능";
+  const targetAge = typeof body.targetAge === "number" ? body.targetAge : 0;
+  const cast = Array.isArray(body.cast)
+    ? body.cast.filter((x: unknown): x is string => typeof x === "string")
+    : [];
+
+  const id = newId("p");
+  const program = { id, title, section, targetAge, cast, episodeCount: 0, status: "active" as const };
+  await prependEntity("program", id, program);
+  return c.json({ program });
+});
+
 // ── video streaming (HTTP range) ──────────────────────────────────────────────
 app.get("/api/media/:id/stream", async (c) => {
   const m = await getMedia(c.req.param("id"));
