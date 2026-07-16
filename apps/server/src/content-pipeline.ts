@@ -26,10 +26,15 @@ const CORE_PYTHON =
 
 async function downloadToTemp(storedPath: string, dest: string): Promise<void> {
   // Works for both GCS and the local-storage fallback (createReadStream abstracts it).
-  const web = createReadStream(parseObjectPath(storedPath));
+  const src = Readable.fromWeb(createReadStream(parseObjectPath(storedPath)) as any);
   await new Promise<void>((resolve, reject) => {
     const out = fs.createWriteStream(dest);
-    Readable.fromWeb(web as any).pipe(out).on("finish", () => resolve()).on("error", reject);
+    // Attach error handlers to BOTH ends. A source error (missing object, no GCS access)
+    // must REJECT this promise so the job fails cleanly — pipe() does not forward source
+    // errors to the destination, so without this it bubbles up and crashes the worker.
+    src.on("error", reject);
+    out.on("error", reject);
+    src.pipe(out).on("finish", () => resolve());
   });
 }
 
