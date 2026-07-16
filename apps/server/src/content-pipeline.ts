@@ -15,8 +15,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 
-import { getMedia, saveContentAnalysis } from "./db-pg.ts";
+import { getMedia, saveContentAnalysis, prependEntity, getPool } from "./db-pg.ts";
 import { createReadStream, parseObjectPath } from "./storage-gcs.ts";
+import { newId } from "./pipeline.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const CORE_PYTHON =
@@ -58,6 +59,56 @@ function runAnalyze(videoPath: string, outDir: string): Promise<void> {
   });
 }
 
+// One AI-recommended short from core/recommend.py.
+type Short = { rank?: number; start?: number; end?: number; title?: string; reason?: string; tags?: string[] };
+
+/** Map an AI short → a recommendation entity matching the web's board shape. */
+function recFromShort(episodeId: string, s: Short) {
+  const start = Number(s.start) || 0;
+  const end = Math.max(start + 1, Number(s.end) || start + 1);
+  const id = newId("r");
+  const mid = start + (end - start) * 0.4;
+  const rank = typeof s.rank === "number" ? s.rank : 3;
+  return {
+    id,
+    episodeId,
+    kind: "short",
+    title: s.title || "쇼츠 추천",
+    appeal: Math.max(1, Math.min(5, 6 - rank)), // rank 1 → appeal 5 (surfaced first)
+    startTime: start,
+    endTime: end,
+    editNote: s.reason || "",
+    tags: Array.isArray(s.tags) ? s.tags : [],
+    status: "pending",
+    thumbnailCandidates: [
+      { id: `${id}-t1`, label: "시작", time: start + 0.5 },
+      { id: `${id}-t2`, label: "핵심", time: mid },
+      { id: `${id}-t3`, label: "끝", time: Math.max(start + 1, end - 1) },
+    ],
+    selectedThumbnailId: `${id}-t2`,
+    adoptedClipId: null,
+  };
+}
+
+/**
+ * Surface the AI shorts on the episode's recommendation board.
+ * Idempotent: clears any prior recs for the episode first, so a re-run replaces
+ * rather than duplicates.
+ */
+async function writeRecommendationsFromShorts(episodeId: string, shorts: Short[]): Promise<number> {
+  await getPool().query(
+    "DELETE FROM entities WHERE kind = 'recommendation' AND data->>'episodeId' = $1",
+    [episodeId],
+  );
+  const sorted = [...shorts].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+  // Insert worst-rank first so prepend leaves rank 1 at the front of the board.
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const rec = recFromShort(episodeId, sorted[i]);
+    await prependEntity("recommendation", rec.id, rec);
+  }
+  return sorted.length;
+}
+
 /** Run the full content pipeline for one uploaded media and persist the result. */
 export async function runContentAnalyze(mediaId: string): Promise<void> {
   const media = await getMedia(mediaId);
@@ -74,8 +125,20 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
     // Scene frames live under work/scene_frames and are discarded with the temp dir.
     // v1 stores transcript + scenes(metadata/scores) + shorts; frame hosting comes later.
     await saveContentAnalysis(mediaId, { data: analysis });
-    const shorts = Array.isArray(analysis?.shorts) ? analysis.shorts.length : 0;
-    console.log(`[worker] content.analyze ${mediaId}: ${analysis?.scenes?.length ?? 0} scenes, ${shorts} shorts`);
+
+    const shorts: Short[] = Array.isArray(analysis?.shorts) ? analysis.shorts : [];
+    // Surface the AI shorts on the episode's recommendation board (the product payoff).
+    let wrote = 0;
+    if (media.episodeId && shorts.length) {
+      try {
+        wrote = await writeRecommendationsFromShorts(media.episodeId, shorts);
+      } catch (e) {
+        console.error(`[worker] content.analyze ${mediaId}: failed to write recommendations`, e);
+      }
+    }
+    console.log(
+      `[worker] content.analyze ${mediaId}: ${analysis?.scenes?.length ?? 0} scenes, ${shorts.length} shorts, ${wrote} recs`,
+    );
   } catch (err: any) {
     await saveContentAnalysis(mediaId, { error: String(err?.message ?? err).slice(0, 1000) });
     throw err;
