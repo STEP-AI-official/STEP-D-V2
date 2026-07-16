@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 
-import { getMedia, saveContentAnalysis, prependEntity, getPool } from "./db-pg.ts";
+import { getMedia, saveContentAnalysis, prependEntity, getPool, getEntity, putEntity } from "./db-pg.ts";
 import { createReadStream, parseObjectPath } from "./storage-gcs.ts";
 import { newId } from "./pipeline.ts";
 
@@ -109,6 +109,12 @@ async function writeRecommendationsFromShorts(episodeId: string, shorts: Short[]
   return sorted.length;
 }
 
+/** Reflect pipeline progress on the episode so the UI shows real status, not a guess. */
+async function setEpisodePipeline(episodeId: string, pipeline: Record<string, unknown>): Promise<void> {
+  const ep = await getEntity<Record<string, unknown>>("episode", episodeId);
+  if (ep) await putEntity("episode", episodeId, { ...ep, pipeline });
+}
+
 /** Run the full content pipeline for one uploaded media and persist the result. */
 export async function runContentAnalyze(mediaId: string): Promise<void> {
   const media = await getMedia(mediaId);
@@ -139,8 +145,24 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
     console.log(
       `[worker] content.analyze ${mediaId}: ${analysis?.scenes?.length ?? 0} scenes, ${shorts.length} shorts, ${wrote} recs`,
     );
+
+    if (media.episodeId) {
+      await setEpisodePipeline(media.episodeId, {
+        stage: "recommend",
+        stageStatus: "done",
+        note: wrote ? `AI 쇼츠 추천 ${wrote}건` : "분석 완료 · 추천 없음",
+        progress: 100,
+      }).catch((e) => console.error("[worker] failed to update episode pipeline", e));
+    }
   } catch (err: any) {
     await saveContentAnalysis(mediaId, { error: String(err?.message ?? err).slice(0, 1000) });
+    if (media.episodeId) {
+      await setEpisodePipeline(media.episodeId, {
+        stage: "analyze",
+        stageStatus: "error",
+        blockedReason: "AI 분석 실패 — 재시도 필요",
+      }).catch(() => {});
+    }
     throw err;
   } finally {
     fs.rmSync(work, { recursive: true, force: true });

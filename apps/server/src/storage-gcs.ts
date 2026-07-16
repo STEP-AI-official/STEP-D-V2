@@ -9,6 +9,7 @@
 import { Storage } from "@google-cloud/storage";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 const BUCKET = process.env.GCS_BUCKET;
 const DEV_STORAGE = process.env.STEPD_STORAGE_DIR
@@ -142,35 +143,20 @@ export async function fileExists(objectPath: string): Promise<boolean> {
  * For local: returns a Node Readable stream converted to web.
  */
 export function createReadStream(objectPath: string, start?: number, end?: number): ReadableStream {
-  const b = getBucket();
-  if (b) {
-    const file = b.file(objectPath);
-    // GCS native streaming with range via createReadStream
-    const options: { start?: number; end?: number } = {};
-    if (start !== undefined) options.start = start;
-    if (end !== undefined) options.end = end;
-    const nodeStream = file.createReadStream(options);
-    return new ReadableStream({
-      start(controller) {
-        nodeStream.on("data", (chunk) => controller.enqueue(chunk));
-        nodeStream.on("end", () => controller.close());
-        nodeStream.on("error", (err) => controller.error(err));
-      },
-    });
-  }
-  // Local fallback
-  const localPath = path.join(DEV_STORAGE, objectPath);
   const options: { start?: number; end?: number } = {};
   if (start !== undefined) options.start = start;
   if (end !== undefined) options.end = end;
-  const nodeStream = fs.createReadStream(localPath, options);
-  return new ReadableStream({
-    start(controller) {
-      nodeStream.on("data", (chunk) => controller.enqueue(chunk));
-      nodeStream.on("end", () => controller.close());
-      nodeStream.on("error", (err) => controller.error(err));
-    },
-  });
+
+  const b = getBucket();
+  const nodeStream = b
+    ? b.file(objectPath).createReadStream(options)
+    : fs.createReadStream(path.join(DEV_STORAGE, objectPath), options);
+
+  // Readable.toWeb wires up backpressure + client-abort (cancel → destroy) + error
+  // propagation correctly. The hand-rolled version enqueued onto an already-closed
+  // controller when the browser cancelled a Range request mid-stream → 500s
+  // ("Controller is already closed") that broke video playback.
+  return Readable.toWeb(nodeStream as unknown as Readable) as unknown as ReadableStream;
 }
 
 // ── delete ─────────────────────────────────────────────────────────────────────
