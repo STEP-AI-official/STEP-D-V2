@@ -384,6 +384,20 @@ async function softReport(fn: () => Promise<AnalyticsReport>): Promise<Analytics
 }
 
 /**
+ * Like softReport but also swallows 403 — revenue metrics 403 on channels that aren't
+ * monetized or whose consent lacks the monetary scope, which is the common case. We
+ * simply omit revenue for those; the other reports must not fail because of it.
+ */
+async function softReportMonetary(fn: () => Promise<AnalyticsReport>): Promise<AnalyticsReport | null> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof YouTubeApiError && (err.status === 400 || err.status === 403)) return null;
+    throw err;
+  }
+}
+
+/**
  * Four Analytics reports for a single upload, all scoped by `filters=video==id`:
  * retention curve, lifetime summary, traffic sources, and viewer demographics.
  * Callers wrap this in `withAccessToken` so a mid-flight 401 refreshes and retries.
@@ -395,7 +409,7 @@ export async function fetchVideoAnalytics(
 ): Promise<VideoAnalyticsResult> {
   const base = { startDate: opts.startDate, endDate: opts.endDate, filters: `video==${videoId}` };
 
-  const [summaryR, retentionR, trafficR, demoR] = await Promise.all([
+  const [summaryR, retentionR, trafficR, demoR, monetaryR] = await Promise.all([
     softReport(() => fetchChannelAnalytics(accessToken, {
       ...base,
       metrics: "views,averageViewDuration,averageViewPercentage,subscribersGained,likes,shares",
@@ -415,11 +429,19 @@ export async function fetchVideoAnalytics(
       dimensions: "ageGroup,gender",
       metrics: "viewerPercentage",
     })),
+    // Revenue — only resolves on monetized channels with the monetary scope; 403 → null.
+    softReportMonetary(() => fetchChannelAnalytics(accessToken, {
+      ...base,
+      metrics: "estimatedRevenue,estimatedAdRevenue,grossRevenue,cpm,playbackBasedCpm,adImpressions,monetizedPlaybacks",
+    })),
   ]);
 
   const summary: Record<string, number> = {};
   const srow = summaryR?.rows[0];
   if (srow) for (const k of Object.keys(srow)) summary[k] = toNum(srow[k]);
+  // Merge revenue metrics into the same summary blob (JSONB — no schema change).
+  const mrow = monetaryR?.rows[0];
+  if (mrow) for (const k of Object.keys(mrow)) summary[k] = toNum(mrow[k]);
 
   const retention = (retentionR?.rows ?? [])
     .map((r) => ({

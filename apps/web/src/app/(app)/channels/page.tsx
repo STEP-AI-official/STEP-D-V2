@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { RefreshCw, TrendingUp, Eye, ThumbsUp, MessageCircle, Play, AlertCircle, Clock, Percent, Share2, UserPlus } from "lucide-react";
+import { RefreshCw, TrendingUp, Eye, ThumbsUp, MessageCircle, Play, AlertCircle, Clock, Percent, Share2, UserPlus, DollarSign, Coins } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { StatTile } from "@/components/ui/stat-tile";
@@ -47,6 +47,11 @@ function fmtDate(ts: string | number): string {
 function fmtDur(sec: number): string {
   const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** USD amount (YouTube revenue metrics are USD). */
+function fmtUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
 }
 
 /** YouTube Analytics traffic-source codes → Korean labels. */
@@ -400,6 +405,25 @@ export default function ChannelTrendsPage() {
               </div>
             )}
 
+          {/* revenue — only present on monetized channels with the monetary scope */}
+          {videoAnalytics && videoAnalytics.summary.estimatedRevenue != null && (
+            <div className="mb-4 rounded-lg border border-status-done/30 bg-status-done/5 p-3">
+              <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-status-done">
+                <DollarSign className="size-3.5" /> 수익 (예상)
+              </h4>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <StatTile icon={DollarSign} tone="done" label="예상 수익" value={fmtUsd(videoAnalytics.summary.estimatedRevenue ?? 0)} />
+                <StatTile
+                  icon={Coins}
+                  label="CPM"
+                  value={fmtUsd(videoAnalytics.summary.playbackBasedCpm ?? videoAnalytics.summary.cpm ?? 0)}
+                />
+                <StatTile icon={Eye} label="광고 노출" value={fmt(videoAnalytics.summary.adImpressions ?? 0)} />
+                <StatTile icon={Play} label="수익 재생" value={fmt(videoAnalytics.summary.monetizedPlaybacks ?? 0)} />
+              </div>
+            </div>
+          )}
+
           {/* daily views trend */}
           {videoTrend && videoTrend.trend.length > 0 ? (
             <div className="h-48">
@@ -524,7 +548,8 @@ export default function ChannelTrendsPage() {
 
           {videoAnalytics?.fetchedAt && (
             <p className="mt-3 text-[10px] text-muted-foreground">
-              애널리틱스 수집 {fmtDate(Number(videoAnalytics.fetchedAt))} · 수익 지표는 미포함(수익화·별도 권한 필요)
+              애널리틱스 수집 {fmtDate(Number(videoAnalytics.fetchedAt))}
+              {videoAnalytics.summary.estimatedRevenue == null && " · 수익 지표 미포함 (채널 수익화 + monetary 권한 재연결 필요)"}
             </p>
           )}
         </Card>

@@ -481,6 +481,7 @@ export type ConsentMode = "analytics" | "publish";
 const YT_ANALYTICS_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly", // channel + video metadata (Data API)
   "https://www.googleapis.com/auth/yt-analytics.readonly", // watch time, traffic, demographics
+  "https://www.googleapis.com/auth/yt-analytics-monetary.readonly", // revenue (monetized channels only)
 ].join(" ");
 
 const YT_PUBLISH_SCOPES = [

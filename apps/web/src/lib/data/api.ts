@@ -264,6 +264,14 @@ export interface VideoAnalyticsSummary {
   averageViewDuration?: number; // seconds
   averageViewPercentage?: number; // 0–100
   estimatedMinutesWatched?: number;
+  // Revenue (monetized channels only; absent otherwise). USD.
+  estimatedRevenue?: number;
+  estimatedAdRevenue?: number;
+  grossRevenue?: number;
+  cpm?: number;
+  playbackBasedCpm?: number;
+  adImpressions?: number;
+  monetizedPlaybacks?: number;
 }
 export interface VideoTrafficSource {
   source: string;
