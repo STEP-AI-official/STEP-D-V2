@@ -224,6 +224,24 @@ async function syncAnalytics(
     fetchedAt,
   }));
 
+  // Daily revenue — monetized channels whose consent includes the monetary scope only.
+  // Soft: any error (403 = not monetized / no scope) just leaves revenue at 0.
+  try {
+    const rev = await withAccessToken(clientId, clientSecret, ch, persist, (token) =>
+      fetchChannelAnalytics(token, {
+        startDate: isoDay(days),
+        endDate: isoDay(0),
+        dimensions: "day",
+        metrics: "estimatedRevenue",
+      }),
+    );
+    const byDay = new Map<string, number>();
+    for (const r of rev.rows) byDay.set(String(r.day), num(r.estimatedRevenue));
+    for (const row of rows) row.estimatedRevenue = byDay.get(row.day) ?? 0;
+  } catch {
+    // revenue is optional; non-monetized channels 403 here
+  }
+
   await upsertChannelAnalytics(rows);
   return rows.length;
 }

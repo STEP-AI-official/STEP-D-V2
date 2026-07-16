@@ -200,6 +200,12 @@ async function migrate(): Promise<void> {
     ALTER TABLE channel_videos ADD COLUMN IF NOT EXISTS isShort BOOLEAN NOT NULL DEFAULT FALSE;
   `);
 
+  // Daily estimated revenue (USD) — only nonzero on monetized channels whose consent
+  // includes the monetary scope; stays 0 otherwise.
+  await pool.query(`
+    ALTER TABLE channel_analytics ADD COLUMN IF NOT EXISTS estimatedRevenue REAL NOT NULL DEFAULT 0;
+  `);
+
   // Content pipeline results (per uploaded media): the analyze.py output blob
   // (transcript + scenes + shorts). Kept as JSONB — the shape evolves with the
   // pipeline and the admin/web read it whole.
@@ -313,6 +319,7 @@ export interface ChannelAnalyticsDay {
   averageViewPercentage: number;
   subscribersGained: number;
   subscribersLost: number;
+  estimatedRevenue?: number;
   fetchedAt: number;
 }
 
@@ -321,8 +328,8 @@ export async function upsertChannelAnalytics(rows: ChannelAnalyticsDay[]): Promi
     await pool.query(
       `INSERT INTO channel_analytics
          (channelId, day, views, estimatedMinutesWatched, averageViewDuration,
-          averageViewPercentage, subscribersGained, subscribersLost, fetchedAt)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          averageViewPercentage, subscribersGained, subscribersLost, estimatedRevenue, fetchedAt)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (channelId, day) DO UPDATE SET
          views                   = EXCLUDED.views,
          estimatedMinutesWatched = EXCLUDED.estimatedMinutesWatched,
@@ -330,9 +337,10 @@ export async function upsertChannelAnalytics(rows: ChannelAnalyticsDay[]): Promi
          averageViewPercentage   = EXCLUDED.averageViewPercentage,
          subscribersGained       = EXCLUDED.subscribersGained,
          subscribersLost         = EXCLUDED.subscribersLost,
+         estimatedRevenue        = EXCLUDED.estimatedRevenue,
          fetchedAt               = EXCLUDED.fetchedAt`,
       [r.channelId, r.day, r.views, r.estimatedMinutesWatched, r.averageViewDuration,
-        r.averageViewPercentage, r.subscribersGained, r.subscribersLost, r.fetchedAt],
+        r.averageViewPercentage, r.subscribersGained, r.subscribersLost, r.estimatedRevenue ?? 0, r.fetchedAt],
     );
   }
 }
@@ -348,6 +356,7 @@ export async function getChannelAnalytics(
             averageviewpercentage AS "averageViewPercentage",
             subscribersgained AS "subscribersGained",
             subscriberslost AS "subscribersLost",
+            estimatedrevenue AS "estimatedRevenue",
             fetchedat AS "fetchedAt"
        FROM channel_analytics
       WHERE channelId = $1 AND day >= $2
@@ -528,42 +537,49 @@ export async function getChannelStats(channelId: string, days = 7): Promise<Vide
   return rows as unknown as VideoStat[];
 }
 
-export async function getChannelViewTrend(
-  channelId: string,
-  days = 30,
-): Promise<{ date: string; totalViews: number; count: number }[]> {
-  const cutoff = Date.now() - days * 86_400_000;
-  const { rows } = await pool.query(
-    `SELECT TO_CHAR(TO_TIMESTAMP(snapshotAt / 1000), 'YYYY-MM-DD') AS day,
-            SUM(viewCount)::bigint AS "totalViews",
-            COUNT(DISTINCT videoId)::int AS "count"
-     FROM video_stats
-     WHERE channelId = $1 AND snapshotAt >= $2
-     GROUP BY day ORDER BY day ASC`,
-    [channelId, cutoff],
-  );
-  return rows.map((r) => ({
-    date: r.day,
-    totalViews: Number(r.totalViews),
-    count: Number(r.count),
-  }));
+function isoDayAgo(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 }
 
-export async function getChannelTrendSummary(channelId: string, days = 30) {
-  const cutoff = Date.now() - days * 86_400_000;
-  const half = days / 2;
-  const midCutoff = cutoff + half * 86_400_000;
+/**
+ * Real daily views from the YouTube Analytics backfill (channel_analytics), NOT our
+ * post-connection cumulative snapshots. `channel_analytics.views` is the channel's
+ * actual views on that calendar day, so the trend reflects true history (up to the
+ * 365-day backfill) rather than "since you registered with us".
+ */
+export async function getChannelViewTrend(
+  channelId: string,
+  days = 90,
+): Promise<{ date: string; totalViews: number; count: number }[]> {
+  const { rows } = await pool.query(
+    `SELECT day, views AS "totalViews", estimatedMinutesWatched AS "minutes"
+       FROM channel_analytics
+      WHERE channelId = $1 AND day >= $2
+      ORDER BY day ASC`,
+    [channelId, isoDayAgo(days)],
+  );
+  return rows.map((r) => ({ date: r.day, totalViews: Number(r.totalViews), count: Number(r.minutes) }));
+}
 
+/**
+ * Growth compares the recent `days` window vs the equally-long window before it, from
+ * real daily views — so it needs `2*days` of backfilled history (the 365-day backfill
+ * covers it). Also rolls up watch minutes and net subscribers for the recent window.
+ */
+export async function getChannelTrendSummary(channelId: string, days = 90) {
   const { rows: recentRows } = await pool.query(
-    "SELECT COALESCE(SUM(viewCount), 0)::bigint AS total FROM video_stats WHERE channelId = $1 AND snapshotAt >= $2",
-    [channelId, midCutoff],
+    `SELECT COALESCE(SUM(views), 0)::bigint AS total,
+            COALESCE(SUM(estimatedMinutesWatched), 0)::bigint AS mins,
+            COALESCE(SUM(subscribersGained - subscribersLost), 0)::bigint AS net_subs,
+            COALESCE(SUM(estimatedRevenue), 0)::float8 AS revenue
+       FROM channel_analytics WHERE channelId = $1 AND day >= $2`,
+    [channelId, isoDayAgo(days)],
   );
-
   const { rows: earlierRows } = await pool.query(
-    "SELECT COALESCE(SUM(viewCount), 0)::bigint AS total FROM video_stats WHERE channelId = $1 AND snapshotAt >= $2 AND snapshotAt < $3",
-    [channelId, cutoff, midCutoff],
+    `SELECT COALESCE(SUM(views), 0)::bigint AS total
+       FROM channel_analytics WHERE channelId = $1 AND day >= $2 AND day < $3`,
+    [channelId, isoDayAgo(days * 2), isoDayAgo(days)],
   );
-
   const { rows: vidRows } = await pool.query(
     "SELECT COALESCE(SUM(viewCount), 0)::bigint AS total_views, COUNT(*)::int AS count FROM channel_videos WHERE channelId = $1",
     [channelId],
@@ -579,6 +595,10 @@ export async function getChannelTrendSummary(channelId: string, days = 30) {
     recentPeriodViews: recentViews,
     earlierPeriodViews: earlierViews,
     growthPercent: growth,
+    watchMinutes: Number(recentRows[0]?.mins ?? 0),
+    netSubscribers: Number(recentRows[0]?.net_subs ?? 0),
+    channelRevenue: Number(recentRows[0]?.revenue ?? 0),
+    periodDays: days,
   };
 }
 

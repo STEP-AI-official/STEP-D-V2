@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { RefreshCw, TrendingUp, Eye, ThumbsUp, MessageCircle, Play, AlertCircle, Clock, Percent, Share2, UserPlus, DollarSign, Coins } from "lucide-react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { RefreshCw, TrendingUp, Eye, ThumbsUp, MessageCircle, Play, AlertCircle, Clock, Percent, Share2, UserPlus, DollarSign, Coins, Search, ChevronLeft, ChevronRight, Users, Timer, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { StatTile } from "@/components/ui/stat-tile";
@@ -51,8 +51,24 @@ function fmtDur(sec: number): string {
 
 /** USD amount (YouTube revenue metrics are USD). */
 function fmtUsd(n: number): string {
-  return `$${n.toFixed(2)}`;
+  return n >= 1000 ? `$${(n / 1000).toFixed(1)}K` : `$${n.toFixed(2)}`;
 }
+
+/** Watch minutes → hours label. */
+function fmtHours(min: number): string {
+  const h = min / 60;
+  if (h >= 10000) return `${(h / 10000).toFixed(1)}만시간`;
+  if (h >= 1000) return `${(h / 1000).toFixed(1)}천시간`;
+  return `${Math.round(h).toLocaleString("ko-KR")}시간`;
+}
+
+const VIDEO_PAGE_SIZE = 12;
+type VideoSort = "recent" | "views" | "comments";
+const SORT_TABS: { key: VideoSort; label: string }[] = [
+  { key: "recent", label: "최신순" },
+  { key: "views", label: "조회수순" },
+  { key: "comments", label: "댓글순" },
+];
 
 /** YouTube Analytics traffic-source codes → Korean labels. */
 const TRAFFIC_LABELS: Record<string, string> = {
@@ -82,6 +98,9 @@ export default function ChannelTrendsPage() {
   const [loadingTrend, setLoadingTrend] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [videoSearch, setVideoSearch] = useState("");
+  const [videoSort, setVideoSort] = useState<VideoSort>("recent");
+  const [videoPage, setVideoPage] = useState(0);
 
   useEffect(() => {
     fetchYouTubeChannels()
@@ -96,7 +115,7 @@ export default function ChannelTrendsPage() {
     try {
       const [v, t] = await Promise.all([
         fetchChannelVideos(channelId),
-        fetchChannelTrends(channelId, 30),
+        fetchChannelTrends(channelId, 90),
       ]);
       setVideos(v.videos);
       setTrend(t.trend);
@@ -143,6 +162,23 @@ export default function ChannelTrendsPage() {
 
   const selectedChannel = channels.find((c) => c.channelId === selectedId);
 
+  // Reset paging whenever the filter/sort/channel changes.
+  useEffect(() => setVideoPage(0), [videoSearch, videoSort, selectedId]);
+
+  // Search + sort + paginate client-side so large channels (thousands of uploads) stay usable.
+  const shownVideos = useMemo(() => {
+    const q = videoSearch.trim().toLowerCase();
+    const list = q ? videos.filter((v) => v.title.toLowerCase().includes(q)) : videos;
+    if (videoSort === "recent") return list; // server already returns newest-first
+    return [...list].sort((a, b) =>
+      videoSort === "views" ? b.viewCount - a.viewCount : b.commentCount - a.commentCount,
+    );
+  }, [videos, videoSearch, videoSort]);
+  const totalPages = Math.max(1, Math.ceil(shownVideos.length / VIDEO_PAGE_SIZE));
+  const page = Math.min(videoPage, totalPages - 1);
+  const pagedVideos = shownVideos.slice(page * VIDEO_PAGE_SIZE, (page + 1) * VIDEO_PAGE_SIZE);
+  const periodDays = summary?.periodDays ?? 90;
+
   return (
     <>
       <PageHeader
@@ -184,164 +220,210 @@ export default function ChannelTrendsPage() {
       )}
 
       {selectedId && summary && (
-        <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatTile
-            icon={Eye}
-            label="총 조회수"
-            value={fmt(summary.totalViews)}
-          />
-          <StatTile
-            icon={Play}
-            label="영상 수"
-            value={String(summary.videoCount)}
-          />
-          <StatTile
-            icon={TrendingUp}
-            tone={summary.growthPercent > 0 ? "done" : summary.growthPercent < 0 ? "error" : "idle"}
-            label="최근 30일 성장률"
-            value={`${summary.growthPercent > 0 ? "+" : ""}${summary.growthPercent.toFixed(1)}%`}
-            sub="전기 대비"
-          />
-          <StatTile
-            icon={Eye}
-            tone="progress"
-            label="최근 30일 조회수"
-            value={fmt(summary.recentPeriodViews)}
-            sub={`이전: ${fmt(summary.earlierPeriodViews)}`}
-          />
-        </div>
+        <>
+          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatTile
+              icon={Eye}
+              tone="progress"
+              label={`최근 ${periodDays}일 조회수`}
+              value={fmt(summary.recentPeriodViews)}
+              sub="YouTube 실제 일별 합계"
+            />
+            <StatTile
+              icon={TrendingUp}
+              tone={summary.growthPercent > 0 ? "done" : summary.growthPercent < 0 ? "error" : "idle"}
+              label="성장률"
+              value={`${summary.growthPercent > 0 ? "+" : ""}${summary.growthPercent}%`}
+              sub={`이전 ${periodDays}일 대비`}
+            />
+            <StatTile
+              icon={Timer}
+              label="시청 시간"
+              value={fmtHours(summary.watchMinutes ?? 0)}
+              sub={`최근 ${periodDays}일`}
+            />
+            <StatTile
+              icon={Users}
+              tone={(summary.netSubscribers ?? 0) > 0 ? "done" : (summary.netSubscribers ?? 0) < 0 ? "error" : "idle"}
+              label="순 구독자"
+              value={`${(summary.netSubscribers ?? 0) > 0 ? "+" : ""}${fmt(summary.netSubscribers ?? 0)}`}
+              sub={`최근 ${periodDays}일`}
+            />
+          </div>
+
+          {/* Revenue dashboard — monetized channels only */}
+          <div className="mb-6 rounded-xl border border-status-done/30 bg-status-done/5 p-4">
+            <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-status-done">
+              <Wallet className="size-4" /> 수익 대시보드 (예상)
+            </div>
+            {(summary.channelRevenue ?? 0) > 0 ? (
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="text-2xl font-bold text-status-done">{fmtUsd(summary.channelRevenue ?? 0)}</span>
+                <span className="text-xs text-muted-foreground">최근 {periodDays}일 채널 예상 수익 · 영상 클릭 시 영상별 수익</span>
+              </div>
+            ) : (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                수익 지표는 <b className="text-foreground">수익화(YPP) 채널</b>을 <b className="text-foreground">소유자 권한(monetary)으로 재연결</b>하면 표시됩니다.
+                지금 연결된 채널은 수익화 전이거나 예전 권한으로 연결돼 있어 매출 데이터가 없습니다.
+              </p>
+            )}
+          </div>
+        </>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        {/* Main chart */}
-        <Card className="p-4 lg:col-span-2">
-          <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold">
-            <TrendingUp className="size-4 text-status-progress" />
-            일별 총 조회수 추세 (30일)
-            {loadingTrend && <span className="ml-auto animate-pulse text-xs text-muted-foreground">로딩 중...</span>}
-          </h3>
-          {trend.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              데이터가 없습니다. YouTube 동기화를 먼저 실행해주세요.
+      {/* Daily views trend — real daily data from channel_analytics (not since-connect) */}
+      <Card className="mb-4 p-4">
+        <h3 className="mb-3 flex flex-wrap items-center gap-1.5 text-sm font-semibold">
+          <TrendingUp className="size-4 text-status-progress" />
+          일별 조회수 추세 ({periodDays}일)
+          <span className="text-xs font-normal text-muted-foreground">· YouTube 실제 일별 조회수</span>
+          {loadingTrend && <span className="ml-auto animate-pulse text-xs text-muted-foreground">로딩 중...</span>}
+        </h3>
+        {trend.length === 0 ? (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {selectedId ? "수집된 일별 데이터가 없습니다. YouTube 동기화 후 표시됩니다." : "채널을 선택해주세요."}
+          </p>
+        ) : (
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(d: string) => d.slice(5)}
+                  stroke="var(--color-muted-foreground)"
+                />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={fmt} stroke="var(--color-muted-foreground)" />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--color-background)",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: 8,
+                    fontSize: 12,
+                  }}
+                  formatter={(value) => [fmt(Number(value ?? 0)), "조회수"]}
+                  labelFormatter={(label) => {
+                    const d = String(label);
+                    return `${d.slice(0, 4)}년 ${d.slice(5, 7)}월 ${d.slice(8)}일`;
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="totalViews"
+                  stroke="var(--color-status-progress)"
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </Card>
+
+      {/* Video list — search + sort + pagination so channels with thousands of uploads stay usable */}
+      {selectedId && (
+        <Card className="p-0">
+          <div className="flex flex-col gap-3 border-b border-border p-3 sm:flex-row sm:items-center">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <Play className="size-4" /> 영상
+              <span className="text-xs font-normal text-muted-foreground">
+                {shownVideos.length.toLocaleString("ko-KR")}개
+                {videoSearch && ` / 전체 ${videos.length.toLocaleString("ko-KR")}`}
+              </span>
+            </h3>
+            <div className="flex flex-1 flex-wrap items-center gap-2 sm:justify-end">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={videoSearch}
+                  onChange={(e) => setVideoSearch(e.target.value)}
+                  placeholder="제목 검색"
+                  className="w-40 rounded-md border border-border bg-background py-1.5 pl-7 pr-2 text-xs outline-none focus:border-muted-foreground"
+                />
+              </div>
+              <div className="flex rounded-md border border-border p-0.5">
+                {SORT_TABS.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => setVideoSort(t.key)}
+                    className={`rounded px-2 py-1 text-xs transition ${
+                      videoSort === t.key ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {loadingVideos ? (
+            <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+              <RefreshCw className="mr-2 size-4 animate-spin" /> 불러오는 중...
+            </div>
+          ) : shownVideos.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              {videos.length === 0 ? "동기화 후 영상이 표시됩니다." : "검색 결과가 없습니다."}
             </p>
           ) : (
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fontSize: 11 }}
-                    tickFormatter={(d: string) => d.slice(5)}
-                    stroke="var(--color-muted-foreground)"
-                  />
-                  <YAxis
-                    tick={{ fontSize: 11 }}
-                    tickFormatter={fmt}
-                    stroke="var(--color-muted-foreground)"
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-background)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    formatter={(value, name) => {
-                      const labels: Record<string, string> = {
-                        totalViews: "조회수",
-                        totalLikes: "좋아요",
-                      };
-                      const key = String(name);
-                      return [fmt(Number(value ?? 0)), labels[key] ?? key];
-                    }}
-                    labelFormatter={(label) => {
-                      const d = String(label);
-                      return `${d.slice(0, 4)}년 ${d.slice(5, 7)}월 ${d.slice(8)}일`;
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="totalViews"
-                    stroke="var(--color-status-progress)"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Card>
-
-        {/* Video list */}
-        <Card className="flex flex-col overflow-hidden p-0">
-          <div className="border-b border-border p-3">
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-              <Play className="size-4" />
-              영상 목록
-              {videos.length > 0 && (
-                <span className="ml-auto text-xs font-normal text-muted-foreground">
-                  {videos.length}개
-                </span>
-              )}
-            </h3>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {loadingVideos ? (
-              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-                <RefreshCw className="mr-2 size-4 animate-spin" />
-                불러오는 중...
-              </div>
-            ) : videos.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                {selectedId ? "동기화 후 영상이 표시됩니다." : "채널을 선택해주세요."}
-              </p>
-            ) : (
-              <div className="divide-y divide-border">
-                {videos.map((v) => (
+            <>
+              <div className="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                {pagedVideos.map((v) => (
                   <button
                     key={v.videoId}
                     onClick={() => handleVideoClick(v.videoId)}
-                    className={`flex w-full gap-2 p-3 text-left text-xs transition hover:bg-muted/50 ${
-                      videoTrend?.video.videoId === v.videoId ? "bg-muted/30" : ""
+                    className={`flex gap-2 rounded-lg border p-2 text-left text-xs transition hover:bg-muted/50 ${
+                      videoTrend?.video.videoId === v.videoId || videoAnalytics?.video.videoId === v.videoId
+                        ? "border-primary/50 bg-muted/30"
+                        : "border-border"
                     }`}
                   >
                     {v.thumbnail ? (
-                      <img
-                        src={v.thumbnail}
-                        alt=""
-                        className="mt-0.5 h-12 w-16 shrink-0 rounded object-cover"
-                      />
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={v.thumbnail} alt="" className="h-14 w-24 shrink-0 rounded object-cover" />
                     ) : (
-                      <div className="mt-0.5 flex h-12 w-16 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+                      <div className="flex h-14 w-24 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
                         <Play className="size-4" />
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="mb-1 truncate font-medium">{v.title}</p>
-                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground">
-                        <span className="flex items-center gap-0.5">
-                          <Eye className="size-3" /> {fmt(v.viewCount)}
-                        </span>
-                        <span className="flex items-center gap-0.5">
-                          <ThumbsUp className="size-3" /> {fmt(v.likeCount)}
-                        </span>
-                        <span className="flex items-center gap-0.5">
-                          <MessageCircle className="size-3" /> {fmt(v.commentCount)}
-                        </span>
+                      <p className="mb-1 line-clamp-2 font-medium leading-tight">{v.title}</p>
+                      <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-muted-foreground">
+                        <span className="flex items-center gap-0.5"><Eye className="size-3" /> {fmt(v.viewCount)}</span>
+                        <span className="flex items-center gap-0.5"><ThumbsUp className="size-3" /> {fmt(v.likeCount)}</span>
+                        <span className="flex items-center gap-0.5"><MessageCircle className="size-3" /> {fmt(v.commentCount)}</span>
                       </div>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">
-                        {fmtDate(v.publishedAt)}
-                      </p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">{fmtDate(v.publishedAt)}</p>
                     </div>
                   </button>
                 ))}
               </div>
-            )}
-          </div>
+
+              {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-3 border-t border-border p-3 text-xs">
+                  <button
+                    onClick={() => setVideoPage((p) => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    className="flex items-center gap-1 rounded-md border border-border px-2 py-1 transition hover:bg-muted disabled:opacity-40"
+                  >
+                    <ChevronLeft className="size-3.5" /> 이전
+                  </button>
+                  <span className="tabular-nums text-muted-foreground">{page + 1} / {totalPages}</span>
+                  <button
+                    onClick={() => setVideoPage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={page >= totalPages - 1}
+                    className="flex items-center gap-1 rounded-md border border-border px-2 py-1 transition hover:bg-muted disabled:opacity-40"
+                  >
+                    다음 <ChevronRight className="size-3.5" />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </Card>
-      </div>
+      )}
 
       {/* Per-video detail: views trend + rich analytics (avg duration/%, traffic, retention, comments) */}
       {(videoTrend || videoAnalytics) && (

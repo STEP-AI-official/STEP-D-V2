@@ -229,6 +229,11 @@ export interface ChannelTrendSummary {
   recentPeriodViews: number;
   earlierPeriodViews: number;
   growthPercent: number;
+  /** Recent-window rollups from channel_analytics (real daily data). */
+  watchMinutes?: number;
+  netSubscribers?: number;
+  channelRevenue?: number; // USD, monetized channels only
+  periodDays?: number;
 }
 
 export interface DailyTrend {
