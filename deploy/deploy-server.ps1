@@ -14,11 +14,23 @@
   ⚠️ Cloud Run 은 GitHub 푸시로 자동 배포되지 않는다 (Vercel 과 다르다).
      서버를 고쳤으면 반드시 이걸 돌려야 반영된다.
 
+.PARAMETER DeploySaAccount
+  이 계정으로 모든 gcloud 를 실행한다 (gcloud --account). stepd-deployer 같은 배포
+  서비스계정을 넣으면 hkj 재인증 프롬프트 없이 비대화형으로 통과한다. 파라미터가 없으면
+  환경변수 DEPLOY_SA_ACCOUNT 를, 그것도 없으면 gcloud 활성 계정을 그대로 쓴다(기존 동작).
+
 .EXAMPLE
   .\deploy\deploy-server.ps1               # 검증 → Cloud Run → 워커 → 확인
   .\deploy\deploy-server.ps1 -SkipWorker   # Cloud Run 만
   .\deploy\deploy-server.ps1 -Only worker  # 워커만 (코드 변경 없이 재시작)
   .\deploy\deploy-server.ps1 -WhatIf       # 무엇이 배포될지만 확인
+
+.EXAMPLE
+  # 비대화형(배포 SA 로 고정) — CI 나 hkj 세션 만료 시:
+  $env:DEPLOY_SA_ACCOUNT = "stepd-deployer@step-d.iam.gserviceaccount.com"
+  .\deploy\deploy-server.ps1
+  #   또는
+  .\deploy\deploy-server.ps1 -DeploySaAccount stepd-deployer@step-d.iam.gserviceaccount.com
 #>
 [CmdletBinding()]
 param(
@@ -28,10 +40,48 @@ param(
   [switch]$SkipWorker,
   [switch]$SkipChecks,
   [switch]$SkipVerify,
-  [switch]$WhatIf
+  [switch]$WhatIf,
+
+  # 배포 SA (gcloud --account). 미지정 시 env:DEPLOY_SA_ACCOUNT → 활성 계정 순.
+  [string]$DeploySaAccount = $env:DEPLOY_SA_ACCOUNT
 )
 
 $ErrorActionPreference = "Stop"
+
+# ── 비대화형 네이티브 실행 래퍼 ────────────────────────────────────────────────
+# PowerShell 5.1 은 네이티브 명령이 stderr 에 쓰기만 해도 (gcloud·git 는 정상 진행상황을
+# stderr 로 낸다) $ErrorActionPreference='Stop' 하에서 NativeCommandError 로 조기 종료할 수
+# 있다. 배포 성공/실패는 오직 종료코드로만 판정해야 한다. 이 래퍼는 호출 구간에서만 EAP 를
+# 풀고 stderr 를 출력 스트림으로 합쳐(2>&1) 보여준 뒤 $LASTEXITCODE 를 반환한다.
+$script:DeployAccount = $DeploySaAccount
+
+function Invoke-Native {
+  param(
+    [switch]$Quiet,
+    [Parameter(Mandatory = $true)][string]$Exe,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$NativeArgs
+  )
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    if ($Quiet) { & $Exe @NativeArgs 2>&1 | Out-Null }
+    else        { & $Exe @NativeArgs 2>&1 | ForEach-Object { Write-Host $_ } }
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  return $LASTEXITCODE
+}
+
+# gcloud 전용 래퍼 — 배포 SA 가 지정돼 있으면 --account 를 붙여 비대화형으로 고정한다.
+function Invoke-Gcloud {
+  param(
+    [switch]$Quiet,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$GcloudArgs
+  )
+  if ($script:DeployAccount) { $GcloudArgs = @($GcloudArgs) + "--account=$script:DeployAccount" }
+  if ($Quiet) { return (Invoke-Native -Quiet -Exe gcloud -NativeArgs $GcloudArgs) }
+  return (Invoke-Native -Exe gcloud -NativeArgs $GcloudArgs)
+}
 
 $Project    = "step-d"
 $Service    = "stepd-server"
@@ -70,6 +120,7 @@ if ($dirty) {
 
 Write-Host "    Cloud Run : $(if ($doCloudRun) { '배포' } else { '건너뜀' })"
 Write-Host "    워커 VM   : $(if ($doWorker)   { '배포' } else { '건너뜀' })"
+Write-Host "    배포 계정 : $(if ($script:DeployAccount) { "$script:DeployAccount (--account, 비대화형)" } else { 'gcloud 활성 계정 (기본)' })"
 
 if ($WhatIf) { Write-Host ""; Write-Host "-WhatIf — 실제 배포 안 함." -ForegroundColor Yellow; exit 0 }
 
@@ -89,8 +140,8 @@ if ($doWorker) {
   $ahead = [int](git rev-list --count "origin/main..HEAD").Trim()
   if ($ahead -gt 0) {
     Say-Step "푸시 (워커가 origin/main 을 당겨가므로 선행 필요)"
-    git push origin main
-    if ($LASTEXITCODE -ne 0) { Die "git push 실패" }
+    $pushCode = Invoke-Native -Exe git -NativeArgs @("push", "origin", "main")
+    if ($pushCode -ne 0) { Die "git push 실패 (exit $pushCode)" }
     Say-Ok "커밋 $ahead 개 푸시"
   }
 }
@@ -98,8 +149,8 @@ if ($doWorker) {
 # ── 3. Cloud Run ──────────────────────────────────────────────────────────────
 if ($doCloudRun) {
   Say-Step "Cloud Run 빌드 · 배포 (수 분 소요)"
-  gcloud builds submit --config cloudbuild.yaml --project $Project
-  if ($LASTEXITCODE -ne 0) { Die "gcloud builds submit 실패" }
+  $buildCode = Invoke-Gcloud builds submit --config cloudbuild.yaml --project $Project
+  if ($buildCode -ne 0) { Die "gcloud builds submit 실패 (exit $buildCode)" }
   Say-Ok "Cloud Run 배포 완료"
 }
 
@@ -107,8 +158,8 @@ if ($doCloudRun) {
 if ($doWorker) {
   Say-Step "워커 배포 ($WorkerVm)"
 
-  gcloud compute instances describe $WorkerVm --zone $WorkerZone --project $Project --format="value(name)" | Out-Null
-  if ($LASTEXITCODE -ne 0) {
+  $vmCode = Invoke-Gcloud -Quiet compute instances describe $WorkerVm --zone $WorkerZone --project $Project --format="value(name)"
+  if ($vmCode -ne 0) {
     Say-Warn "VM '$WorkerVm' 이 없습니다 — 건너뜁니다. 생성 방법은 docs/ops/worker-queue.md."
   } else {
     # 워커는 SIGTERM 을 받으면 처리 중인 잡을 끝내고 종료한다 → restart 가 작업을 자르지 않는다.
@@ -123,8 +174,8 @@ if ($doWorker) {
       "systemctl is-active stepd-worker-youtube stepd-worker-content 2>/dev/null || systemctl is-active stepd-worker"
     ) -join "; "
 
-    gcloud compute ssh $WorkerVm --zone $WorkerZone --project $Project --command $remote
-    if ($LASTEXITCODE -ne 0) { Die "워커 배포 실패" }
+    $sshCode = Invoke-Gcloud compute ssh $WorkerVm --zone $WorkerZone --project $Project --command $remote
+    if ($sshCode -ne 0) { Die "워커 배포 실패 (exit $sshCode)" }
     Say-Ok "워커 재시작 완료"
   }
 }
