@@ -21,16 +21,18 @@ import { Movable, SnapGuides, InlineText, type Guides } from "@/components/edito
  *   news       — 뉴스 바: white on a semi-opaque lower-third box
  */
 function captionStyleClasses(style: CaptionStyle): { cls: string; style: CSSProperties } {
+  // fontSize in cqh = % of stage height, matching the render's capFs (H*0.042) with the same
+  // per-style multipliers as captionAssStyle(): korean_pop ×1.05, clean ×0.92, news ×1.0.
   switch (style) {
     case "news":
-      return { cls: "rounded bg-black/70 px-2 py-0.5 text-base font-bold", style: { color: "#fff" } };
+      return { cls: "rounded bg-black/70 px-2 py-0.5 font-bold", style: { color: "#fff", fontSize: "4.2cqh" } };
     case "clean":
-      return { cls: "px-1 text-base font-semibold", style: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,.55)" } };
+      return { cls: "px-1 font-semibold", style: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,.55)", fontSize: "3.9cqh" } };
     case "korean_pop":
     default:
       return {
-        cls: "px-1 text-lg font-extrabold",
-        style: { color: "#fff", textShadow: "0 2px 6px rgba(0,0,0,.7)", WebkitTextStroke: "1.4px rgba(0,0,0,.85)" },
+        cls: "px-1 font-extrabold",
+        style: { color: "#fff", textShadow: "0 2px 6px rgba(0,0,0,.7)", WebkitTextStroke: "1.4px rgba(0,0,0,.85)", fontSize: "4.4cqh" },
       };
   }
 }
@@ -58,9 +60,26 @@ export function EditorPreview({
 }) {
   const ratio = ASPECTS[state.aspect].ratio;
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const bgRef = useRef<HTMLVideoElement | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [guides, setGuides] = useState<Guides>({});
+
+  // Keep the blurred cover background roughly in step with the foreground transport (it's
+  // decorative + heavily blurred, so a loose sync is invisible).
+  const syncBg = (fg: HTMLVideoElement) => {
+    const bg = bgRef.current;
+    if (!bg) return;
+    if (Math.abs(bg.currentTime - fg.currentTime) > 0.25) {
+      try {
+        bg.currentTime = fg.currentTime;
+      } catch {
+        /* seeking before ready */
+      }
+    }
+    if (fg.paused) bg.pause();
+    else void bg.play().catch(() => {});
+  };
 
   const setLine = (id: string, patch: Partial<EditorState["titleLines"][number]>) =>
     update({ titleLines: state.titleLines.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
@@ -86,32 +105,44 @@ export function EditorPreview({
           width: ratio >= 1 ? "min(90%, 900px)" : undefined,
           maxHeight: "72vh",
           background: state.bg,
+          // Size container → caption font can use cqh (% of stage height) to match the
+          // render's ASS font (H*0.042), staying exact at any preview size.
+          containerType: "size",
         }}
       >
-        {/* video band — real footage when available, else a reframe stand-in */}
-        <div
-          className="absolute inset-x-0 flex items-center justify-center overflow-hidden bg-black"
-          style={{
-            top: "34%",
-            height: state.aspect === "9:16" ? "34%" : state.aspect === "16:9" ? "100%" : "48%",
-          }}
-        >
-          {videoUrl ? (
+        {/* True 9:16 reframe (mirrors renderShort): a blurred cover copy fills the frame and
+            the real footage sits fit-to-frame on top. Letterbox bands show the blur, and
+            overlay %/px coordinates map 1:1 to the ASS burn (PlayRes = output size). */}
+        {videoUrl ? (
+          <>
+            <video
+              aria-hidden
+              ref={bgRef}
+              src={videoUrl}
+              playsInline
+              muted
+              className="pointer-events-none absolute inset-0 size-full object-cover"
+              style={{ filter: "blur(16px) brightness(0.65)", transform: "scale(1.15)" }}
+            />
             <video
               key={videoUrl}
               ref={videoRef}
               src={videoUrl}
               playsInline
               onLoadedMetadata={(e) => onDuration?.(e.currentTarget.duration)}
+              onPlay={(e) => syncBg(e.currentTarget)}
+              onPause={(e) => syncBg(e.currentTarget)}
+              onSeeked={(e) => syncBg(e.currentTarget)}
+              onTimeUpdate={(e) => syncBg(e.currentTarget)}
               onClick={onTogglePlay}
-              className="size-full cursor-pointer object-contain"
+              className="absolute inset-0 size-full cursor-pointer object-contain"
             />
-          ) : (
-            <div className="flex size-full items-center justify-center bg-gradient-to-br from-zinc-700 to-zinc-900 text-[11px] text-zinc-400">
-              영상
-            </div>
-          )}
-        </div>
+          </>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-zinc-700 to-zinc-900 text-[11px] text-zinc-400">
+            영상
+          </div>
+        )}
 
         <SnapGuides guides={guides} />
 
@@ -168,8 +199,10 @@ export function EditorPreview({
         {/* captions — the REAL STT line under the playhead (same transcript + timeline the
             render burns in, so preview = final). Falls back to a sample only when no
             transcript is loaded, so the caption zone never looks empty/broken. */}
+        {/* Caption sits at 14% from the bottom, center — the exact anchor the render uses
+            (ASS \an2, MarginV = H*0.14), so the previewed line lands where it bakes. */}
         {state.captionsOn && hasTranscript && caption && (
-          <div className="absolute inset-x-0 px-6 text-center" style={{ top: "72%" }}>
+          <div className="absolute inset-x-0 px-6 text-center" style={{ bottom: "14%" }}>
             {(() => {
               const cap = captionStyleClasses(state.captionStyle);
               return (
@@ -181,8 +214,8 @@ export function EditorPreview({
           </div>
         )}
         {state.captionsOn && !hasTranscript && (
-          <div className="absolute inset-x-0 px-6 text-center" style={{ top: "72%" }}>
-            <span className="rounded px-1 text-lg font-bold" style={{ color: "#fff", textShadow: "0 2px 6px rgba(0,0,0,.6)" }}>
+          <div className="absolute inset-x-0 px-6 text-center" style={{ bottom: "14%" }}>
+            <span className="px-1 font-bold" style={{ color: "#fff", textShadow: "0 2px 6px rgba(0,0,0,.6)", fontSize: "4.2cqh" }}>
               지금 이 장면이 <span style={{ color: state.highlightColor }}>가장 먼저</span> 잡혀야 해요
             </span>
           </div>
