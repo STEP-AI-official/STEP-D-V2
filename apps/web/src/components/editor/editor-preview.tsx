@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState, type Ref } from "react";
+import { useRef, useState, type CSSProperties, type Ref } from "react";
 import { Heart, MessageCircle, Send } from "lucide-react";
-import { ASPECTS, defaultElementSize, type EditorState } from "@/lib/editor/presets";
+import { ASPECTS, defaultElementSize, type CaptionStyle, type EditorState } from "@/lib/editor/presets";
 import { Movable, SnapGuides, InlineText, type Guides } from "@/components/editor/editor-overlay";
 
 /**
@@ -13,6 +13,28 @@ import { Movable, SnapGuides, InlineText, type Guides } from "@/components/edito
  * to edit text, center-snap guides. All edits are metadata (EditorState); the render is
  * deferred to final export (§2.4), so this stays a CSS approximation of the final bake.
  */
+/**
+ * Caption look per editorState.captionStyle — the CSS mirror of captionAssStyle() on the
+ * server (index.ts), so the previewed caption matches the burned-in render:
+ *   korean_pop — 예능 팝: heavy weight, thick dark stroke + shadow (default)
+ *   clean      — 미니멀: medium weight, subtle shadow, no stroke
+ *   news       — 뉴스 바: white on a semi-opaque lower-third box
+ */
+function captionStyleClasses(style: CaptionStyle): { cls: string; style: CSSProperties } {
+  switch (style) {
+    case "news":
+      return { cls: "rounded bg-black/70 px-2 py-0.5 text-base font-bold", style: { color: "#fff" } };
+    case "clean":
+      return { cls: "px-1 text-base font-semibold", style: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,.55)" } };
+    case "korean_pop":
+    default:
+      return {
+        cls: "px-1 text-lg font-extrabold",
+        style: { color: "#fff", textShadow: "0 2px 6px rgba(0,0,0,.7)", WebkitTextStroke: "1.4px rgba(0,0,0,.85)" },
+      };
+  }
+}
+
 export function EditorPreview({
   state,
   update,
@@ -148,9 +170,14 @@ export function EditorPreview({
             transcript is loaded, so the caption zone never looks empty/broken. */}
         {state.captionsOn && hasTranscript && caption && (
           <div className="absolute inset-x-0 px-6 text-center" style={{ top: "72%" }}>
-            <span className="rounded px-1 text-lg font-bold" style={{ color: "#fff", textShadow: "0 2px 6px rgba(0,0,0,.6)" }}>
-              {caption}
-            </span>
+            {(() => {
+              const cap = captionStyleClasses(state.captionStyle);
+              return (
+                <span className={cap.cls} style={cap.style}>
+                  {caption}
+                </span>
+              );
+            })()}
           </div>
         )}
         {state.captionsOn && !hasTranscript && (

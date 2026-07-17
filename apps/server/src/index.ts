@@ -685,14 +685,37 @@ function buildEditorAss(
   if (!ev.length) return null;
   const capFs = Math.round(H * 0.042);
   const capMV = Math.round(H * 0.14);
+  const capStyle = (es && typeof es === "object" && es.captionStyle) || "korean_pop";
   return (
     `[Script Info]\nScriptType: v4.00+\nPlayResX: ${W}\nPlayResY: ${H}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n` +
     `[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
     `Style: Default,Noto Sans CJK KR,48,&H00FFFFFF,&H00000000,&H00000000,1,1,2,1,5,20,20,20,1\n` +
-    `Style: Caption,Noto Sans CJK KR,${capFs},&H00FFFFFF,&H00000000,&H80000000,1,1,3,1,2,60,60,${capMV},1\n\n` +
+    captionAssStyle(capStyle, capFs, capMV) + "\n\n" +
     `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n` +
     ev.join("\n") + "\n"
   );
+}
+
+/**
+ * The Caption ASS style line, branched by editorState.captionStyle so the burn matches the
+ * editor preview. Mirror of captionStyleClasses() on the web (editor-preview.tsx):
+ *   korean_pop — 예능 팝: thick black outline + shadow, bold, slightly larger (default)
+ *   clean      — 미니멀: thin outline, no shadow, a touch smaller
+ *   news       — 뉴스 바: opaque lower-third box (BorderStyle=3), no outline
+ * Fields: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,Bold,BorderStyle,
+ *         Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding.
+ */
+function captionAssStyle(style: string, fs: number, mv: number): string {
+  const font = "Noto Sans CJK KR";
+  switch (style) {
+    case "news":
+      return `Style: Caption,${font},${fs},&H00FFFFFF,&H00000000,&HA0000000,1,3,0,0,2,60,60,${mv},1`;
+    case "clean":
+      return `Style: Caption,${font},${Math.round(fs * 0.92)},&H00FFFFFF,&H00000000,&H00000000,1,1,1,0,2,60,60,${mv},1`;
+    case "korean_pop":
+    default:
+      return `Style: Caption,${font},${Math.round(fs * 1.05)},&H00FFFFFF,&H00000000,&H80000000,1,1,4,2,2,60,60,${mv},1`;
+  }
 }
 
 /**
