@@ -174,11 +174,29 @@ def analyze(
     ts = time.time()
     pending = sum(1 for s in scenes if s.get("frame") and not _frame_done(s))
     if pending:
+        # 4a) algorithmic pre-filter — score every scene cheaply (faces/motion/audio/
+        # caption/dialogue) and send only the top-N frames to Gemini. The rest keep a
+        # heuristic vision_score and are skipped, cutting Gemini image calls ~85%.
+        # No-op (all frames → Gemini) when VISION_PREFILTER=off or OpenCV is missing.
+        try:
+            from .prefilter import select_for_vision
+            sent = select_for_vision(
+                scenes, str(video_path), out_dir,
+                on_progress=lambda d, t: _progress("frames", 45 + 3 * d / max(1, t), f"장면 사전필터 {d}/{t}"),
+            )
+            if sent is not None:
+                _save_json(out_dir / "scenes.json", scenes)  # persist heur + prefilled scores
+                step(f"  사전필터 — Gemini 투입 {sent} 장면 (나머지 휴리스틱 스킵)")
+                pending = sum(1 for s in scenes if s.get("frame") and not _frame_done(s))
+        except Exception as e:
+            step(f"  (사전필터 건너뜀: {str(e)[:70]})")
+
+    if pending:
         step(f"프레임 분석 (시각채점+이름자막, {pending} 장면)…")
         scenes = analyze_frames(
             scenes, out_dir,
             save_cb=lambda: _save_json(out_dir / "scenes.json", scenes),
-            on_progress=lambda done, total: _progress("frames", 45 + 30 * done / max(1, total), f"프레임 분석 {done}/{total}"),
+            on_progress=lambda done, total: _progress("frames", 48 + 27 * done / max(1, total), f"프레임 분석 {done}/{total}"),
         )
         _save_json(out_dir / "scenes.json", scenes)
     else:
