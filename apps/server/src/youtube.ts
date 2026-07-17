@@ -1,6 +1,8 @@
 /**
  * YouTube Data API v3 helpers — upload list and video statistics.
  */
+import { assertUploadEnabled } from "./upload-gate.ts";
+
 export interface YtVideoItem {
   videoId: string;
   title: string;
@@ -377,12 +379,19 @@ export interface VideoUploadMeta {
 /**
  * Resumable-upload a video and return its id. `body` is the full file (rendered clip).
  * Throws YouTubeApiError on HTTP failure so `withAccessToken` can refresh+retry a 401.
+ *
+ * Gated: throws UploadDisabledError before touching the network unless YOUTUBE_UPLOAD_ENABLED
+ * is explicitly on. This is the innermost of three checks (route → worker → here) and the only
+ * one that sits at the actual byte boundary — any future caller inherits it for free, which is
+ * the point: a new code path must not be able to upload just because it forgot to ask.
  */
 export async function uploadVideoResumable(
   accessToken: string,
   file: { body: Buffer; contentType?: string },
   meta: VideoUploadMeta,
 ): Promise<{ videoId: string }> {
+  assertUploadEnabled();
+
   const snippet: Record<string, unknown> = {
     // YouTube hard-caps: title 100 chars, description 5000. Trim so a long AI title/synopsis
     // doesn't 400 the whole upload.

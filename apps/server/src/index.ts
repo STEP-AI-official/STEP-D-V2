@@ -68,6 +68,7 @@ import {
   type GenerateMode,
 } from "./profile.ts";
 import { normalizeCastInput } from "./cast.ts";
+import { youtubeUploadEnabled, UPLOAD_DISABLED_CODE, UPLOAD_DISABLED_MESSAGE } from "./upload-gate.ts";
 import { geminiGenerate, parseJsonLoose } from "./gemini.ts";
 import {
   syncChannelVideos,
@@ -116,7 +117,9 @@ app.use("/api/*", cors({ origin: (o) => o ?? "*", credentials: false }));
 
 // ── health ──────────────────────────────────────────────────────────────────
 app.get("/health", async (c) => {
-  return c.json({ ok: dbReady, ffmpeg: FFMPEG });
+  // `youtubeUpload` is the gate's state, not a secret — it's the fastest way to confirm a
+  // deployed revision can't publish (and lets the web hide the publish action).
+  return c.json({ ok: dbReady, ffmpeg: FFMPEG, youtubeUpload: youtubeUploadEnabled() });
 });
 
 // ── full state (web InitialData + media) ──────────────────────────────────────
@@ -1176,6 +1179,13 @@ app.post("/api/distributions/publish", async (c) => {
 
   // ── YouTube: real resumable upload, off-loaded to the worker ──
   if (b.channel === "youtube") {
+    // Gate (1/3): refuse before ANY side effect — no distribution status touched, nothing
+    // queued. A rejected request must leave the board exactly as it found it, so the operator
+    // never sees a clip sitting in 'pending' for an upload that was never going to happen.
+    if (!youtubeUploadEnabled()) {
+      console.warn(`[publish] blocked: YouTube 실업로드 비활성 (clips=${b.clipIds?.length ?? 0})`);
+      return c.json({ error: UPLOAD_DISABLED_CODE, message: UPLOAD_DISABLED_MESSAGE }, 409);
+    }
     const target = await resolveYouTubePublishChannel(b.youtubeChannelId);
     if (!target) {
       return c.json({
@@ -1230,6 +1240,11 @@ app.post("/api/distributions/retry", async (c) => {
   // YouTube: re-run the real upload. Reuse the channel captured at first publish; fall back
   // to the sole publish channel if the record is missing.
   if (b.channel === "youtube") {
+    // Same gate on the retry path — otherwise /retry is a trivial bypass of /publish.
+    if (!youtubeUploadEnabled()) {
+      console.warn(`[publish/retry] blocked: YouTube 실업로드 비활성 (clip=${b.clipId})`);
+      return c.json({ error: UPLOAD_DISABLED_CODE, message: UPLOAD_DISABLED_MESSAGE }, 409);
+    }
     const prev = (clip.distributions ?? []).find((d: any) => d.channel === "youtube");
     const target = await resolveYouTubePublishChannel(prev?.youtubeChannelId);
     if (!target) {

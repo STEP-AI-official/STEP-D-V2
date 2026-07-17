@@ -41,6 +41,7 @@ import {
   type PersistTokens,
 } from "./youtube.ts";
 import { createReadStream, parseObjectPath, fileExists } from "./storage-gcs.ts";
+import { youtubeUploadEnabled, UPLOAD_DISABLED_MESSAGE } from "./upload-gate.ts";
 import {
   FRESH_VIDEO_WINDOW_MS,
   VIDEO_ANALYZE_FRESH_INTERVAL_MS,
@@ -360,6 +361,20 @@ async function handleDistributionPublish(job: Job): Promise<void> {
   const channelId = String(job.payload.channelId ?? "");
   if (!clipId || !channelId) throw new Error("distribution.publish requires clipId + channelId");
 
+  // Gate (2/3): stop before reading the clip, the token, or a single byte of video. This is
+  // what catches jobs the route never vetted — ones queued while uploads were enabled and
+  // still sitting in job_queue after they were turned off, or queued by any future caller.
+  // Return (don't throw): throwing hands the job to the queue's blind backoff-retry, which
+  // would re-attempt forever while the flag is off.
+  if (!youtubeUploadEnabled()) {
+    console.warn(`[worker] distribution.publish ${clipId}: blocked — YouTube 실업로드 비활성 (YOUTUBE_UPLOAD_ENABLED 미설정)`);
+    // Record WHY on the board rather than leaving 'pending' (which reads as "업로드 중"),
+    // and never as published. markDistributionFailed only writes status+error — it cannot
+    // set externalId/publishedVideoId, so no clip can look uploaded because of this path.
+    await markDistributionFailed(clipId, "youtube", UPLOAD_DISABLED_MESSAGE).catch(() => {});
+    return;
+  }
+
   const clip = await getEntity<any>("clip", clipId);
   if (!clip) { console.warn(`[worker] distribution.publish: clip ${clipId} gone — dropping`); return; }
 
@@ -505,6 +520,11 @@ async function main(): Promise<void> {
   await initDb();
   await initQueue();
   console.log("[worker] db + queue ready");
+  // State of the upload gate, logged once at boot so an operator can tell from the log alone
+  // whether this worker can publish. Prints the mode only — never the token/secret values.
+  console.log(
+    `[worker] YouTube 실업로드: ${youtubeUploadEnabled() ? "ENABLED (실제 업로드됨)" : "DISABLED (기본값 — YOUTUBE_UPLOAD_ENABLED 미설정)"}`,
+  );
 
   // Jobs left 'running' by a crashed worker would otherwise sit locked forever.
   const recovered = await requeueStale();
