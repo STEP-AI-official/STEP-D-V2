@@ -30,7 +30,8 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 
-import { getMedia, saveContentAnalysis, prependEntity, getPool, getEntity, putEntity } from "./db-pg.ts";
+import { getMedia, saveContentAnalysis, saveTranscript, prependEntity, getPool, getEntity, putEntity } from "./db-pg.ts";
+import type { TranscriptSegment } from "./db-pg.ts";
 import { createReadStream, parseObjectPath, uploadFile } from "./storage-gcs.ts";
 import { newId } from "./pipeline.ts";
 
@@ -243,6 +244,31 @@ async function persistArtifacts(work: string, mediaId: string): Promise<{ base: 
   }
 }
 
+/**
+ * Mirror the run's transcript into the canonical `transcript` table (shared by the
+ * caption/render/framing/highlight consumers). Additive — content_analysis keeps its own
+ * `data.transcript` copy, so this never removes the existing read path. Non-fatal: a
+ * transcript-store failure (e.g. table not yet migrated) must not fail the analysis job.
+ */
+async function persistTranscript(
+  mediaId: string,
+  segments: unknown,
+  source: "refined" | "raw",
+): Promise<void> {
+  if (!Array.isArray(segments) || segments.length === 0) return;
+  try {
+    await saveTranscript(mediaId, {
+      segments: segments as TranscriptSegment[],
+      // core/analyze.py transcribes with language="ko"; provider is the worker's STT choice.
+      language: "ko",
+      provider: process.env.STT_PROVIDER || "gemini",
+      source,
+    });
+  } catch (e) {
+    console.error(`[worker] content.analyze ${mediaId}: transcript persistence failed (continuing)`, e);
+  }
+}
+
 /** Read a checkpoint JSON from the work dir, or undefined. */
 function readCheckpoint<T>(work: string, name: string): T | undefined {
   try {
@@ -347,6 +373,11 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
       },
     });
 
+    // Also land the transcript in the canonical shared table (refined segments carry the
+    // word-level timings from the whisper path). Consumers read it there; content_analysis
+    // still holds its own copy, so this is purely additive.
+    await persistTranscript(mediaId, analysis?.transcript, "refined");
+
     const shorts: Short[] = Array.isArray(analysis?.shorts) ? analysis.shorts : [];
     // Surface the AI shorts on the episode's recommendation board (the product payoff).
     let wrote = 0;
@@ -380,6 +411,13 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
       error: String(err?.message ?? err).slice(0, 1000),
       ...(partial ? { data: partial } : {}),
     });
+    // Consolidate the partial transcript into the shared table too (refine may not have
+    // run yet — fall back to the raw STT segments collectPartial salvaged).
+    if (partial) {
+      const p = partial as { transcript?: unknown; stagesDone?: unknown };
+      const refined = Array.isArray(p.stagesDone) && p.stagesDone.includes("refine");
+      await persistTranscript(mediaId, p.transcript, refined ? "refined" : "raw");
+    }
     if (media.episodeId) {
       await setEpisodePipeline(media.episodeId, {
         stage: "analyze",

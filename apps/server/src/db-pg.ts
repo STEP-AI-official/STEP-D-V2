@@ -868,6 +868,100 @@ export async function getContentAnalysis(mediaId: string): Promise<ContentAnalys
   return rows[0] as ContentAnalysis | undefined;
 }
 
+// ── transcript (canonical STT store, shared across consumers) ────────────────────
+//
+// One row per media (mediaId PK). `segments` holds utterance-level segments with word
+// timestamps nested inside — both levels preserved. This is the single source the
+// caption/render/framing/highlight consumers read from, instead of each re-parsing the
+// content_analysis blob. Created by migrations/0002_transcript-table.cjs (NOT by the
+// bootstrap migrate() — new schema goes through migrations only).
+
+/** One word token (whisper path). `probability` is the model's confidence 0–1. */
+export interface TranscriptWord {
+  word: string;
+  start: number;
+  end: number;
+  probability?: number;
+}
+
+/** One utterance-level segment. `words` is [] on the Gemini path (no word timings). */
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+  words?: TranscriptWord[];
+}
+
+export interface TranscriptRow {
+  mediaId: string;
+  language: string;
+  provider: string | null;
+  source: string;
+  segmentCount: number;
+  wordCount: number;
+  hasWords: boolean;
+  segments: TranscriptSegment[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+function countWords(segments: TranscriptSegment[]): number {
+  let n = 0;
+  for (const s of segments) if (Array.isArray(s?.words)) n += s.words.length;
+  return n;
+}
+
+/**
+ * Upsert the transcript for a media. Non-destructive to callers: the `segments` are
+ * stored verbatim (word tokens keep their native fields, incl. `probability`), so
+ * downstream readers get the exact shape the pipeline produced. `createdAt` is set once.
+ */
+export async function saveTranscript(
+  mediaId: string,
+  t: { segments: TranscriptSegment[]; language?: string; provider?: string | null; source?: string },
+): Promise<void> {
+  const now = Date.now();
+  const segments = Array.isArray(t.segments) ? t.segments : [];
+  const wordCount = countWords(segments);
+  await pool.query(
+    `INSERT INTO transcript
+       (mediaId, language, provider, source, segmentCount, wordCount, hasWords, segments, createdAt, updatedAt)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$9)
+     ON CONFLICT (mediaId) DO UPDATE SET
+       language     = EXCLUDED.language,
+       provider     = EXCLUDED.provider,
+       source       = EXCLUDED.source,
+       segmentCount = EXCLUDED.segmentCount,
+       wordCount    = EXCLUDED.wordCount,
+       hasWords     = EXCLUDED.hasWords,
+       segments     = EXCLUDED.segments,
+       updatedAt    = EXCLUDED.updatedAt`,
+    [
+      mediaId,
+      t.language ?? "ko",
+      t.provider ?? null,
+      t.source ?? "refined",
+      segments.length,
+      wordCount,
+      wordCount > 0,
+      JSON.stringify(segments),
+      now,
+    ],
+  );
+}
+
+export async function getTranscript(mediaId: string): Promise<TranscriptRow | undefined> {
+  const { rows } = await pool.query(
+    `SELECT mediaid AS "mediaId", language, provider, source,
+            segmentcount AS "segmentCount", wordcount AS "wordCount",
+            haswords AS "hasWords", segments,
+            createdat AS "createdAt", updatedat AS "updatedAt"
+       FROM transcript WHERE mediaId = $1`,
+    [mediaId],
+  );
+  return rows[0] as TranscriptRow | undefined;
+}
+
 // ── cleanup ────────────────────────────────────────────────────────────────────
 
 export async function closeDb(): Promise<void> {

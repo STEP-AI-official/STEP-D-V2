@@ -44,6 +44,7 @@ import {
   getChannelAnalytics,
   markContentAnalysisPending,
   getContentAnalysis,
+  getTranscript,
   getVideoAnalytics,
   getVideoRetention,
   listVideoComments,
@@ -395,6 +396,35 @@ app.get("/api/media/:id/analysis/frames/:name", async (c) => {
     status: 200,
     headers: { "Content-Type": "image/jpeg", "Cache-Control": "max-age=86400" },
   });
+});
+
+/**
+ * Resolve a media's transcript from the canonical `transcript` table, falling back to
+ * the copy embedded in content_analysis.data.transcript for rows analyzed before the
+ * table existed (or if the table write was skipped). Returns the segments plus an
+ * updatedAt for cache fingerprinting. This is the one place consumers share.
+ */
+async function resolveTranscript(
+  mediaId: string,
+): Promise<{ segments: unknown[]; updatedAt: number; source: "transcript" | "content_analysis" | "none" }> {
+  const t = await getTranscript(mediaId);
+  if (t && Array.isArray(t.segments) && t.segments.length) {
+    return { segments: t.segments, updatedAt: t.updatedAt, source: "transcript" };
+  }
+  const ca = await getContentAnalysis(mediaId);
+  const legacy = (ca?.data as any)?.transcript;
+  if (Array.isArray(legacy) && legacy.length) {
+    return { segments: legacy, updatedAt: ca?.updatedAt ?? 0, source: "content_analysis" };
+  }
+  return { segments: [], updatedAt: t?.updatedAt ?? ca?.updatedAt ?? 0, source: "none" };
+}
+
+// ── transcript (shared STT store: captions, framing, highlights read this) ──────
+// Prefers the canonical transcript table; falls back to the analysis blob for older rows.
+app.get("/api/media/:id/transcript", async (c) => {
+  const { segments, updatedAt, source } = await resolveTranscript(c.req.param("id"));
+  if (source === "none") return c.json({ status: "none" }, 404);
+  return c.json({ mediaId: c.req.param("id"), source, updatedAt, segments });
 });
 
 // ── upload a real video → episode + master media + heuristic recommendations ───
@@ -1141,11 +1171,14 @@ app.post("/api/clips/:id/export", async (c) => {
   if (!(end > start)) return c.json({ error: "clip has no valid segment to render" }, 400);
 
   // STT transcript for the master (spoken subtitles). Segments are master-timeline seconds;
-  // we window them to the render range below. A fingerprint (count + updatedAt) goes into the
-  // revision hash so a re-transcribe invalidates the cached render.
-  const ca = clip.sourceMediaId ? await getContentAnalysis(clip.sourceMediaId) : undefined;
-  const transcript = (ca?.data as any)?.transcript;
-  const captionsFp = { n: Array.isArray(transcript) ? transcript.length : 0, u: ca?.updatedAt ?? 0 };
+  // we window them to the render range below. Read from the canonical transcript table
+  // (fallback: the analysis blob for pre-table rows). A fingerprint (count + updatedAt) goes
+  // into the revision hash so a re-transcribe invalidates the cached render.
+  const resolved = clip.sourceMediaId
+    ? await resolveTranscript(clip.sourceMediaId)
+    : { segments: [] as unknown[], updatedAt: 0, source: "none" as const };
+  const transcript = resolved.segments;
+  const captionsFp = { n: transcript.length, u: resolved.updatedAt };
 
   const revision = crypto
     .createHash("sha256")
