@@ -313,13 +313,36 @@ export async function adoptRec(recId: string): Promise<{ clipId: string; clip: u
   return json(await fetch(`${API_BASE}/recommendations/${recId}/adopt`, { method: "POST" }));
 }
 
+/** Destinations with a render preset (frame + length cap) — server RENDER_PRESETS keys. */
+export type RenderChannel = "youtube_shorts" | "instagram_reels" | "smr";
+
 /**
  * Confirm/export a clip — the single expensive render (plan §2.4). The server bakes the
  * deliverable once and caches by revision hash, so re-exporting identical decisions is a
  * no-op. Returns the updated (rendered, status:"ready") clip.
+ *
+ * `channel` picks the destination render preset (F3): the frame (SMR renders 16:9, Shorts/
+ * Reels 9:16) and the hard length cap. Omit it to render the clip's own aspect over the full
+ * segment. `capped` comes back set when the preset's maxSec shortened the deliverable — show
+ * it; the operator's segment was longer than what shipped.
  */
-export async function exportClip(clipId: string): Promise<{ clipId: string; clip: unknown; cached?: boolean }> {
-  return json(await fetch(`${API_BASE}/clips/${clipId}/export`, { method: "POST" }));
+export async function exportClip(
+  clipId: string,
+  channel?: RenderChannel,
+): Promise<{
+  clipId: string;
+  clip: unknown;
+  cached?: boolean;
+  preset?: string | null;
+  capped?: { maxSec: number; requestedSec: number } | null;
+}> {
+  return json(
+    await fetch(`${API_BASE}/clips/${clipId}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(channel ? { channel } : {}),
+    }),
+  );
 }
 
 export async function rejectRec(recId: string, reason: string): Promise<void> {

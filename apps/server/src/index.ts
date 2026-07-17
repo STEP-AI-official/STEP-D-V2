@@ -820,6 +820,47 @@ function renderDims(aspect: string): { W: number; H: number; stageH: number } {
     default:     return { W: 1080, H: 1920, stageH: 640 };
   }
 }
+
+// ── F3: per-destination render presets ────────────────────────────────────────
+//
+// The render-side mirror of core/channels.py CHANNEL_PRESETS. That table ranks candidates
+// per destination (scoring only); this one decides what the encoder actually emits. The two
+// must agree — a candidate scored as SMR (16:9, up to 180s) that rendered as a 60s 9:16
+// short would make the whole (candidate × destination) matrix a lie. Keep maxSec/aspect in
+// sync with core/channels.py when either moves.
+const RENDER_PRESETS: Record<string, { label: string; aspect: string; maxSec: number }> = {
+  youtube_shorts:  { label: "YouTube Shorts",   aspect: "9:16", maxSec: 60 },
+  instagram_reels: { label: "Instagram Reels",  aspect: "9:16", maxSec: 90 },
+  smr:             { label: "SMR (포털 VOD)",   aspect: "16:9", maxSec: 180 },
+};
+
+/**
+ * clip.aspectRatio uses the editor's vocabulary ("9:16-crop-main", "9:16-letterbox", "16:9"
+ * — constants.ts ASPECT_RATIOS); renderDims uses bare frame ratios. Map between them so an
+ * adopted highlight (aspectRatio "16:9", no editorState) doesn't fall through to the 9:16
+ * default and get squeezed into a vertical frame it was never selected for.
+ */
+function normalizeAspect(aspectRatio: unknown): string | null {
+  const s = String(aspectRatio ?? "");
+  if (!s) return null;
+  if (s.startsWith("9:16")) return "9:16";
+  if (s.startsWith("16:9")) return "16:9";
+  if (s === "1:1" || s === "4:5") return s;
+  return null;
+}
+
+/**
+ * Resolve the render preset for an export. Explicit request `channel` wins, else whatever the
+ * clip was adopted/targeted for. Unknown or absent → null (no preset; the clip's own aspect
+ * and full segment are used), so a destination we don't model never silently reshapes a render.
+ */
+function resolveRenderPreset(channel: unknown, clip: any) {
+  const key = String(channel ?? clip?.targetChannel ?? "").trim().toLowerCase();
+  if (!key) return null;
+  const preset = RENDER_PRESETS[key];
+  return preset ? { key, ...preset } : null;
+}
+
 /** #RRGGBB → ASS &H00BBGGRR (opaque). */
 function hexToAss(hex: string): string {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex ?? "");
@@ -1324,6 +1365,11 @@ app.post("/api/clips/:id/export", async (c) => {
   const end = Number(clip.endTime ?? start + (clip.durationSec ?? 0));
   if (!(end > start)) return c.json({ error: "clip has no valid segment to render" }, 400);
 
+  // F3: the destination this render is for. Body `channel` lets the operator export the same
+  // adopted segment once per destination; absent that, the clip's own target.
+  const body = await c.req.json<{ channel?: string }>().catch(() => ({} as { channel?: string }));
+  const preset = resolveRenderPreset(body.channel, clip);
+
   // STT transcript for the master (spoken subtitles). Segments are master-timeline seconds;
   // we window them to the render range below. Read from the canonical transcript table
   // (fallback: the analysis blob for pre-table rows). A fingerprint (count + updatedAt) goes
@@ -1336,13 +1382,13 @@ app.post("/api/clips/:id/export", async (c) => {
 
   const revision = crypto
     .createHash("sha256")
-    .update(JSON.stringify({ start, end, aspectRatio: clip.aspectRatio, editorState: clip.editorState ?? null, captionsFp }))
+    .update(JSON.stringify({ start, end, aspectRatio: clip.aspectRatio, editorState: clip.editorState ?? null, captionsFp, preset: preset?.key ?? null }))
     .digest("hex")
     .slice(0, 16);
 
   // Cache hit: identical decisions already rendered — don't re-encode.
   if (clip.rendered && clip.renderRevision === revision && clip.mediaId) {
-    return c.json({ clipId, clip, cached: true });
+    return c.json({ clipId, clip, cached: true, preset: preset?.key ?? null });
   }
 
   const allMedia = await listMedia();
@@ -1361,7 +1407,24 @@ app.post("/api/clips/:id/export", async (c) => {
   const inRel = Math.min(Math.max(0, Number(es?.trimIn ?? 0)), Math.max(0, segLen - 0.1));
   const outRel = Math.min(Math.max(inRel + 0.1, Number(es?.trimOut ?? segLen)), segLen);
   const renderStart = start + inRel;
-  const renderEnd = start + outRel;
+  let renderEnd = start + outRel;
+
+  // F3 length cap. A destination's maxSec is a hard delivery constraint, not a preference —
+  // YouTube rejects a >60s upload as a Short outright. So unlike core/channels.py (which
+  // deranks over-length candidates rather than dropping them), the render clamps. It is
+  // reported back as `capped` rather than silently truncated: the operator asked for a
+  // longer segment and deserves to know the deliverable is shorter than the segment.
+  let capped: { maxSec: number; requestedSec: number } | null = null;
+  if (preset && renderEnd - renderStart > preset.maxSec) {
+    capped = { maxSec: preset.maxSec, requestedSec: Number((renderEnd - renderStart).toFixed(2)) };
+    renderEnd = renderStart + preset.maxSec;
+  }
+
+  // Aspect precedence: an explicit operator choice in the editor wins (they saw the frame and
+  // decided); otherwise the destination preset; otherwise the clip's own adopted ratio. The
+  // last step is what keeps a 16:9 highlight that was never opened in the editor out of a
+  // 9:16 blur frame.
+  const aspect = normalizeAspect(es?.aspect) ?? preset?.aspect ?? normalizeAspect(clip.aspectRatio) ?? "9:16";
 
   // Spoken subtitles that fall inside the render window, rebased to 0.
   const captions = windowCaptions(transcript, renderStart, renderEnd);
@@ -1369,7 +1432,7 @@ app.post("/api/clips/:id/export", async (c) => {
   const rendered = await renderClipMedia({
     master, episodeId: clip.episodeId,
     startTime: renderStart, endTime: renderEnd,
-    title: clip.title, editorState: es, aspect: es?.aspect, captions,
+    title: clip.title, editorState: es, aspect, captions,
   });
   if (!rendered) return c.json({ error: "render failed" }, 500);
 
@@ -1382,9 +1445,10 @@ app.post("/api/clips/:id/export", async (c) => {
     sourceMediaId: master.id,
     videoUrl: `/media/${rendered.clipMediaId}/stream`,
     durationSec: rendered.cmeta.durationSec || clip.durationSec,
+    renderPreset: preset?.key ?? null,
   };
   await putEntity("clip", clipId, next);
-  return c.json({ clipId, clip: next });
+  return c.json({ clipId, clip: next, preset: preset?.key ?? null, capped });
 });
 
 // ── YouTube OAuth & channel management ────────────────────────────────────────
