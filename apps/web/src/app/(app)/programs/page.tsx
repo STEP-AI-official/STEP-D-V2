@@ -13,7 +13,8 @@ import { PIPELINE_STAGE_LABELS, targetAgeLabel } from "@/lib/constants";
 import { programSmrChecks } from "@/lib/publish/requirements";
 import { UploadVideoButton } from "@/components/upload-video-dialog";
 import { NewProgramButton } from "@/components/new-program-dialog";
-import type { Program, Episode } from "@/lib/types";
+import type { Program, Episode, Recommendation, Clip } from "@/lib/types";
+import { Sparkles, Clapperboard } from "lucide-react";
 
 /** Poster face — a genre emoji, falling back to the title's first character. */
 const SECTION_EMOJI: Record<string, string> = {
@@ -31,7 +32,7 @@ const SECTION_EMOJI: Record<string, string> = {
 };
 
 export default function ProgramsPage() {
-  const { programs, episodes } = useAppData();
+  const { programs, episodes, recommendations, clips } = useAppData();
 
   return (
     <>
@@ -60,6 +61,8 @@ export default function ProgramsPage() {
               key={program.id}
               program={program}
               eps={episodes.filter((e) => e.programId === program.id)}
+              recs={recommendations}
+              clips={clips}
             />
           ))}
         </div>
@@ -68,7 +71,7 @@ export default function ProgramsPage() {
   );
 }
 
-function ProgramCard({ program, eps }: { program: Program; eps: Episode[] }) {
+function ProgramCard({ program, eps, recs, clips }: { program: Program; eps: Episode[]; recs: Recommendation[]; clips: Clip[] }) {
   const face = SECTION_EMOJI[program.section] ?? program.title.trim().charAt(0) ?? "🎞️";
 
   return (
@@ -121,7 +124,10 @@ function ProgramCard({ program, eps }: { program: Program; eps: Episode[] }) {
           </div>
         ) : (
           <div className="space-y-2">
-            {eps.map((ep) => (
+            {eps.map((ep) => {
+              const epRecs = recs.filter((r) => r.episodeId === ep.id);
+              const epClips = clips.filter((c) => c.episodeId === ep.id);
+              return (
               <Link key={ep.id} href={`/episodes/${ep.id}`} className="block">
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card p-3 transition-colors hover:bg-accent/40">
                   <div className="min-w-40">
@@ -130,6 +136,16 @@ function ProgramCard({ program, eps }: { program: Program; eps: Episode[] }) {
                   </div>
                   <PipelineStrip pipeline={ep.pipeline} />
                   <div className="flex items-center gap-2">
+                    {epRecs.length > 0 && (
+                      <div className="flex items-center gap-0.5 rounded-full bg-status-warn/10 px-2 py-0.5 text-[11px] font-medium text-status-warn">
+                        <Sparkles className="size-3" /> {epRecs.length}
+                      </div>
+                    )}
+                    {epClips.length > 0 && (
+                      <div className="flex items-center gap-0.5 rounded-full bg-status-done/10 px-2 py-0.5 text-[11px] font-medium text-status-done">
+                        <Clapperboard className="size-3" /> {epClips.length}
+                      </div>
+                    )}
                     <StatusBadge tone={ep.pipeline.stageStatus}>
                       {ep.pipeline.blockedReason ?? PIPELINE_STAGE_LABELS[ep.pipeline.stage]}
                     </StatusBadge>
@@ -137,7 +153,8 @@ function ProgramCard({ program, eps }: { program: Program; eps: Episode[] }) {
                   </div>
                 </div>
               </Link>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
