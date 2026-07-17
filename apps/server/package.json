@@ -13,7 +13,9 @@
     "migrate": "node-pg-migrate --envPath .env --migrations-dir migrations --migrations-table pgmigrations",
     "migrate:up": "pnpm migrate up",
     "migrate:down": "pnpm migrate down",
-    "migrate:create": "pnpm migrate create"
+    "migrate:redo": "pnpm migrate redo",
+    "migrate:create": "node scripts/create-migration.mjs",
+    "migrate:status": "node --env-file-if-exists=.env scripts/migrate-status.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.15.0",
