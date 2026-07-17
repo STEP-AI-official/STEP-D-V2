@@ -15,11 +15,14 @@ yt-dlp>=2024.0
 
 # ffmpeg/ffprobe must be on PATH (system install), used for audio/frame extraction.
 
-# ── Optional: local GPU STT (STT_PROVIDER=whisper) ──────────────────────────────
-# Only for running faster-whisper large-v3 on a CUDA GPU (local dev). Production uses
-# the managed Gemini provider, so the worker VM does NOT need these.
-#   pip install faster-whisper>=1.0.0
-#   pip install nvidia-cudnn-cu12==8.9.7.29   # CUDA 12 cuDNN (9.x fails — see WHISPERX_GUIDE.md)
+# ── Optional: faster-whisper (MIT) — STT provider AND the Gemini-STT fallback ────
+# Two uses, both optional:
+#   1) STT_PROVIDER=whisper — run it as the primary (needs CUDA for large-v3 float16).
+#   2) STT_FALLBACK=whisper (default) — CPU int8 last-resort when Gemini STT returns
+#      nothing. CPU-only, NO CUDA needed; slow on long clips but keeps a transcript.
+# Absent → the fallback is simply skipped (pipeline continues transcript-free).
+#   pip install faster-whisper>=1.0.0                     # enables the CPU int8 fallback
+#   pip install nvidia-cudnn-cu12==8.9.7.29   # only for CUDA float16 (9.x fails — see WHISPERX_GUIDE.md)
 
 # ── Admin lab server (apps/server serves it; only if running the Python admin) ──
 # fastapi / uvicorn — not needed in production (apps/server is the one backend).

@@ -12,6 +12,13 @@ Pick with STT_PROVIDER=gemini|whisper. Both return the same shape:
 
 On a Korean variety clip, managed Google STT mangled "정우성"→"정구속"; Gemini and
 whisper both keep it — which is why Gemini is the managed default here.
+
+DUALIZATION (STT_FALLBACK, default on): with STT_PROVIDER=gemini, if Gemini raises or
+returns an empty transcript (outage/timeout/quota), we automatically fall back to
+faster-whisper large-v3 in int8 on CPU — algorithmic, no GPU, no extra vendor — so an
+STT hiccup never zeroes out the transcript. faster-whisper is MIT-licensed and imported
+lazily; if it isn't installed the pipeline just continues transcript-free (non-destructive).
+Opt out with STT_FALLBACK=off. faster-whisper large-v3 int8 on CPU is slow (last resort).
 """
 import io
 import json
@@ -24,6 +31,10 @@ from pathlib import Path
 from typing import Optional
 
 STT_PROVIDER = (os.environ.get("STT_PROVIDER") or "gemini").lower()
+# Auto-fallback to faster-whisper when the primary (Gemini) yields nothing. On by default;
+# STT_FALLBACK=off|none|0 disables it (then a Gemini failure just means no transcript).
+STT_FALLBACK = (os.environ.get("STT_FALLBACK") or "whisper").lower()
+_FALLBACK_ON = STT_FALLBACK not in ("off", "none", "0", "false", "")
 
 # Gemini provider config (Vertex AI, Seoul — audio is personal data, keep it in-country)
 GEMINI_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or "step-d"
@@ -57,10 +68,34 @@ def transcribe(
     on_progress=None,
 ) -> dict:
     """Transcribe via the configured provider. Returns {segments, language}.
-    on_progress(done, total) fires per completed window (gemini provider only)."""
+    on_progress(done, total) fires per completed window (gemini provider only).
+
+    STT_PROVIDER=whisper → whisper only. Otherwise Gemini is primary and, on failure or an
+    empty result, we fall back to faster-whisper (int8 CPU) when STT_FALLBACK is on."""
     if STT_PROVIDER == "whisper":
         return _transcribe_whisper(audio_path, language, model_name, device, compute_type, beam_size)
-    return _transcribe_gemini(audio_path, language, on_progress=on_progress)
+
+    # Primary: managed Gemini (GPU-free, in-country).
+    try:
+        result = _transcribe_gemini(audio_path, language, on_progress=on_progress)
+    except Exception as e:
+        print(f"   (STT Gemini 실패: {str(e)[:100]})")
+        result = {"segments": [], "language": language}
+    if result.get("segments"):
+        return result
+
+    # Algorithmic fallback: faster-whisper large-v3 (int8, CPU) so a Gemini outage/timeout
+    # doesn't zero out the transcript. Lazy import → absent lib just means we skip it.
+    if _FALLBACK_ON:
+        try:
+            print("   STT: Gemini 무결과 → faster-whisper large-v3(int8 CPU) 폴백")
+            fb = _transcribe_whisper(audio_path, language, "large-v3", "cpu", "int8", beam_size)
+            if fb.get("segments"):
+                print(f"   STT 폴백 성공: {len(fb['segments'])} 세그먼트")
+                return fb
+        except Exception as e:
+            print(f"   (STT 폴백(faster-whisper) 불가: {str(e)[:100]})")
+    return result  # empty → pipeline continues transcript-free (frames-only candidates)
 
 
 # ── Provider: Gemini (managed, GPU-free) ────────────────────────────────────────
