@@ -45,6 +45,12 @@ import {
   markContentAnalysisPending,
   getContentAnalysis,
   getTranscript,
+  listProgramCast,
+  getCastMember,
+  upsertCastMember,
+  deleteCastMember,
+  listEpisodeCast,
+  setEpisodeCastStatus,
   getVideoAnalytics,
   getVideoRetention,
   listVideoComments,
@@ -61,6 +67,7 @@ import {
   PROFILE_RESPONSE_SCHEMA,
   type GenerateMode,
 } from "./profile.ts";
+import { normalizeCastInput } from "./cast.ts";
 import { geminiGenerate, parseJsonLoose } from "./gemini.ts";
 import {
   syncChannelVideos,
@@ -210,6 +217,132 @@ app.patch("/api/programs/:id/profile", async (c) => {
   return c.json({ program: { ...program, profile } });
 });
 
+// ── cast registry (프로그램 출연자 레지스트리) ──
+//
+// The roster that turns "20대 여성" into "23기 영숙". The pipeline matches burned-in
+// lower-third name captions against these entries (core/cast.py); a program with no roster
+// analyzes exactly as before, with every detected name left as an unmatched candidate.
+
+app.get("/api/programs/:id/cast", async (c) => {
+  const program = await getEntity<Record<string, unknown>>("program", c.req.param("id"));
+  if (!program) return c.json({ error: "program not found" }, 404);
+  return c.json({ cast: await listProgramCast(c.req.param("id")) });
+});
+
+app.post("/api/programs/:id/cast", async (c) => {
+  const programId = c.req.param("id");
+  const program = await getEntity<Record<string, unknown>>("program", programId);
+  if (!program) return c.json({ error: "program not found" }, 404);
+  const input = normalizeCastInput(await c.req.json().catch(() => ({})));
+  if (!input) return c.json({ error: "name is required" }, 400);
+  const castId = newId("cast");
+  try {
+    await upsertCastMember({ castId, programId, ...input });
+  } catch (e: any) {
+    // The (programId, name, season) unique index — the operator already registered this person.
+    if (e?.code === "23505") return c.json({ error: "이미 등록된 출연자입니다 (프로그램+이름+기수)" }, 409);
+    throw e;
+  }
+  return c.json({ member: await getCastMember(castId) }, 201);
+});
+
+app.patch("/api/programs/:id/cast/:castId", async (c) => {
+  const { id: programId, castId } = c.req.param();
+  const existing = await getCastMember(castId);
+  if (!existing || existing.programId !== programId) return c.json({ error: "cast member not found" }, 404);
+  // Merge onto the stored row so a partial PATCH doesn't blank the fields it omits.
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const input = normalizeCastInput({ ...existing, ...body });
+  if (!input) return c.json({ error: "name is required" }, 400);
+  try {
+    await upsertCastMember({ castId, programId, ...input });
+  } catch (e: any) {
+    if (e?.code === "23505") return c.json({ error: "이미 등록된 출연자입니다 (프로그램+이름+기수)" }, 409);
+    throw e;
+  }
+  return c.json({ member: await getCastMember(castId) });
+});
+
+app.delete("/api/programs/:id/cast/:castId", async (c) => {
+  const { id: programId, castId } = c.req.param();
+  const existing = await getCastMember(castId);
+  if (!existing || existing.programId !== programId) return c.json({ error: "cast member not found" }, 404);
+  // Past timelines keep their findings (they're evidence); they just lose the roster link.
+  await deleteCastMember(castId);
+  return c.json({ ok: true, castId });
+});
+
+// ── episode cast timeline (출연자 × 등장 구간) ──
+
+app.get("/api/media/:id/cast", async (c) => {
+  const mediaId = c.req.param("id");
+  if (!(await getMedia(mediaId))) return c.json({ error: "media not found" }, 404);
+  const people = await listEpisodeCast(mediaId);
+  return c.json({
+    mediaId,
+    people,
+    matchedCount: people.filter((p) => p.castId && p.status !== "rejected").length,
+    candidateCount: people.filter((p) => !p.castId && p.status === "candidate").length,
+  });
+});
+
+/**
+ * Operator decision on one detected person: confirm / reject / relink.
+ * This is the ONLY path to `confirmed` — the pipeline can propose (matched/candidate) but
+ * never confirm, so an OCR mistake can't harden into a fact without a human.
+ * `castId` optionally links an unmatched candidate to a roster entry in the same call.
+ */
+app.post("/api/media/:id/cast/:name/status", async (c) => {
+  const mediaId = c.req.param("id");
+  const name = decodeURIComponent(c.req.param("name"));
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const status = String(body.status ?? "");
+  if (!["confirmed", "rejected", "candidate", "matched"].includes(status)) {
+    return c.json({ error: "status must be confirmed|rejected|candidate|matched" }, 400);
+  }
+  let castId: string | undefined;
+  if (body.castId != null) {
+    const member = await getCastMember(String(body.castId));
+    if (!member) return c.json({ error: "cast member not found" }, 404);
+    castId = member.castId;
+  }
+  const row = await setEpisodeCastStatus(mediaId, name, status as any, castId);
+  if (!row) return c.json({ error: "cast entry not found for this media" }, 404);
+  return c.json({ person: row });
+});
+
+/**
+ * Promote an unmatched candidate into the program's roster in one step: register the name,
+ * then link + confirm this episode's finding. The common onboarding move — the pipeline
+ * surfaces "누구지?" and the operator answers once, so every later episode matches it.
+ */
+app.post("/api/media/:id/cast/:name/register", async (c) => {
+  const mediaId = c.req.param("id");
+  const name = decodeURIComponent(c.req.param("name"));
+  const media = await getMedia(mediaId);
+  if (!media?.episodeId) return c.json({ error: "media not found or not linked to an episode" }, 404);
+  const episode = await getEntity<any>("episode", media.episodeId);
+  if (!episode?.programId) return c.json({ error: "episode has no program" }, 404);
+
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  // Default the roster name to the detected caption, and keep that caption as an alias so
+  // the same OCR spelling matches directly on the next episode.
+  const input = normalizeCastInput({ name, ...body });
+  if (!input) return c.json({ error: "name is required" }, 400);
+  if (input.name !== name && !input.aliases.includes(name)) input.aliases.push(name);
+
+  const castId = newId("cast");
+  try {
+    await upsertCastMember({ castId, programId: episode.programId, ...input });
+  } catch (e: any) {
+    if (e?.code === "23505") return c.json({ error: "이미 등록된 출연자입니다 (프로그램+이름+기수)" }, 409);
+    throw e;
+  }
+  const person = await setEpisodeCastStatus(mediaId, name, "confirmed", castId);
+  if (!person) return c.json({ error: "cast entry not found for this media" }, 404);
+  return c.json({ member: await getCastMember(castId), person }, 201);
+});
+
 // ── admin: wipe all content (programs/episodes/recommendations/clips + media). Irreversible. ──
 app.post("/api/admin/reset", async (c) => {
   const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
@@ -228,6 +361,12 @@ app.post("/api/admin/reset", async (c) => {
   await pool.query("DELETE FROM entities WHERE kind IN ('program','episode','recommendation','clip')");
   await pool.query("DELETE FROM media");
   try { await pool.query("DELETE FROM content_analysis"); } catch {}
+  // Per-media derived stores. Without these, a reset leaves rows keyed by mediaIds that no
+  // longer exist — and program_cast would keep a roster for a program that's gone.
+  // Each is guarded: a table not yet migrated must not fail the reset.
+  try { await pool.query("DELETE FROM transcript"); } catch {}
+  try { await pool.query("DELETE FROM episode_cast"); } catch {}
+  try { await pool.query("DELETE FROM program_cast"); } catch {}
 
   return c.json({ ok: true, deletedMedia: media.length });
 });

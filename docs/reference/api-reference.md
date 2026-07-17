@@ -6,8 +6,8 @@
 
 ## 공통 사항
 
-- 등록 라우트는 총 **38개** (OAuth 콜백 경로 2종은 동일 핸들러). 영역별:
-  헬스·상태 2 · 콘텐츠 7 · 추천·클립·배포 6 · YouTube OAuth·채널 6 · YouTube 분석·트렌드 8 ·
+- 등록 라우트는 총 **39개** (OAuth 콜백 경로 2종은 동일 핸들러). 영역별:
+  헬스·상태 2 · 콘텐츠 8 · 추천·클립·배포 6 · YouTube OAuth·채널 6 · YouTube 분석·트렌드 8 ·
   큐·파이프라인 3 · admin 2 · Lab 4.
 - 모든 라우트는 `apps/server/src/index.ts` 한 파일에 등록된다 (작업 규칙: 분리 금지).
 - `/api/*`에 CORS 허용 (origin 반사, credentials 없음). 라우트 자체 인증은 없다 —
@@ -33,7 +33,28 @@
 | `POST /api/media/upload` | (레거시) multipart 단일 요청 업로드 — 로컬 dev용 | FormData `file(필수), programId, title` → finalize와 동일 응답. Cloud Run ~32 MB 요청 캡 대상 | `uploadVideo` (로컬 폴백) |
 | `GET /api/media/:id/stream` | 영상 스트리밍 | HTTP Range. Range 없어도 **항상 206 + 최대 4 MB 청크**(프록시 500 방지) | `mediaUrl`로 URL 조립 |
 | `GET /api/media/:id/thumb` | 썸네일 JPEG | 200 / 404 | `mediaUrl`로 URL 조립 |
-| `GET /api/media/:id/analysis` | AI 콘텐츠 분석 결과 (STT·씬·쇼츠) | → `{ status: pending\|done\|failed, data, error }`, 없으면 404 `{status:"none"}` | `getMediaAnalysis` |
+| `GET /api/media/:id/analysis` | AI 콘텐츠 분석 결과 (STT·씬·쇼츠) | → `{ status: pending\|done\|failed, data, error }`, 없으면 404 `{status:"none"}`. `data`에 `genre`(감지 장르)·`framesBase`(프레임 저장 경로) 추가, 실패 시엔 완료된 단계까지의 부분 결과(`data.partial=true` + transcript/scenes)가 담길 수 있다 | `getMediaAnalysis` |
+| `GET /api/media/:id/analysis/frames/:name` | 워커가 영구 저장한 씬 대표 프레임 JPEG | `:name`은 `scene_NNNN.jpg` 형식만 허용. 저장 위치 `analysis/{mediaId}/scene_frames/`. 프레임 저장 이전 분석이면 404 | (직접 URL 조립) |
+
+## 캐스트 — 출연자 레지스트리 · 회차 등장 타임라인
+
+프로그램별 출연자를 등록해 두면, 파이프라인이 **화면에 박힌 이름표(lower-third) OCR**을 이 레지스트리에
+매칭해 회차별 "출연자 × 등장 구간" 타임라인을 만든다(`core/cast.py`). **얼굴 인식이 아니다** — 근거는
+이름 자막 + 등장 구간이며, 확정(`confirmed`)은 오직 운영자만 할 수 있다(파이프라인은 `matched`/`candidate`까지).
+레지스트리가 비어 있으면 무동작 — 잡힌 이름은 전부 `candidate`로 남는다.
+
+| 메서드·경로 | 역할 | 요청/응답 요점 |
+|---|---|---|
+| `GET /api/programs/:id/cast` | 프로그램 출연자 레지스트리 조회 | → `{ cast: [{ castId, name, aliases, role, season, note }] }` |
+| `POST /api/programs/:id/cast` | 출연자 등록 | `{ name(필수), aliases, role, season, note }` → 201 `{ member }`. 같은 (프로그램+이름+기수) 중복은 409 |
+| `PATCH /api/programs/:id/cast/:castId` | 출연자 수정 (부분 병합 — 생략 필드는 보존) | → `{ member }` |
+| `DELETE /api/programs/:id/cast/:castId` | 출연자 삭제 | → `{ ok, castId }`. **과거 회차의 등장 기록(근거)은 남고 링크만 끊긴다** |
+| `GET /api/media/:id/cast` | 회차 출연자 타임라인 | → `{ mediaId, people: [{ name, castId, status, matchType, confidence, sceneCount, totalSec, evidence, appearances:[{start,end,scenes,source}] }], matchedCount, candidateCount }` |
+| `POST /api/media/:id/cast/:name/status` | 운영자 판정 (확정/거절/재링크) | `{ status: confirmed\|rejected\|candidate\|matched, castId? }` → `{ person }`. **`confirmed`로 가는 유일한 경로** |
+| `POST /api/media/:id/cast/:name/register` | 미등록 후보 → 레지스트리 등록 + 링크 + 확정 (원스텝 온보딩) | `{ role?, season?, aliases? }` → 201 `{ member, person }`. 잡힌 이름은 alias로 보존돼 다음 회차부터 자동 매칭 |
+
+> 재분석은 기계 산출 컬럼만 덮어쓴다 — 운영자의 `confirmed`/`rejected`와 그 링크(`castId`)는 보존된다
+> (`db-pg.ts saveEpisodeCast`). 추천 보드가 DELETE+INSERT로 과거 라벨을 잃는 것과 대비되는 지점.
 
 ### 업로드 시퀀스 (프로덕션 = GCS 직접 전송)
 

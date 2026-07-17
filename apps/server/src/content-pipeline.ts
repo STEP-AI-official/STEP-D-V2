@@ -30,8 +30,12 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 
-import { getMedia, saveContentAnalysis, saveTranscript, prependEntity, getPool, getEntity, putEntity } from "./db-pg.ts";
+import {
+  getMedia, saveContentAnalysis, saveTranscript, saveEpisodeCast, listProgramCast,
+  prependEntity, getPool, getEntity, putEntity,
+} from "./db-pg.ts";
 import type { TranscriptSegment } from "./db-pg.ts";
+import { toCoreRegistry, timelineToRows } from "./cast.ts";
 import { createReadStream, parseObjectPath, uploadFile } from "./storage-gcs.ts";
 import { newId } from "./pipeline.ts";
 
@@ -46,7 +50,7 @@ const WORK_ROOT = path.join(os.tmpdir(), "stepd-content");
 const WORK_DIR_TTL_MS = 48 * 60 * 60 * 1000;
 
 /** Stage outputs core/analyze.py checkpoints into the work dir (upload order). */
-const CHECKPOINT_FILES = ["analysis.json", "scenes.json", "shorts.json", "refined.json", "stt.json", "manifest.json"];
+const CHECKPOINT_FILES = ["analysis.json", "scenes.json", "cast.json", "shorts.json", "refined.json", "stt.json", "manifest.json"];
 
 function workDirFor(mediaId: string): string {
   return path.join(WORK_ROOT, mediaId.replace(/[^a-zA-Z0-9_-]/g, "_"));
@@ -97,10 +101,12 @@ function runAnalyze(
   outDir: string,
   onProgress: (p: Progress) => void,
   profilePath?: string,
+  castPath?: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const args = ["-u", "-m", "core.analyze", videoPath, "--out", outDir];
     if (profilePath) args.push("--profile", profilePath);
+    if (castPath) args.push("--cast", castPath);
     const proc = spawn(
       CORE_PYTHON,
       args,
@@ -269,6 +275,22 @@ async function persistTranscript(
   }
 }
 
+/**
+ * Mirror the run's cast timeline into `episode_cast`. Non-fatal: a cast-store failure
+ * (e.g. table not yet migrated) must not fail an otherwise successful analysis — the
+ * timeline also lives in content_analysis.data.cast. Returns the row count written.
+ */
+async function persistCast(mediaId: string, cast: unknown): Promise<number> {
+  const rows = timelineToRows(cast);
+  if (!rows.length) return 0;
+  try {
+    return await saveEpisodeCast(mediaId, rows);
+  } catch (e) {
+    console.error(`[worker] content.analyze ${mediaId}: cast persistence failed (continuing)`, e);
+    return 0;
+  }
+}
+
 /** Read a checkpoint JSON from the work dir, or undefined. */
 function readCheckpoint<T>(work: string, name: string): T | undefined {
   try {
@@ -287,6 +309,7 @@ function collectPartial(work: string): Record<string, unknown> | undefined {
   const refined = readCheckpoint<unknown[]>(work, "refined.json");
   const stt = readCheckpoint<{ segments?: unknown[] }>(work, "stt.json");
   const scenes = readCheckpoint<unknown[]>(work, "scenes.json");
+  const cast = readCheckpoint<Record<string, unknown>>(work, "cast.json");
   const transcript = refined ?? stt?.segments;
   if (!transcript && !scenes) return undefined;
   return {
@@ -295,9 +318,11 @@ function collectPartial(work: string): Record<string, unknown> | undefined {
       ...(stt?.segments ? ["stt"] : []),
       ...(refined ? ["refine"] : []),
       ...(scenes ? ["scenes"] : []),
+      ...(cast ? ["cast"] : []),
     ],
     ...(transcript ? { transcript } : {}),
     ...(scenes ? { scenes } : {}),
+    ...(cast ? { cast } : {}),
   };
 }
 
@@ -344,9 +369,14 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
         .catch((e) => console.error("[worker] progress update failed", e));
     };
 
-    // Program understanding profile (if set) → hand it to the pick as a program-fit prior.
-    // Resolved via episode→program; written next to the video so core reads it locally.
+    // Program context (if set) → two priors for the pick, both resolved via episode→program
+    // and written next to the video so core reads them locally:
+    //   profile.json — 이해 프로파일 → program-fit multiplier
+    //   cast.json    — 출연자 레지스트리 → name captions normalized onto real people
+    // Either missing is fine: the pipeline degrades to its prior behaviour (no program fit /
+    // every detected name stays an unmatched candidate).
     let profilePath: string | undefined;
+    let castPath: string | undefined;
     try {
       const episode = media.episodeId ? await getEntity<any>("episode", media.episodeId) : undefined;
       const program = episode?.programId ? await getEntity<any>("program", episode.programId) : undefined;
@@ -354,11 +384,19 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
         profilePath = path.join(work, "profile.json");
         fs.writeFileSync(profilePath, JSON.stringify(program.profile), "utf-8");
       }
+      if (episode?.programId) {
+        const roster = await listProgramCast(episode.programId);
+        if (roster.length) {
+          castPath = path.join(work, "cast_registry.json");
+          fs.writeFileSync(castPath, JSON.stringify(toCoreRegistry(roster)), "utf-8");
+          console.log(`[worker] content.analyze ${mediaId}: cast registry ${roster.length} members`);
+        }
+      }
     } catch (e) {
-      console.error("[worker] profile resolve failed (proceeding without):", e);
+      console.error("[worker] program context resolve failed (proceeding without):", e);
     }
 
-    await runAnalyze(videoPath, work, onProgress, profilePath);
+    await runAnalyze(videoPath, work, onProgress, profilePath, castPath);
     await chain.catch(() => {});
 
     const analysis = JSON.parse(fs.readFileSync(path.join(work, "analysis.json"), "utf-8"));
@@ -378,6 +416,11 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
     // still holds its own copy, so this is purely additive.
     await persistTranscript(mediaId, analysis?.transcript, "refined");
 
+    // Land the "출연자 × 등장 구간" timeline in its own table (queryable per person, and the
+    // seat for the operator's confirm/reject). content_analysis.data.cast keeps the run's
+    // own copy, so this is additive.
+    const castRows = await persistCast(mediaId, analysis?.cast);
+
     const shorts: Short[] = Array.isArray(analysis?.shorts) ? analysis.shorts : [];
     // Surface the AI shorts on the episode's recommendation board (the product payoff).
     let wrote = 0;
@@ -390,7 +433,7 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
     }
     console.log(
       `[worker] content.analyze ${mediaId}: ${analysis?.scenes?.length ?? 0} scenes, ` +
-      `${shorts.length} shorts, ${wrote} recs, genre=${analysis?.genre ?? "-"}, ` +
+      `${shorts.length} shorts, ${wrote} recs, ${castRows} cast, genre=${analysis?.genre ?? "-"}, ` +
       `frames=${stored ? stored.frames : "not-stored"}`,
     );
 
@@ -427,9 +470,11 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
     // Consolidate the partial transcript into the shared table too (refine may not have
     // run yet — fall back to the raw STT segments collectPartial salvaged).
     if (partial) {
-      const p = partial as { transcript?: unknown; stagesDone?: unknown };
+      const p = partial as { transcript?: unknown; stagesDone?: unknown; cast?: unknown };
       const refined = Array.isArray(p.stagesDone) && p.stagesDone.includes("refine");
       await persistTranscript(mediaId, p.transcript, refined ? "refined" : "raw");
+      // The cast stage runs before recommend, so a late crash still has a full timeline.
+      await persistCast(mediaId, p.cast);
     }
     if (media.episodeId) {
       await setEpisodePipeline(media.episodeId, {

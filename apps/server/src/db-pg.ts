@@ -962,6 +962,173 @@ export async function getTranscript(mediaId: string): Promise<TranscriptRow | un
   return rows[0] as TranscriptRow | undefined;
 }
 
+// ── cast registry + episode cast timeline ───────────────────────────────────────
+//
+// program_cast = the operator's roster (long-lived, hand-edited).
+// episode_cast = one analysis run's "출연자 × 등장 구간" findings for one media.
+// Identity evidence is the burned-in lower-third name caption (core/cast.py), never a face.
+// Created by migrations/0003_cast-registry.cjs (NOT by the bootstrap migrate()).
+
+export interface CastMember {
+  castId: string;
+  programId: string;
+  name: string;
+  aliases: string[];
+  role: string;
+  season: string;
+  note: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** One appearance span, evidenced by the scenes whose name caption carried the person. */
+export interface CastAppearance {
+  start: number;
+  end: number;
+  scenes: number[];
+  /** 'gemini' = a frame Gemini re-read (validated); 'ocr' = PaddleOCR-only (pre-filtered). */
+  source: "gemini" | "ocr";
+}
+
+export interface EpisodeCastRow {
+  mediaId: string;
+  name: string;
+  castId: string | null;
+  status: "matched" | "candidate" | "confirmed" | "rejected";
+  matchType: string;
+  confidence: number;
+  role: string;
+  sceneCount: number;
+  totalSec: number;
+  evidence: string[];
+  appearances: CastAppearance[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+const CAST_COLS = `castid AS "castId", programid AS "programId", name, aliases, role, season, note,
+                   createdat AS "createdAt", updatedat AS "updatedAt"`;
+
+export async function listProgramCast(programId: string): Promise<CastMember[]> {
+  const { rows } = await pool.query(
+    `SELECT ${CAST_COLS} FROM program_cast WHERE programId = $1 ORDER BY season, name`,
+    [programId],
+  );
+  return rows as CastMember[];
+}
+
+export async function getCastMember(castId: string): Promise<CastMember | undefined> {
+  const { rows } = await pool.query(`SELECT ${CAST_COLS} FROM program_cast WHERE castId = $1`, [castId]);
+  return rows[0] as CastMember | undefined;
+}
+
+/** Insert or update one roster entry. `createdAt` is set once. */
+export async function upsertCastMember(
+  m: Omit<CastMember, "createdAt" | "updatedAt">,
+): Promise<void> {
+  const now = Date.now();
+  await pool.query(
+    `INSERT INTO program_cast (castId, programId, name, aliases, role, season, note, createdAt, updatedAt)
+     VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$8)
+     ON CONFLICT (castId) DO UPDATE SET
+       programId = EXCLUDED.programId, name = EXCLUDED.name, aliases = EXCLUDED.aliases,
+       role = EXCLUDED.role, season = EXCLUDED.season, note = EXCLUDED.note,
+       updatedAt = EXCLUDED.updatedAt`,
+    [m.castId, m.programId, m.name, JSON.stringify(m.aliases ?? []), m.role ?? "", m.season ?? "", m.note ?? "", now],
+  );
+}
+
+export async function deleteCastMember(castId: string): Promise<void> {
+  await pool.query("DELETE FROM program_cast WHERE castId = $1", [castId]);
+  // The roster entry is gone; past timelines keep their rows but lose the link, and a
+  // re-analysis will re-file those people as candidates. Findings are never deleted here.
+  await pool.query("UPDATE episode_cast SET castId = NULL WHERE castId = $1", [castId]);
+}
+
+/**
+ * Replace one media's cast findings with a fresh analysis run's output.
+ *
+ * Upsert (not DELETE+INSERT) so an operator's `confirmed`/`rejected` decision SURVIVES a
+ * re-analysis — the pipeline may only overwrite the machine-derived columns. This is the
+ * label-loss trap the feasibility study flags for recommendations
+ * (docs/research/highlight-model-feasibility.md §6-2), avoided here from the start.
+ * People no longer detected are left in place (their status is still the operator's).
+ */
+export async function saveEpisodeCast(
+  mediaId: string,
+  people: Array<Partial<EpisodeCastRow> & { name: string }>,
+): Promise<number> {
+  if (!Array.isArray(people) || people.length === 0) return 0;
+  const now = Date.now();
+  let wrote = 0;
+  for (const p of people) {
+    if (!p?.name) continue;
+    await pool.query(
+      `INSERT INTO episode_cast
+         (mediaId, name, castId, status, matchType, confidence, role, sceneCount, totalSec,
+          evidence, appearances, createdAt, updatedAt)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$12)
+       ON CONFLICT (mediaId, name) DO UPDATE SET
+         matchType = EXCLUDED.matchType,
+         confidence = EXCLUDED.confidence, role = EXCLUDED.role,
+         sceneCount = EXCLUDED.sceneCount, totalSec = EXCLUDED.totalSec,
+         evidence = EXCLUDED.evidence, appearances = EXCLUDED.appearances,
+         updatedAt = EXCLUDED.updatedAt,
+         -- An operator's confirm/reject outranks whatever this run decided.
+         status = CASE WHEN episode_cast.status IN ('confirmed','rejected')
+                       THEN episode_cast.status ELSE EXCLUDED.status END,
+         -- …and so does the link they made: an operator who resolved '광수' onto a roster
+         -- entry must not have it wiped by the next run, which (matching on captions alone)
+         -- still sees an unknown name. Only re-link a decided row when its link is gone —
+         -- i.e. the roster entry was deleted — so the pipeline can repair, never override.
+         castId = CASE WHEN episode_cast.status IN ('confirmed','rejected')
+                        AND episode_cast.castId IS NOT NULL
+                       THEN episode_cast.castId ELSE EXCLUDED.castId END`,
+      [
+        mediaId, p.name, p.castId ?? null, p.status ?? "candidate", p.matchType ?? "none",
+        Number(p.confidence) || 0, p.role ?? "", Number(p.sceneCount) || 0, Number(p.totalSec) || 0,
+        JSON.stringify(p.evidence ?? []), JSON.stringify(p.appearances ?? []), now,
+      ],
+    );
+    wrote++;
+  }
+  return wrote;
+}
+
+export async function listEpisodeCast(mediaId: string): Promise<EpisodeCastRow[]> {
+  const { rows } = await pool.query(
+    `SELECT mediaid AS "mediaId", name, castid AS "castId", status, matchtype AS "matchType",
+            confidence, role, scenecount AS "sceneCount", totalsec AS "totalSec",
+            evidence, appearances, createdat AS "createdAt", updatedat AS "updatedAt"
+       FROM episode_cast WHERE mediaId = $1
+       ORDER BY (status = 'confirmed') DESC, (castId IS NOT NULL) DESC, totalSec DESC`,
+    [mediaId],
+  );
+  return rows as EpisodeCastRow[];
+}
+
+/** Operator decision on one detected person. Optionally links it to a roster entry. */
+export async function setEpisodeCastStatus(
+  mediaId: string,
+  name: string,
+  status: EpisodeCastRow["status"],
+  castId?: string | null,
+): Promise<EpisodeCastRow | undefined> {
+  const { rows } = await pool.query(
+    `UPDATE episode_cast
+        SET status = $3,
+            castId = COALESCE($4, castId),
+            updatedAt = $5
+      WHERE mediaId = $1 AND name = $2
+      RETURNING mediaid AS "mediaId", name, castid AS "castId", status,
+                matchtype AS "matchType", confidence, role,
+                scenecount AS "sceneCount", totalsec AS "totalSec", evidence, appearances,
+                createdat AS "createdAt", updatedat AS "updatedAt"`,
+    [mediaId, name, status, castId ?? null, Date.now()],
+  );
+  return rows[0] as EpisodeCastRow | undefined;
+}
+
 // ── cleanup ────────────────────────────────────────────────────────────────────
 
 export async function closeDb(): Promise<void> {
