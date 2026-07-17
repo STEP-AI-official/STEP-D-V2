@@ -98,6 +98,7 @@ def analyze(
     shorts_n: int = 5,
     genre: str = "auto",
     resume: bool = True,
+    profile: dict | None = None,
 ) -> dict:
     """Run all stages (skipping checkpointed ones). Returns the analysis dict."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -226,7 +227,7 @@ def analyze(
         step("쇼츠 추천…")
         _progress("recommend", 76, "쇼츠 추천 중")
         rec = recommend(
-            scenes, n=shorts_n, genre=genre,
+            scenes, n=shorts_n, genre=genre, profile=profile,
             on_progress=lambda done, total: _progress("recommend", 76 + 16 * done / max(1, total), f"후보 추출 {done}/{total} 구간"),
         )
         _save_json(out_dir / "shorts.json", rec)
@@ -257,7 +258,7 @@ def analyze(
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python -m core.analyze <video> [--out <dir>] [--shorts N] [--genre auto|variety|talk|drama|sports|news|music|documentary] [--no-resume]")
+        print("Usage: python -m core.analyze <video> [--out <dir>] [--shorts N] [--genre auto|variety|talk|drama|sports|news|music|documentary] [--profile <profile.json>] [--no-resume]")
         sys.exit(1)
 
     video = sys.argv[1]
@@ -266,7 +267,15 @@ def main() -> None:
     genre = sys.argv[sys.argv.index("--genre") + 1] if "--genre" in sys.argv else "auto"
     resume = "--no-resume" not in sys.argv
 
-    result = analyze(video, out_dir, shorts_n=n, genre=genre, resume=resume)
+    # Optional program understanding profile (--profile <path.json>) → program-fit prior.
+    profile = None
+    if "--profile" in sys.argv:
+        try:
+            profile = json.loads(Path(sys.argv[sys.argv.index("--profile") + 1]).read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"   (프로파일 로드 실패, 무시: {str(e)[:80]})")
+
+    result = analyze(video, out_dir, shorts_n=n, genre=genre, resume=resume, profile=profile)
     print(f"\n=== 요약 ===")
     print(f"  {len(result['transcript'])} 자막 · {len(result['scenes'])} 장면 · {len(result['shorts'])} 쇼츠 · 장르 {result['genre']} · {result['took_sec']}초")
     for s in sorted(result["shorts"], key=lambda x: x.get("rank", 99))[:5]:

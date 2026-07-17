@@ -108,7 +108,38 @@ def _pack(genre: str) -> dict[str, str]:
     return GENRE_PACKS.get(genre, GENRE_PACKS[DEFAULT_GENRE])
 
 
-def _base_system(genre: str) -> str:
+# The 8 hook categories the program profile weights.
+HOOK_KEYS = ("반전", "감정고조", "돌직구", "질문", "정보성", "웃음", "갈등", "공감")
+
+
+def _profile_block(profile: dict | None) -> str:
+    """A steering block appended to the system prompt when a program profile is set —
+    watch-points, taboos, tone, target length, and which hooks this program prizes.
+    Returns '' (no-op) when there's no profile signal (non-destructive)."""
+    if not profile or not isinstance(profile, dict):
+        return ""
+    hw = profile.get("hookWeights") or {}
+    prized = [k for k in HOOK_KEYS if isinstance(hw.get(k), (int, float)) and hw.get(k) > 1.0]
+    lines = ["", "이 프로그램의 이해 프로파일(우선 반영):"]
+    if profile.get("formatGrammar"):
+        lines.append(f"- 포맷 문법: {profile['formatGrammar']}")
+    if profile.get("watchPoints"):
+        lines.append("- 주목 포인트: " + ", ".join(str(w) for w in profile["watchPoints"][:8]))
+    if prized:
+        lines.append("- 특히 중요한 훅: " + ", ".join(prized) + " (이런 훅이 살아있는 구간을 우대)")
+    if profile.get("taboos"):
+        lines.append("- 금기(넣지 마라): " + ", ".join(str(t) for t in profile["taboos"][:6]))
+    if profile.get("editTone"):
+        lines.append(f"- 편집 톤: {profile['editTone']}")
+    if profile.get("targetLength"):
+        lines.append(f"- 목표 길이: {profile['targetLength']} 에 맞는 완결 구간 우선")
+    if profile.get("castType"):
+        lines.append(f"- 출연진: {profile['castType']}")
+    lines.append("- 각 후보의 hook 필드에 위 8개 훅 카테고리 중 가장 잘 맞는 하나(없으면 '기타')를 반드시 채워라.")
+    return "\n".join(lines)
+
+
+def _base_system(genre: str, profile: dict | None = None) -> str:
     p = _pack(genre)
     return f"""너는 {p['label']} 콘텐츠의 숏폼(쇼츠) 편집 전문가다. 아래는 영상을 장면 단위로 분석한
 타임라인이다. 각 줄: [장면번호] 시각~시각 (길이) | 화면분석 | 대사 | 등장인물(화면자막) | 시각점수(0-100).
@@ -120,7 +151,54 @@ def _base_system(genre: str) -> str:
 - 하나의 쇼츠는 완결된 단위여야 한다: 훅(초반 시선강탈) → 전개 → 마무리.
 - 여러 장면을 자연스럽게 이어 붙여 하나의 구간으로 (start=첫 장면 시작, end=끝 장면 끝).
 - 길이는 15~60초 권장 (짧은 임팩트 컷은 15초 미만도 허용).
-- appeal은 바이럴 잠재력의 절대평가다: 5=확실히 터진다, 4=강함, 3=쓸만함, 2=약함, 1=비추천."""
+- appeal은 바이럴 잠재력의 절대평가다: 5=확실히 터진다, 4=강함, 3=쓸만함, 2=약함, 1=비추천.{_profile_block(profile)}"""
+
+
+def _parse_target_len(profile: dict | None) -> float | None:
+    """Pull a target-length seconds hint out of profile.targetLength (e.g. '30~45초' → 37.5)."""
+    if not profile:
+        return None
+    import re
+    nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", str(profile.get("targetLength", "")))]
+    return (sum(nums) / len(nums)) if nums else None
+
+
+def apply_profile_fit(shorts: list[dict], profile: dict | None, duration: float) -> list[dict]:
+    """Program-fit re-ranking (non-destructive when profile has no signal):
+      - taboos: drop candidates whose text hits a taboo term (hard filter)
+      - hookWeights: multiply by the candidate's hook-category weight
+      - targetLength: multiply by a length-proximity factor
+    final_score = appeal(융합점수) × program_fit. Re-ranks by final_score."""
+    if not profile or not isinstance(profile, dict):
+        return shorts
+    hw = profile.get("hookWeights") or {}
+    weights = {k: float(hw[k]) for k in HOOK_KEYS if isinstance(hw.get(k), (int, float))}
+    taboos = [str(t).strip() for t in (profile.get("taboos") or []) if str(t).strip()]
+    target = _parse_target_len(profile)
+    if not weights and not taboos and target is None:
+        return shorts  # nothing to apply
+
+    out = []
+    for s in shorts:
+        blob = " ".join([str(s.get("title", "")), str(s.get("reason", "")), " ".join(s.get("tags", []) or [])])
+        if any(t in blob for t in taboos):
+            print(f"   (프로파일 금기 제외: {str(s.get('title',''))[:30]})")
+            continue
+        hook_w = weights.get(str(s.get("hook", "")).strip(), 1.0)
+        length = max(0.0, float(s.get("end", 0)) - float(s.get("start", 0)))
+        len_fit = 1.0
+        if target and target > 0 and length > 0:
+            len_fit = max(0.55, 1.0 - abs(length - target) / target * 0.5)
+        program_fit = round(hook_w * len_fit, 3)
+        appeal = s.get("appeal")
+        base = float(appeal) if isinstance(appeal, (int, float)) else 3.0
+        s = {**s, "program_fit": program_fit, "final_score": round(base * program_fit, 3)}
+        out.append(s)
+
+    out.sort(key=lambda s: -s.get("final_score", 0.0))
+    for i, s in enumerate(out, 1):
+        s["rank"] = i
+    return out
 
 
 # ── genre auto-detection ────────────────────────────────────────────────────────
@@ -220,6 +298,9 @@ _CANDIDATE_FIELDS = {
     "scene_from": {"type": "INTEGER"},
     "scene_to": {"type": "INTEGER"},
     "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+    # Primary hook category (반전/감정고조/돌직구/질문/정보성/웃음/갈등/공감/기타) — used with
+    # the program profile's hookWeights to compute a program-fit multiplier.
+    "hook": {"type": "STRING"},
 }
 
 _PHASE1_SCHEMA = {
@@ -238,13 +319,14 @@ _PHASE1_SCHEMA = {
 }
 
 
-def _extract_candidates(client, chunk: list[dict], genre: str) -> list[dict]:
-    system = _base_system(genre) + f"""
+def _extract_candidates(client, chunk: list[dict], genre: str, profile: dict | None = None) -> list[dict]:
+    system = _base_system(genre, profile) + f"""
 
 지금 보는 타임라인은 전체 영상의 일부 구간이다. 이 구간 안에서만 후보를 골라라.
 - 최대 {PER_CHUNK}개. 확신 없는 구간은 넣지 마라 — 0개도 답이다.
 - 각 후보: start(초), end(초), title(클릭 유도 한국어 제목), reason(왜 터지는지 한 문장),
-  appeal(1-5 절대평가), scene_from/scene_to(포함 장면번호), tags(리액션/폭소/반전/서사/자막 등)."""
+  appeal(1-5 절대평가), scene_from/scene_to(포함 장면번호), tags(리액션/폭소/반전/서사/자막 등),
+  hook(반전/감정고조/돌직구/질문/정보성/웃음/갈등/공감/기타 중 가장 잘 맞는 하나)."""
     resp = client.models.generate_content(
         model=MODEL,
         contents=f"이 구간에서 쇼츠 후보를 골라라.\n\n=== 장면 타임라인 ({_mmss(chunk[0]['start'])}~{_mmss(chunk[-1]['end'])}) ===\n{build_timeline(chunk)}",
@@ -276,7 +358,7 @@ _PHASE2_SCHEMA = {
 }
 
 
-def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: float) -> list[dict]:
+def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: float, profile: dict | None = None) -> list[dict]:
     lines = []
     for i, c in enumerate(sorted(candidates, key=lambda c: c.get("start", 0)), 1):
         tags = "/".join(c.get("tags", []))
@@ -285,7 +367,7 @@ def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: fl
             f" | appeal:{c.get('appeal', '-')} | {c.get('title', '')} | {c.get('reason', '')}"
             f" | 장면:{c.get('scene_from', '-')}~{c.get('scene_to', '-')} | {tags or '-'}"
         )
-    system = _base_system(genre) + f"""
+    system = _base_system(genre, profile) + f"""
 
 아래는 영상 전체({_mmss(duration)})를 구간별로 스캔해 뽑은 쇼츠 후보 목록이다.
 이 중에서 최종 {n}개를 골라 순위를 매겨라.
@@ -293,7 +375,7 @@ def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: fl
 - 후보 목록에 없는 새로운 구간을 만들지 마라.
 - 비슷한 종류만 몰리지 않게, 영상 전체를 대표하도록 다양성도 고려하라.
 - 각 항목: rank(1=최고), start, end, title, reason, appeal(1-5 절대평가 — 순위와 별개),
-  scene_from/scene_to, tags."""
+  scene_from/scene_to, tags, hook(반전/감정고조/돌직구/질문/정보성/웃음/갈등/공감/기타 중 하나)."""
     resp = client.models.generate_content(
         model=MODEL,
         contents=f"최종 쇼츠 {n}개를 골라라.\n\n=== 후보 목록 ===\n" + "\n".join(lines),
@@ -348,8 +430,11 @@ def recommend(
     n: int = 5,
     genre: str = "auto",
     on_progress: Optional[Callable[[int, int], None]] = None,
+    profile: dict | None = None,
 ) -> dict:
-    """Two-phase shorts pick. Returns {"genre": resolved, "shorts": [...]}."""
+    """Two-phase shorts pick. Returns {"genre": resolved, "shorts": [...]}.
+    A program `profile` (optional) steers the prompts and re-ranks by program-fit
+    (hookWeights × targetLength, minus taboos) — non-destructive when absent."""
     if not scenes:
         return {"genre": DEFAULT_GENRE, "shorts": []}
     client = genai.Client(vertexai=True, project=PROJECT, location=LOCATION)
@@ -365,7 +450,7 @@ def recommend(
 
     def scan(chunk: list[dict]) -> list[dict]:
         try:
-            cands = _extract_candidates(client, chunk, genre)
+            cands = _extract_candidates(client, chunk, genre, profile)
         except Exception as e:
             print(f"   (구간 {_mmss(chunk[0]['start'])}~ 후보 추출 실패, 스킵: {str(e)[:80]})")
             cands = []
@@ -390,12 +475,19 @@ def recommend(
             s["rank"] = i
     else:
         print(f"   2단계: 합성 — 최종 {n}개 선별…")
-        shorts = _synthesize(client, candidates, n, genre, duration)
+        shorts = _synthesize(client, candidates, n, genre, duration, profile)
         if not shorts:  # synthesis flaked — degrade to best candidates, not to nothing
             print("   (합성 결과 없음 → 후보 appeal 순으로 대체)")
             shorts = sorted(candidates, key=lambda c: -(c.get("appeal") or 0))
             for i, s in enumerate(shorts, 1):
                 s["rank"] = i
+
+    # Program-fit re-rank (최종 = 융합 × 프로그램적합): weights prized hooks, drops taboos,
+    # nudges toward the target length. No-op when the profile carries no signal.
+    before = len(shorts)
+    shorts = apply_profile_fit(shorts, profile, duration)
+    if profile and before != len(shorts):
+        print(f"   프로파일 적합 적용: {before} → {len(shorts)} (금기 제외)")
 
     return {"genre": genre, "shorts": validate_shorts(shorts, duration, n)}
 

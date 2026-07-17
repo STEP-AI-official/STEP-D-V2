@@ -91,11 +91,18 @@ async function downloadToTemp(storedPath: string, dest: string): Promise<void> {
 /** Pipeline progress line: `@@PROGRESS {"stage":"stt","pct":12,"note":"…"}`. */
 type Progress = { stage?: string; pct?: number; note?: string };
 
-function runAnalyze(videoPath: string, outDir: string, onProgress: (p: Progress) => void): Promise<void> {
+function runAnalyze(
+  videoPath: string,
+  outDir: string,
+  onProgress: (p: Progress) => void,
+  profilePath?: string,
+): Promise<void> {
   return new Promise((resolve, reject) => {
+    const args = ["-u", "-m", "core.analyze", videoPath, "--out", outDir];
+    if (profilePath) args.push("--profile", profilePath);
     const proc = spawn(
       CORE_PYTHON,
-      ["-u", "-m", "core.analyze", videoPath, "--out", outDir],
+      args,
       {
         cwd: REPO_ROOT,
         env: {
@@ -311,7 +318,21 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
         .catch((e) => console.error("[worker] progress update failed", e));
     };
 
-    await runAnalyze(videoPath, work, onProgress);
+    // Program understanding profile (if set) → hand it to the pick as a program-fit prior.
+    // Resolved via episode→program; written next to the video so core reads it locally.
+    let profilePath: string | undefined;
+    try {
+      const episode = media.episodeId ? await getEntity<any>("episode", media.episodeId) : undefined;
+      const program = episode?.programId ? await getEntity<any>("program", episode.programId) : undefined;
+      if (program?.profile && typeof program.profile === "object") {
+        profilePath = path.join(work, "profile.json");
+        fs.writeFileSync(profilePath, JSON.stringify(program.profile), "utf-8");
+      }
+    } catch (e) {
+      console.error("[worker] profile resolve failed (proceeding without):", e);
+    }
+
+    await runAnalyze(videoPath, work, onProgress, profilePath);
     await chain.catch(() => {});
 
     const analysis = JSON.parse(fs.readFileSync(path.join(work, "analysis.json"), "utf-8"));
