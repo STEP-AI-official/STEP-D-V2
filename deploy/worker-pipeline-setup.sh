@@ -27,6 +27,21 @@ fi
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$APP_DIR/core/requirements.txt"
 
+# Optional "reduce-Gemini" extras — the algorithmic pre-processing stack that lets the
+# pipeline lean less on Gemini (STT fallback, richer scene pre-filter, real OCR). All are
+# OPTIONAL: the pipeline degrades gracefully to the Gemini path without them, so this block
+# is OPT-IN. Enable with:  INSTALL_PIPELINE_EXTRAS=1 sudo -E bash worker-pipeline-setup.sh
+#   - faster-whisper : STT_FALLBACK — CPU int8 transcript when Gemini STT fails
+#   - librosa        : audio onset signal for the scene pre-filter (else numpy RMS)
+#   - paddleocr      : real 1st-pass OCR (Gemini validates the top-N only)
+if [ "${INSTALL_PIPELINE_EXTRAS:-0}" = "1" ]; then
+  echo "==> Optional pipeline extras (faster-whisper, librosa, paddleocr)"
+  "$VENV/bin/pip" install --quiet faster-whisper librosa paddleocr paddlepaddle
+else
+  echo "==> Skipping optional extras (set INSTALL_PIPELINE_EXTRAS=1 to install"
+  echo "    faster-whisper + librosa + paddleocr — pipeline runs Gemini-only without them)"
+fi
+
 echo "==> Smoke test: Vertex reachable via the VM service account (ADC, no key)"
 "$VENV/bin/python" - <<'PY'
 from google import genai

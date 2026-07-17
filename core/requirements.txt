@@ -17,6 +17,13 @@ opencv-python>=4.8
 # Absent → the audio component degrades to a numpy RMS fallback (still works). ISC license.
 #   pip install librosa>=0.10
 
+# Optional: real OCR for on-frame text (ocr.py) — PaddleOCR Korean model, Apache-2.0.
+# 1st-pass burned-in text on ALL frames; Gemini then validates only the top-N (prefilter).
+# Absent → OCR falls back to the Gemini-only path (OCR_PROVIDER=off forces that too).
+# Pulls in paddlepaddle (CPU) — sizeable, so it's opt-in, not a hard dep.
+#   pip install paddleocr>=2.7 paddlepaddle>=2.6
+# (Alternative engine: pytesseract + tesseract-ocr-kor — weaker on broadcast lower-thirds.)
+
 # YouTube download (downloader.py)
 yt-dlp>=2024.0
 
