@@ -125,7 +125,12 @@ function ProgramCard({ program, eps, recs, clips }: { program: Program; eps: Epi
         ) : (
           <div className="space-y-2">
             {eps.map((ep) => {
-              const epRecs = recs.filter((r) => r.episodeId === ep.id);
+              // Pending only — matches the sidebar badge (store badgeCounts), the inbox
+              // "채택 대기 추천" count, and the episode detail 추천 tab. A processed
+              // recommendation is no longer something to act on.
+              const epPendingRecs = recs.filter(
+                (r) => r.episodeId === ep.id && r.status === "pending",
+              );
               const epClips = clips.filter((c) => c.episodeId === ep.id);
               return (
               <Link key={ep.id} href={`/episodes/${ep.id}`} className="block">
@@ -136,13 +141,19 @@ function ProgramCard({ program, eps, recs, clips }: { program: Program; eps: Epi
                   </div>
                   <PipelineStrip pipeline={ep.pipeline} />
                   <div className="flex items-center gap-2">
-                    {epRecs.length > 0 && (
-                      <div className="flex items-center gap-0.5 rounded-full bg-status-warn/10 px-2 py-0.5 text-[11px] font-medium text-status-warn">
-                        <Sparkles className="size-3" /> {epRecs.length}
+                    {epPendingRecs.length > 0 && (
+                      <div
+                        title="채택 대기 추천"
+                        className="flex items-center gap-0.5 rounded-full bg-status-warn/10 px-2 py-0.5 text-[11px] font-medium text-status-warn"
+                      >
+                        <Sparkles className="size-3" /> {epPendingRecs.length}
                       </div>
                     )}
                     {epClips.length > 0 && (
-                      <div className="flex items-center gap-0.5 rounded-full bg-status-done/10 px-2 py-0.5 text-[11px] font-medium text-status-done">
+                      <div
+                        title="클립"
+                        className="flex items-center gap-0.5 rounded-full bg-status-done/10 px-2 py-0.5 text-[11px] font-medium text-status-done"
+                      >
                         <Clapperboard className="size-3" /> {epClips.length}
                       </div>
                     )}

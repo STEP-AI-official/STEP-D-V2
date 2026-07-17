@@ -20,7 +20,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { RecommendationCard } from "@/components/recommendation-card";
 import { PublishDialog } from "@/components/publish-dialog";
 import { useAppData } from "@/lib/data/store";
-import { getMediaAnalysis, type MediaAnalysis } from "@/lib/data/api";
+import { getMediaAnalysis, type MediaAnalysis, type AnalysisScene } from "@/lib/data/api";
 import {
   ASPECT_RATIOS,
   CLIP_TYPES,
@@ -321,6 +321,13 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
                     {formatTimecode(s.start)}~{formatTimecode(s.end)} · {Math.round(s.end - s.start)}초
                   </div>
                   {s.reason && <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{s.reason}</p>}
+                  {s.tags && s.tags.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {s.tags.map((t) => (
+                        <Badge key={t} className="text-muted-foreground">{t}</Badge>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </li>
             ))}
@@ -328,29 +335,7 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
         </Card>
       )}
 
-      {view === "scenes" && (
-        <Card className="overflow-hidden">
-          <ul className="divide-y divide-border">
-            {scenes.map((s, i) => (
-              <li key={i} className="px-3 py-2 text-[12px]">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="tabular-nums text-[11px] text-muted-foreground">
-                    {formatTimecode(s.start)}{s.end != null ? `–${formatTimecode(s.end)}` : ""}
-                  </span>
-                  {typeof s.vision_score === "number" && (
-                    <span className={cn("tabular-nums text-[11px] font-bold", scoreColorClass(s.vision_score))}>
-                      {s.vision_score}
-                    </span>
-                  )}
-                  <span className={cn("rounded-full px-1.5 py-0.5 text-[9px]", s.has_dialogue ? "bg-status-done/10 text-status-done" : "bg-status-warn/10 text-status-warn")}>
-                    {s.has_dialogue ? "대사" : "무음"}
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
+      {view === "scenes" && <ScenesView scenes={scenes} />}
 
       {view === "script" && (
         <Card className="max-h-[50vh] overflow-y-auto">
@@ -365,6 +350,72 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
         </Card>
       )}
     </div>
+  );
+}
+
+/** Scene list — color-coded vision score, dialogue/silent, tags, on-screen names, dialogue. */
+function ScenesView({ scenes }: { scenes: AnalysisScene[] }) {
+  const [sort, setSort] = useState<"time" | "score">("time");
+  const [silentOnly, setSilentOnly] = useState(false);
+
+  let list = silentOnly ? scenes.filter((s) => !s.has_dialogue) : scenes;
+  if (sort === "score") list = [...list].sort((a, b) => (b.vision_score ?? -1) - (a.vision_score ?? -1));
+  const scored = scenes.filter((s) => s.vision_score != null).length;
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <div className="flex rounded-md border border-border p-0.5">
+          <button
+            onClick={() => setSort("time")}
+            className={cn("rounded px-2 py-1 text-[11px] transition", sort === "time" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}
+          >시간순</button>
+          <button
+            onClick={() => setSort("score")}
+            className={cn("rounded px-2 py-1 text-[11px] transition", sort === "score" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}
+          >시각점수순</button>
+        </div>
+        <button
+          onClick={() => setSilentOnly((v) => !v)}
+          className={cn("rounded-md border border-border px-2 py-1 text-[11px] transition", silentOnly ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}
+        >무음만</button>
+        <span className="text-[11px] text-muted-foreground">시각채점 {scored}/{scenes.length}</span>
+      </div>
+      <ul className="divide-y divide-border">
+        {list.map((s, i) => (
+          <li key={s.index ?? i} className="px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="tabular-nums text-[11px] text-muted-foreground">
+                {formatTimecode(s.start)}{s.end != null ? `–${formatTimecode(s.end)}` : ""}
+              </span>
+              {typeof s.vision_score === "number" && (
+                <span className={cn("tabular-nums text-[11px] font-bold", scoreColorClass(s.vision_score))}>{s.vision_score}</span>
+              )}
+              <span className={cn("rounded-full px-1.5 py-0.5 text-[9px]", s.has_dialogue ? "bg-status-done/10 text-status-done" : "bg-status-warn/10 text-status-warn")}>
+                {s.has_dialogue ? "대사" : "무음"}
+              </span>
+              {s.on_screen_names && s.on_screen_names.length > 0 && (
+                <span className="ml-auto flex flex-wrap gap-1">
+                  {s.on_screen_names.slice(0, 3).map((t) => (
+                    <Badge key={t} className="text-muted-foreground">🏷 {t}</Badge>
+                  ))}
+                </span>
+              )}
+            </div>
+            {(s.vision_reason || s.text) && (
+              <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{s.vision_reason || s.text}</p>
+            )}
+            {s.vision_tags && s.vision_tags.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {s.vision_tags.map((t) => (
+                  <Badge key={t} className="text-muted-foreground">{t}</Badge>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 
