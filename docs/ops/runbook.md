@@ -101,7 +101,7 @@ curl -X POST https://stepd.stepai.kr/api/admin/queue/purge -H "Content-Type: app
    vision/names 단계가 프레임당 호출이라 쿼터를 가장 먼저 소진한다.
 
 **재큐**: `POST /api/admin/queue/purge`(§3) — attempts를 리셋하고 master 미디어마다 잡을 보장하므로
-실패·유실된 분석이 즉시 다시 돈다. 파이프라인 배선 상세: [content-pipeline-prod.md](content-pipeline-prod.md).
+실패·유실된 분석이 즉시 다시 돈다. 파이프라인 배선 상세: [pipeline-current.md](pipeline-current.md).
 
 ## 6. YouTube 토큰 (invalid_grant → revoked)
 

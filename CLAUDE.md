@@ -10,8 +10,9 @@
 
 ```
 업로드(GCS resumable) → content.analyze 잡 큐잉 → [워커 VM] python -m core.analyze
-  (STT→자막정제→장면분할→비전채점→이름OCR→쇼츠추천, Vertex Gemini)
-    → content_analysis 저장 + 회차 추천 보드에 AI 추천 기록
+  (STT→자막정제→장면분할→프레임분석[시각채점+이름OCR 통합 1호출]→쇼츠추천[장르 자동감지·후보→합성 2단계], Vertex Gemini)
+  · 단계별 체크포인트 — 실패/재시도 시 완료된 단계부터 재개 · @@PROGRESS로 UI에 단계별 진행률
+    → content_analysis 저장(+프레임·산출물 GCS analysis/{mediaId}/ 영구 보존) + 회차 추천 보드에 AI 추천 기록
       → [사람] 채택/거절 → ffmpeg 트림·인코딩 → 클립 → 편집 → 배포(YouTube/Meta/SMR) → 성과
 ```
 
@@ -44,7 +45,7 @@ Hono 단일 진입점(index.ts, **~1270줄, 라우트 ~40개**) + 별도 워커 
 | `src/worker.ts` | **워커 프로세스 진입점** (GCE VM에서 tsx로 상시 실행). 15분 sweep + 잡 폴링 |
 | `src/queue.ts` | Postgres job_queue (FOR UPDATE SKIP LOCKED · dedupeKey · 지수 백오프) |
 | `src/channel-pipeline.ts` | channel.analyze — 업로드 동기화 + 채널 애널리틱스/일별 수익 백필 |
-| `src/content-pipeline.ts` | content.analyze — `python -m core.analyze` 스폰, 결과 저장 + 추천 배선 |
+| `src/content-pipeline.ts` | content.analyze — `python -m core.analyze` 스폰, 진행률 파싱(@@PROGRESS→episode.pipeline), 결과+프레임 영구 저장, 추천 배선. 미디어별 고정 작업 디렉토리로 재시도 시 체크포인트 재개 |
 | `src/db-pg.ts` | PostgreSQL 전부. 엔티티=JSONB(`entities`) + 미디어/YouTube 정규 테이블 |
 | `src/youtube.ts` | YouTube Data/Analytics API, 토큰 리프레시(invalid_grant→revoked), 쇼츠 분류 |
 | `src/storage-gcs.ts` | GCS 어댑터 + resumable 업로드 세션 (GCS_BUCKET 없으면 로컬 폴백) |
@@ -99,9 +100,9 @@ GOOGLE_CLOUD_PROJECT(기본 step-d) / VERTEX_LOCATION(기본 asia-northeast3)   
 
 - 화면: `(app)` 그룹 9개(/, programs, episodes/:id, recommendations, clips, distribution, analytics,
   channels, publish-channels) + `(editor)` 풀스크린 에디터 + landing/register/terms/privacy.
-- **데이터 레이어 함정:** `store.tsx`가 기동 시 `fetchState()`로 서버를 찔러보고 **실패하면 조용히
-  목 데이터로 폴백**한다. 화면이 멀쩡해 보여도 서버 미연결일 수 있다 — `NEXT_PUBLIC_API_URL`과
-  `/api/state` 응답으로 직접 확인할 것.
+- **데이터 레이어:** `store.tsx`는 빈 상태(EMPTY_STATE)로 시작해 기동 시 `fetchState()`가 성공하면
+  서버 상태로 교체한다. 실패하면 **빈 상태를 유지한다 (목 폴백은 제거됨)** — 빈 화면이면
+  "서버 미연결"인지 "데이터 없음"인지 `/api/state` 응답으로 구분할 것.
 - 실 서버 연동은 `lib/data/api.ts`(REST)가 담당한다. `repository.ts`의 `apiRepository`는
   폐기된 SPFN 통합 스텁(미호출)이다.
 - 환경변수는 `NEXT_PUBLIC_API_URL` 하나. 경로 별칭 `@/*` → `./src/*`.

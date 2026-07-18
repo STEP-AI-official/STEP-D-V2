@@ -37,10 +37,16 @@
   **로컬 서버를 직접** 부른다. 프로덕션의 GCP 프록시·Cloud Run은 안 탄다.
 - 서버는 `apps/server/.env` 의 `DATABASE_URL` 로 로컬 Postgres에 붙는다.
 - `GCS_BUCKET`이 없으니 업로드 파일은 `storage/` 폴더에 저장된다 (`storage-gcs.ts` 로컬 폴백).
-- **DB 스키마는 자동 생성된다.** `schema.sql`을 수동 실행할 필요 없음 — 서버 기동 시
-  `db-pg.ts`의 `initDb()`가 `CREATE TABLE IF NOT EXISTS`로 전부 만든다.
-  `job_queue`(`queue.ts` initQueue)와 `content_analysis`(`db-pg.ts`)는 `schema.sql`에
-  아예 없고 코드에서만 생성되는 테이블이다.
+- **DB 스키마는 두 경로로 만들어진다 — 둘 다 필요하다.**
+  1. `db-pg.ts`의 `initDb()` 부트스트랩이 서버 기동 시 `CREATE TABLE IF NOT EXISTS`로 만드는 것
+     (`entities`·`media`·`kv`·`content_analysis`·`job_queue`(queue.ts) 등 대부분).
+  2. **마이그레이션(`apps/server/migrations/`)에만 있는 것** — `0002` 이후 추가된
+     `transcript`·`program_cast`·`episode_cast`. 이 테이블들은 부트스트랩에 **없다**(정책상
+     신규 스키마 변경은 db-pg.ts에 넣지 않고 마이그레이션으로만 — [migrations.md](migrations.md) 참고).
+  → **로컬/신규 DB는 반드시 `pnpm --filter @stepd/server migrate up`을 한 번 돌려야** 이 테이블들이
+     생긴다. `.\dev.ps1`은 Postgres 기동 직후 이걸 자동 실행한다. 서버/워커만 따로 띄운다면
+     (`pnpm dev` 등) 직접 한 번 돌릴 것. 안 돌리면 `/api/state`는 뜨지만 출연자·자막 등 해당
+     테이블을 읽는 기능이 500난다.
 - **첫 기동 시 화면이 비어 있는 게 정상이다.** `seed.ts`는 의도적으로 전부 빈 배열
   (프로덕션에 데모 콘텐츠를 두지 않는 방침). 프로그램 생성 → 영상 업로드를 직접 해야 데이터가 생긴다.
 
@@ -111,4 +117,13 @@ DB를 완전히 초기화하려면: `docker rm -f stepd-pg; docker volume rm ste
   2. Google Cloud OAuth 클라이언트에 `http://localhost:4100/api/youtube/oauth/callback` 리디렉션 URI 등록
   안 하면 로컬 OAuth는 프로덕션 도메인으로 튄다. 채널 연결 없이 UI만 볼 거면 신경 안 써도 된다.
 - 서버가 안 뜨면 `docker ps` 로 `stepd-pg` 가 살아있는지, 4100 포트가 비었는지 확인.
+- **`/api/state`가 500인데 화면이 다 비면 두 가지를 순서대로 의심**:
+  1. **DB 연결 불가** — `/api/state`가 딱 10초 만에 500나면(=`connectionTimeoutMillis`) DB가 안 붙는
+     것이다. 원인 1순위는 **Docker Desktop 엔진 다운**: 이때 `docker ps`가
+     `500 Internal Server Error ... dockerDesktopLinuxEngine`을 뱉고, 포트 5432는 `com.docker.backend`
+     프록시가 물고 있어 TCP는 열려 보여도(handshake OK) 뒤에 Postgres가 없다. 고치기:
+     `docker desktop restart`(또는 Docker Desktop 재시작) → `docker start stepd-pg`. 참고로 `/health`는
+     기동 시점에 한 번 잡은 `dbReady`를 계속 반환하므로, DB가 나중에 끊겨도 `ok:true`로 거짓 보고할 수 있다.
+  2. **스키마 드리프트** — DB는 붙는데 특정 라우트만 500이면 마이그레이션 미적용을 의심
+     (`pnpm --filter @stepd/server migrate:status`). 위 스키마 항목 참고.
 - **로컬은 프로덕션 DB와 완전히 분리**돼 있다. 여기서 뭘 하든 프로덕션 데이터에 영향 없다.

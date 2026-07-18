@@ -48,15 +48,16 @@ Next.js 16 (App Router) · React 19 · TypeScript · **Tailwind v4** · base-ui 
 
 ## 데이터 흐름 (중요)
 
-`store.tsx`는 기동 시 `fetchState()`로 서버를 찔러보고 **실패하면 조용히 목 데이터로 폴백**한다.
+`store.tsx`는 **빈 상태(EMPTY_STATE)로 시작**해 기동 시 `fetchState()`가 성공하면 서버 상태로
+교체한다 (목 시드 폴백은 제거됨 — 새로고침마다 목 데이터가 번쩍이는 문제 방지).
 
 ```
-서버 응답 O → 실서버 데이터 + 뮤테이션이 서버로 전송
-서버 응답 X → 목 시드 데이터 + 뮤테이션은 메모리에만 (화면은 정상으로 보임!)
+서버 응답 O → 실서버 데이터 + 뮤테이션이 서버로 전송 (serverConnected=true)
+서버 응답 X → 빈 상태 유지 + loading 해제 (화면은 빈 목록/스켈레톤)
 ```
 
-**화면이 잘 보인다고 서버에 붙은 게 아니다.** 연결 여부는 `NEXT_PUBLIC_API_URL`과
-`/api/state` 응답으로 확인할 것.
+**빈 화면이 "데이터 없음"인지 "서버 미연결"인지 구분할 것** — `NEXT_PUBLIC_API_URL`과
+`/api/state` 응답으로 확인. 목 데이터가 보인다면 낡은 빌드다.
 
 새 API 함수는 `lib/data/api.ts`에 타입과 함께 추가하고, 화면은 `store.tsx`의 핸들러를 통해 부른다.
 

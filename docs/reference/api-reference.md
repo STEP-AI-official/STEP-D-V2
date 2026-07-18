@@ -70,7 +70,7 @@
 ```
 
 파일이 Cloud Run을 거치지 않으므로 32 MB 요청 캡·타임아웃이 적용되지 않는다. 실제 추천
-구간은 워커의 `content.analyze` 잡이 채운다 ([../ops/content-pipeline-prod.md](../ops/content-pipeline-prod.md)).
+구간은 워커의 `content.analyze` 잡이 채운다 ([../ops/pipeline-current.md](../ops/pipeline-current.md)).
 청크 전송·재개 로직은 `api.ts`의 `uploadResumable()` 참고.
 
 ## 추천 · 클립 · 배포

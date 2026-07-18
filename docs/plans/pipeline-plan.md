@@ -234,7 +234,7 @@
 - **AP4 — 배포 실동작**: YouTube 실업로드, 스케줄러, 제목/메타 생성 I(프로그램·채널 프로파일 반영), Meta 앱 심사 착수. **채널 분석 수집(1~3단계)도 여기서 시작** — 데이터는 빨리 쌓을수록 좋고, 수집 자체는 기존 인프라로 가벼움.
 - **AP5 — 차별화 완성**: PPL 리포트 H, 화자 추적 리프레이밍, 댓글 요약, 채널 분석 진단·프로파일 갱신·A/B 루프(4~6단계), 트렌드 분석 모듈 T(수집·역분석·주간 리포트 → 콜드오픈 옵션 등 제작 반영), SMR 어댑터.
 
-**→ 진척 (2026-07-16):** AP1의 큐·잡 체인은 자체 job_queue + `content.analyze` 잡으로 가동(프록시·리먹스 제외). AP2·AP3의 분석 축은 core/(asr→refine→scenes→vision→recommend)로 부분 선행 구현 — 단 훅 사전(C)·경계 스냅(D)·프로파일/채널 적합 계수는 미착수. AP4 항목 중 채널 분석 수집은 예정보다 앞당겨 이미 가동 중(`channel.analyze`/`video.*` 잡). 렌더 고도화(F)·실업로드(J)는 미착수. as-built 상세: [../ops/content-pipeline-prod.md](../ops/content-pipeline-prod.md)
+**→ 진척 (2026-07-16):** AP1의 큐·잡 체인은 자체 job_queue + `content.analyze` 잡으로 가동(프록시·리먹스 제외). AP2·AP3의 분석 축은 core/(asr→refine→scenes→vision→recommend)로 부분 선행 구현 — 단 훅 사전(C)·경계 스냅(D)·프로파일/채널 적합 계수는 미착수. AP4 항목 중 채널 분석 수집은 예정보다 앞당겨 이미 가동 중(`channel.analyze`/`video.*` 잡). 렌더 고도화(F)·실업로드(J)는 미착수. as-built 상세: [../ops/pipeline-current.md](../ops/pipeline-current.md)
 
 ## 인프라·비용 노트
 

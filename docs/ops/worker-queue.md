@@ -62,7 +62,7 @@ Cloud Run은 **응답이 끝나는 순간 CPU를 throttle**하고 요청을 **60
 | `video.analyze` | 영상별 애널리틱스 + 리텐션 저장 (Analytics 4콜/영상) | channel.analyze 팬아웃 |
 | `video.hotwatch` | 신규 업로드를 게시 후 48시간 동안 1시간 간격으로 조회수 스냅샷. 창이 안 닫혔으면 **자기 자신을 재큐**(FollowUp) | 동기화가 새 업로드를 발견할 때 (`channel-pipeline.ts`) |
 | `video.comments` | fresh 영상의 상위 댓글 100개(1페이지) 수집 | channel.analyze 팬아웃 |
-| `content.analyze` | 업로드된 회차 영상을 GCS에서 내려받아 파이썬 `core/` 파이프라인(`python -m core.analyze`, STT→정제→장면→비전→이름자막→쇼츠, **Vertex Gemini**)으로 분석 → `content_analysis` 저장 + AI 쇼츠를 회차 추천 보드에 기록. 상세는 [content-pipeline-prod.md](content-pipeline-prod.md) | `POST /api/media/upload` (업로드 시), `POST /api/admin/queue/purge`의 재큐 |
+| `content.analyze` | 업로드된 회차 영상을 GCS에서 내려받아 파이썬 `core/` 파이프라인(`python -m core.analyze`, STT→정제→장면→비전→이름자막→쇼츠, **Vertex Gemini**)으로 분석 → `content_analysis` 저장 + AI 쇼츠를 회차 추천 보드에 기록. 상세는 [pipeline-current.md](pipeline-current.md) | `POST /api/media/upload` (업로드 시), `POST /api/admin/queue/purge`의 재큐 |
 
 ## 워커 레인 분리 (content ↔ youtube)
 
@@ -87,7 +87,7 @@ Cloud Run은 **응답이 끝나는 순간 CPU를 throttle**하고 요청을 **60
 **content 레인 필수 env** (`/etc/stepd/worker.env`, `worker-vm.sh`가 넣는다):
 `GCS_BUCKET`(GCS 영상 읽기 — 없으면 로컬모드로 못 찾아 ENOENT) · `CORE_PYTHON`(=`/opt/stepd/core/.venv/bin/python`,
 없으면 Windows 기본경로로 폴백해 실패) · `GOOGLE_CLOUD_PROJECT` · `VERTEX_LOCATION` · `STT_PROVIDER=gemini`.
-파이썬 venv는 `worker-pipeline-setup.sh`로 별도 설치 ([content-pipeline-prod.md](content-pipeline-prod.md)).
+파이썬 venv는 `worker-pipeline-setup.sh`로 별도 설치 ([pipeline-current.md](pipeline-current.md)).
 
 ## 파이프라인 주기 (쿼터 고려)
 

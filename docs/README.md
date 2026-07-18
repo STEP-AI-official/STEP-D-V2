@@ -29,8 +29,9 @@
 | [runbook.md](ops/runbook.md) | 장애 대응 — 증상별 진단·조치, 시크릿 로테이션 |
 | [local-dev.md](ops/local-dev.md) | 로컬 개발 — dev.ps1 (웹+서버+Docker Postgres), core/ 로컬 실행 |
 | [worker-queue.md](ops/worker-queue.md) | 잡 큐(job_queue)·워커 VM 아키텍처 — 잡 5종, 신뢰성 설계 |
-| [pipeline-current.md](ops/pipeline-current.md) | 채널·영상·성과 데이터 수집 파이프라인의 현재 동작 |
-| [content-pipeline-prod.md](ops/content-pipeline-prod.md) | AI 콘텐츠 분석(content.analyze) 프로덕션 배선 |
+| [pipeline-current.md](ops/pipeline-current.md) | 파이프라인 현재 동작 — 데이터 수집 계층 + AI 콘텐츠 분석(content.analyze) 배선 + 2026-07-16 인시던트 부록 |
+| [migrations.md](ops/migrations.md) | DB 마이그레이션(node-pg-migrate) — 버전 체계·baseline·작성 규칙 |
+| [youtube-upload-gate.md](ops/youtube-upload-gate.md) | YouTube 실업로드 게이트(`YOUTUBE_UPLOAD_ENABLED`) — 기본 OFF, env로만 온오프 |
 | [vercel-ops.md](ops/vercel-ops.md) | Vercel 운영 — 환경변수 계약, CLI 레시피, 함정 모음 |
 | [youtube-channel-analytics-guide.md](ops/youtube-channel-analytics-guide.md) | YouTube OAuth·채널분석 — 구현 현황과 남은 항목(심사·토큰 암호화) |
 
@@ -43,6 +44,9 @@
 | [context-engine-plan.md](plans/context-engine-plan.md) | 인물·서사 컨텍스트 엔진(CX 트랙) 설계 |
 | [opencut-integration-plan.md](plans/opencut-integration-plan.md) | 검수 에디터 OpenCut 부품 이식 (Phase 1 완료) |
 | [publish-fields-ux-plan.md](plans/publish-fields-ux-plan.md) | 채널별 배포 필수 필드 분리 설계 근거 (프론트 구현 완료) |
+| [editor-gap-analysis-vs-capcut.md](plans/editor-gap-analysis-vs-capcut.md) | 편집기 문제점 진단 — CapCut 벤치마킹 대비 갭 + 개선 계획 |
+| [investment-analysis-2026-07-17.md](plans/investment-analysis-2026-07-17.md) | 투자 관점 레포 분석 보고서 — 기술차별성·시장적합도·확장성 진단 |
+| [ui-source-dependency-visualization.md](plans/ui-source-dependency-visualization.md) | UI 기획 — 원본→쇼츠 의존성 시각화 (원본→분석→추천→쇼츠→배포 추적) |
 
 ## reference/ — 레퍼런스
 
@@ -56,6 +60,7 @@
 ## research/ · prototypes/ · archive/
 
 - [research/object-detection-research.md](research/object-detection-research.md) — 객체인식·비전 기술 선정 조사
+- [research/highlight-model-feasibility.md](research/highlight-model-feasibility.md) — 하이라이트 품질 개선 실현가능성 조사 (100만 구독 채널 데이터 활용)
 - prototypes/ — [editor-prototype.html](prototypes/editor-prototype.html) · [program-home-prototype.html](prototypes/program-home-prototype.html) (UI 목업, 코드 아님)
 - archive/ — 발명신고서·기술소개서·방향기획서 원본 (역사 기록)
 

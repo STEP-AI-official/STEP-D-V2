@@ -119,7 +119,7 @@ STT(Gemini 오디오, 서울) → 자막정제 → 장면분할(scenedetect+ffmp
 
 - 진입점: `python -m core.analyze <video> --out <dir>` → analysis.json(transcript+scenes+shorts).
 - 실측: 8분 영상 ≈ 512초(vision+names가 프레임당 Gemini 호출이라 지배적).
-- 실서비스 흐름·배선: [content-pipeline-prod.md](content-pipeline-prod.md).
+- 실서비스 흐름·배선: [pipeline-current.md](pipeline-current.md).
 - 파이프라인 계획: [../plans/pipeline-plan.md](../plans/pipeline-plan.md), 인물엔진: [../plans/context-engine-plan.md](../plans/context-engine-plan.md).
 
 ## 잡 큐 (job_queue)
