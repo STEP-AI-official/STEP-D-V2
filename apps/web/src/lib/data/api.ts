@@ -64,12 +64,42 @@ export interface AnalysisTranscriptSegment {
   end?: number;
   text?: string;
 }
+export interface NarrativeSegment {
+  block_index: number;
+  title: string;
+  summary: string;
+  key_moments: string[];
+  characters: string[];
+  start: number;
+  end: number;
+}
+export interface NarrativeCharacter {
+  name: string;
+  role: string;
+  total_screen_sec: number;
+  key_relationships: string[];
+  personality_traits: string[];
+}
+export interface NarrativeConflict {
+  title: string;
+  description: string;
+  participants: string[];
+  time_range: { start: number; end: number };
+  resolution: string;
+}
+export interface NarrativeData {
+  full_summary?: string;
+  segments?: NarrativeSegment[];
+  characters?: NarrativeCharacter[];
+  key_conflicts?: NarrativeConflict[];
+}
 export interface MediaAnalysis {
   status: "pending" | "done" | "failed" | null;
   data?: {
     transcript?: AnalysisTranscriptSegment[];
     scenes?: AnalysisScene[];
     shorts?: AnalysisShort[];
+    narrative?: NarrativeData | null;
   } | null;
   error?: string | null;
 }

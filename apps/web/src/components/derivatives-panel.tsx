@@ -11,6 +11,7 @@ import {
   FileText,
   Flame,
   Loader2,
+  BookOpen,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RecommendationCard } from "@/components/recommendation-card";
+import { NarrativeView } from "./narrative-view";
 import { PublishDialog } from "@/components/publish-dialog";
 import { useAppData } from "@/lib/data/store";
 import { type AnalysisScene, reanalyzeMedia } from "@/lib/data/api";
@@ -229,7 +231,7 @@ function scoreColorClass(v: number): string {
   return v >= 70 ? "text-status-done" : v >= 45 ? "text-status-warn" : "text-muted-foreground";
 }
 
-type AnalyzeView = "shorts" | "scenes" | "script";
+type AnalyzeView = "shorts" | "scenes" | "script" | "narrative";
 
 function AnalyzeTab({ episodeId }: { episodeId: string }) {
   const { mediaForEpisode } = useAppData();
@@ -278,8 +280,9 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
   const scenes = data?.scenes ?? [];
   const shorts = [...(data?.shorts ?? [])].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
   const transcript = (data?.transcript ?? []).filter((s) => (s.text ?? "").trim());
+  const narrative = data?.narrative;
 
-  if (!scenes.length && !shorts.length && !transcript.length) {
+  if (!scenes.length && !shorts.length && !transcript.length && !narrative) {
     return (
       <EmptyState
         icon={Loader2}
@@ -294,6 +297,7 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
     { key: "shorts", label: "쇼츠 추천", icon: Flame, count: shorts.length },
     { key: "scenes", label: "장면", icon: Layers, count: scenes.length },
     { key: "script", label: "자막", icon: FileText, count: transcript.length },
+    { key: "narrative", label: "서사", icon: BookOpen, count: narrative?.segments?.length ?? 0 },
   ];
 
   return (
@@ -345,6 +349,8 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
       )}
 
       {view === "scenes" && <ScenesView scenes={scenes} />}
+
+      {view === "narrative" && <NarrativeView narrative={narrative} />}
 
       {view === "script" && (
         <Card className="max-h-[50vh] overflow-y-auto">
