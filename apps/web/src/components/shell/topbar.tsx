@@ -2,8 +2,9 @@
 
 import { Menu } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { JobCenter } from "@/components/shell/job-center";
 
-/** Top app bar: mobile nav toggle · breadcrumb slot · theme. */
+/** Top app bar: mobile nav toggle · breadcrumb slot · job center · theme. */
 export function Topbar({ breadcrumb }: { breadcrumb?: React.ReactNode }) {
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b border-border bg-background/80 px-4 backdrop-blur sm:gap-3 sm:px-5">
@@ -19,6 +20,7 @@ export function Topbar({ breadcrumb }: { breadcrumb?: React.ReactNode }) {
 
       <div className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{breadcrumb}</div>
 
+      <JobCenter />
       <ThemeToggle />
     </header>
   );

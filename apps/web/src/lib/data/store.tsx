@@ -331,6 +331,39 @@ export function AppDataProvider({
     };
   }, [applyServerState]);
 
+  // ── adaptive /api/state polling ────────────────────────────────────────────────
+  // The content pipeline runs for minutes on the worker and reports progress via
+  // episode.pipeline, but a one-shot mount fetch leaves the dashboard/회차 진행률 frozen
+  // until the operator hits F5. Poll on a cadence that reflects what's happening:
+  //   · active work in flight (a running job or a stage 'progress')  → fast (8s)
+  //   · connected but idle                                           → slow heartbeat (45s)
+  //   · disconnected                                                 → reconnect probe (15s)
+  // Read the latest state through a ref so the self-scheduling loop never re-subscribes.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const nextDelay = () => {
+      if (!connectedRef.current) return 15_000;
+      const s = stateRef.current;
+      const active =
+        s.jobs.some((j) => j.status === "running") ||
+        s.episodes.some((e) => e.pipeline?.stageStatus === "progress");
+      return active ? 8_000 : 45_000;
+    };
+    const tick = async () => {
+      if (!alive) return;
+      await refresh();
+      if (alive) timer = setTimeout(tick, nextDelay());
+    };
+    timer = setTimeout(tick, nextDelay());
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [refresh]);
+
   const adoptRecommendation = useCallback(async (id: string): Promise<string> => {
     // SERVER: adopt confirms the segment as a DRAFT clip (metadata only, no render — §2.4).
     // The single render happens later via exportClip().
