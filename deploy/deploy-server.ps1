@@ -167,6 +167,10 @@ if ($doWorker) {
       "cd $WorkerDir",
       "sudo git fetch --depth 1 origin main",
       "sudo git reset --hard origin/main",
+      # worker.env 정합을 매 배포마다 강제 (드리프트 재발 방지). 이미 맞으면 완전한 no-op —
+      # 빠진 변수가 없으면 gcloud/네트워크 호출조차 하지 않는다. 실패해도 배포를 죽이지 않고
+      # 경고만 남긴다 (restart + is-active 가 최종 게이트).
+      "bash $WorkerDir/deploy/worker-env.sh || echo '[deploy] !! worker-env 동기화 실패 — /etc/stepd/worker.env 확인 필요'",
       # Two-lane split (stepd-worker-youtube / -content). Falls back to the legacy single
       # worker until worker-vm.sh has been re-run on the VM to create the lane services.
       "if systemctl list-unit-files | grep -q stepd-worker-youtube; then sudo systemctl restart stepd-worker-youtube stepd-worker-content; else sudo systemctl restart stepd-worker; fi",

@@ -11,13 +11,16 @@
 # Idempotent: safe to re-run to pick up new code.
 set -euo pipefail
 
-PROJECT="${PROJECT:-step-d}"
 REGION="${REGION:-us-central1}"
 SQL_INSTANCE="${SQL_INSTANCE:-step-d:us-central1:stepd-db}"
-REPO_URL="${REPO_URL:-https://github.com/STEP-AI-official/STEP-D-V2.git}"
+# Repo moved orgs 2026-07-16 (STEP-AI-official → STEP-AI-organization); the old default silently
+# broke fresh provisioning. Matches `git remote -v`.
+REPO_URL="${REPO_URL:-https://github.com/STEP-AI-organization/STEP-D-V2.git}"
 APP_DIR="${APP_DIR:-/opt/stepd}"
-GCS_BUCKET="${GCS_BUCKET:-stepd-media}"
-VERTEX_LOCATION="${VERTEX_LOCATION:-asia-northeast3}"
+# NOTE: worker.env values (PROJECT / GCS_BUCKET / VERTEX_LOCATION / STT_PROVIDER / CORE_PYTHON,
+# and the secret names) are defined ONLY in deploy/worker-env.sh — deliberately not repeated
+# here, so provisioning and drift-repair can never disagree. Overrides still pass through as
+# env vars, e.g. `GCS_BUCKET=other bash worker-vm.sh`.
 
 echo "==> Base packages"
 sudo apt-get update -qq
@@ -72,24 +75,11 @@ cd "$APP_DIR"
 pnpm install --filter @stepd/server... --frozen-lockfile --ignore-scripts
 pnpm rebuild esbuild
 
-echo "==> Secrets → /etc/stepd/worker.env"
-# Pulled from Secret Manager at provision time (VM SA needs secretmanager.secretAccessor).
-# WORKER_DB_URL points at the local proxy, unlike Cloud Run's unix-socket DATABASE_URL.
-sudo mkdir -p /etc/stepd
-{
-  echo "DATABASE_URL=$(gcloud secrets versions access latest --secret=stepd-worker-db-url --project="$PROJECT")"
-  echo "GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret=stepd-google-client-id --project="$PROJECT")"
-  echo "GOOGLE_CLIENT_SECRET=$(gcloud secrets versions access latest --secret=stepd-google-client-secret --project="$PROJECT")"
-  # Storage + content pipeline: content.analyze must read the GCS-uploaded video and spawn
-  # core/ (Python). Without GCS_BUCKET the worker runs in local-file mode and can't find the
-  # video; without CORE_PYTHON it falls back to a Windows path that doesn't exist on the VM.
-  echo "GCS_BUCKET=$GCS_BUCKET"
-  echo "CORE_PYTHON=$APP_DIR/core/.venv/bin/python"
-  echo "GOOGLE_CLOUD_PROJECT=$PROJECT"
-  echo "VERTEX_LOCATION=$VERTEX_LOCATION"
-  echo "STT_PROVIDER=gemini"
-} | sudo tee /etc/stepd/worker.env >/dev/null
-sudo chmod 600 /etc/stepd/worker.env
+echo "==> Secrets + config → /etc/stepd/worker.env"
+# Delegated to worker-env.sh, which owns these definitions and is also what deploy-server.ps1
+# runs on every deploy — one source of truth, so a provisioned VM and a deployed VM agree.
+# It only ADDS missing variables, so re-running this provisioner never clobbers a live value.
+APP_DIR="$APP_DIR" bash "$APP_DIR/deploy/worker-env.sh"
 
 echo "==> Worker services (two lanes on one VM: youtube + content)"
 # Two processes so a heavy content.analyze (STT/vision, minutes) never blocks the flood of

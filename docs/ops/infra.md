@@ -66,9 +66,14 @@
 - DB 접속: cloud-sql-proxy(`127.0.0.1:5432`) 경유. 시크릿 `stepd-worker-db-url`(Cloud Run과 값 다름 — 소켓 vs TCP).
 - Python 파이프라인: `/opt/stepd/core/.venv` (deploy/worker-pipeline-setup.sh), `CORE_PYTHON`으로 워커에 주입.
 - 프로비저닝: `deploy/worker-vm.sh`(Node) → `deploy/worker-pipeline-setup.sh`(Python).
-- ⚠️ 함정: `deploy/worker-vm.sh:17`의 `REPO_URL` 기본값이 **구 리포**(`STEP-AI-official/STEP-D-V2`)다.
-  리포는 `STEP-AI-organization`으로 이전됐으므로(변경 이력 2026-07-16 참고) 신규 워커 프로비저닝 시
-  그대로 돌리면 구 리포를 클론한다 — `REPO_URL` 오버라이드 또는 스크립트 수정 필요.
+- **`/etc/stepd/worker.env` = `deploy/worker-env.sh`가 단일 진실 소스.** 워커 변수를 추가하려면
+  거기에 `add_var`/`add_secret` 한 줄만 넣으면 된다 (worker-vm.sh는 이 스크립트를 호출할 뿐,
+  값을 따로 갖고 있지 않다). 비파괴·멱등 — 빠진 변수만 추가하고 기존 값은 건드리지 않는다.
+  `deploy-server.ps1`이 매 배포마다 실행하므로 정합이 자동으로 유지된다. 수동 실행:
+  `bash /opt/stepd/deploy/worker-env.sh` → 변경 시 `sudo systemctl restart stepd-worker-youtube stepd-worker-content`.
+  🔒 이 스크립트는 `YOUTUBE_UPLOAD_ENABLED`를 **절대 쓰지 않는다** ([youtube-upload-gate.md](youtube-upload-gate.md)).
+- 이력: `worker-vm.sh`의 `REPO_URL` 기본값이 구 리포(`STEP-AI-official`)를 가리켜 신규 프로비저닝이
+  깨지던 문제는 2026-07-17에 `STEP-AI-organization`으로 정정됐다(변경 이력 2026-07-16 리포 이전 참고).
 
 ### 3. Cloud SQL — `stepd-db`
 - PostgreSQL 16. 인스턴스 연결명 `step-d:us-central1:stepd-db`.
