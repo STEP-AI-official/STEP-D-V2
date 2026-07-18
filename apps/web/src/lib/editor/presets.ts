@@ -17,11 +17,87 @@ export type TemplateId =
 export type CaptionStyle = "korean_pop" | "clean" | "news";
 export type ElementType = "cta" | "sticker" | "arrow" | "bubble";
 
+export interface KeyframePoint {
+  time: number; // seconds relative to element start (= clip trim-in)
+  x?: number; // % — elements: absolute stage position, title lines: offset from layout
+  y?: number; // %
+  scale?: number; // 0.5–2.0
+  opacity?: number; // 0–1
+  rotation?: number; // degrees
+}
+
+export interface KeyframeSample {
+  x?: number;
+  y?: number;
+  scale: number;
+  opacity: number;
+  rotation: number;
+}
+
+/** Linear per-property interpolation across keyframes; values hold at both ends.
+ *  null = no keyframes → caller renders the static layout unchanged (backward compat). */
+export function sampleKeyframes(keyframes: KeyframePoint[] | undefined, time: number): KeyframeSample | null {
+  if (!keyframes || keyframes.length === 0) return null;
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  function prop(key: "x" | "y" | "scale" | "opacity" | "rotation"): number | undefined {
+    const pts = sorted.filter((k) => typeof k[key] === "number");
+    if (pts.length === 0) return undefined;
+    if (time <= pts[0].time) return pts[0][key];
+    const last = pts[pts.length - 1];
+    if (time >= last.time) return last[key];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      if (time >= a.time && time <= b.time) {
+        const f = b.time === a.time ? 0 : (time - a.time) / (b.time - a.time);
+        return (a[key] as number) + ((b[key] as number) - (a[key] as number)) * f;
+      }
+    }
+    return last[key];
+  }
+  return {
+    x: prop("x"),
+    y: prop("y"),
+    scale: prop("scale") ?? 1,
+    opacity: prop("opacity") ?? 1,
+    rotation: prop("rotation") ?? 0,
+  };
+}
+
+/** Timeline/panel keyframe selection: target = EditorElement.id or TitleLine.id, index = -1 none. */
+export type KfSelection = { target: string; index: number } | null;
+
+export interface FilterSettings {
+  brightness: number; // 0–200, default 100
+  contrast: number; // 0–200, default 100
+  saturation: number; // 0–200, default 100
+  warmth: number; // -100–100, default 0
+}
+
+export const DEFAULT_FILTERS: FilterSettings = { brightness: 100, contrast: 100, saturation: 100, warmth: 0 };
+
+/** CSS filter string for the preview <video>. undefined = all defaults (no filter). */
+export function filterCss(f?: FilterSettings): string | undefined {
+  if (!f) return undefined;
+  const parts: string[] = [];
+  if (f.brightness !== 100) parts.push(`brightness(${f.brightness}%)`);
+  if (f.contrast !== 100) parts.push(`contrast(${f.contrast}%)`);
+  if (f.saturation !== 100) parts.push(`saturate(${f.saturation}%)`);
+  // Warmth: sepia tints toward orange; the hue-rotate(180°) flip turns the tint cool.
+  if (f.warmth > 0) parts.push(`sepia(${Math.round(f.warmth * 0.35)}%)`);
+  else if (f.warmth < 0) parts.push(`sepia(${Math.round(-f.warmth * 0.35)}%) hue-rotate(180deg)`);
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
 export interface TitleLine {
   id: string;
   text: string;
   size: number;
   color: string;
+  keyframes?: KeyframePoint[]; // absent/empty = static (backward compat)
+  /** Visible window, segment-relative seconds. Omitted = shown for the full clip. */
+  startSec?: number;
+  endSec?: number;
 }
 
 export interface EditorElement {
@@ -31,12 +107,56 @@ export interface EditorElement {
   y: number; // %
   text: string;
   size?: number; // font px; falls back to a per-type default
+  keyframes?: KeyframePoint[]; // absent/empty = static (backward compat)
+  /** Visible window, segment-relative seconds. Omitted = shown for the full clip. */
+  startSec?: number;
+  endSec?: number;
+}
+
+/** Whether a timed overlay (title line / element) is visible at segment time `t`. */
+export function overlayVisibleAt(o: { startSec?: number; endSec?: number }, t: number): boolean {
+  if (o.startSec != null && t < o.startSec) return false;
+  if (o.endSec != null && t > o.endSec) return false;
+  return true;
 }
 
 /** Default font size (px) for a freshly added element. */
 export function defaultElementSize(type: ElementType): number {
   return type === "arrow" ? 40 : 14;
 }
+
+/** Speed keyframe: from `time` (track-timeline seconds) onward, play at `speed`. */
+export interface SpeedPoint {
+  time: number;
+  speed: number;
+}
+
+export const SPEED_MIN = 0.25;
+export const SPEED_MAX = 4;
+
+/** Step-function speed at `time`: the last point at or before it wins; before the
+ *  first point (or with no points) the uniform base speed applies. */
+export function speedAt(points: SpeedPoint[] | undefined, time: number, base: number): number {
+  if (!points || points.length === 0) return base;
+  let speed = base;
+  for (const p of [...points].sort((a, b) => a.time - b.time)) {
+    if (p.time > time) break;
+    speed = p.speed;
+  }
+  return speed;
+}
+
+export type TransitionType = "cut" | "crossfade";
+
+export interface TrackTransition {
+  type: TransitionType;
+  /** Overlap seconds (crossfade only; 0 for cut). */
+  duration: number;
+}
+
+export const XFADE_MIN = 0.5;
+export const XFADE_MAX = 2;
+export const XFADE_DEFAULT = 1;
 
 export interface EditorTrack {
   id: string;
@@ -47,12 +167,32 @@ export interface EditorTrack {
   /** Position on master timeline */
   startTime: number;
   duration: number;
+  /** Speed ramping keyframes. Empty = uniform speed from EditorState.speed. */
+  speedPoints: SpeedPoint[];
+  /** 0..1 */
+  volume: number;
+  muted: boolean;
+  /** Visual color filters. Absent = all defaults (no filter) — backward compat. */
+  filters?: FilterSettings;
+  /** How this track enters from the previous one. Absent = hard cut (backward compat). */
+  transition?: TrackTransition;
   /** For future: media source. For MVP, all tracks share the same video */
   mediaId?: string;
 }
 
 export function makeMainTrack(trimIn: number, trimOut: number, duration: number): EditorTrack {
-  return { id: "track-main", label: "메인", trimIn, trimOut, startTime: 0, duration };
+  return {
+    id: "track-main",
+    label: "메인",
+    trimIn,
+    trimOut,
+    startTime: 0,
+    duration,
+    speedPoints: [],
+    volume: 1,
+    muted: false,
+    transition: { type: "cut", duration: 0 },
+  };
 }
 
 export interface EditorState {
@@ -177,11 +317,21 @@ export function makeInitialEditorState(title: string, durationSec: number): Edit
 }
 
 /** Saved editorState from before multi-track has no `tracks` — hydrate a main track
- *  from the master trim so old clips keep working unchanged. */
+ *  from the master trim so old clips keep working unchanged. Tracks saved before
+ *  speed-ramping / volume get their defaults filled in (uniform speed, full volume). */
 export function ensureTracks(state: EditorState, durationSec: number): EditorState {
-  if (Array.isArray(state.tracks) && state.tracks.length > 0) return state;
   const dur = Math.max(1, durationSec);
-  return { ...state, tracks: [makeMainTrack(state.trimIn ?? 0, state.trimOut ?? dur, dur)] };
+  const tracks =
+    Array.isArray(state.tracks) && state.tracks.length > 0
+      ? state.tracks.map((tr) => ({
+          ...tr,
+          speedPoints: Array.isArray(tr.speedPoints) ? tr.speedPoints : [],
+          volume: typeof tr.volume === "number" ? tr.volume : 1,
+          muted: tr.muted === true,
+          transition: tr.transition ?? { type: "cut" as const, duration: 0 },
+        }))
+      : [makeMainTrack(state.trimIn ?? 0, state.trimOut ?? dur, dur)];
+  return { ...state, tracks };
 }
 
 export function applyTemplate(state: EditorState, id: TemplateId): EditorState {

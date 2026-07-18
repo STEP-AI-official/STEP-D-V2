@@ -218,6 +218,10 @@ export function EditorShell({ clipId }: { clipId: string }) {
         trimOut: main?.trimOut ?? s.trimOut,
         startTime: main?.startTime ?? 0,
         duration: main?.duration ?? Math.max(1, duration),
+        speedPoints: [],
+        volume: 1,
+        muted: false,
+        transition: { type: "cut", duration: 0 },
       };
       return { ...s, tracks: [...tracks, track] };
     });
@@ -386,6 +390,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
             onTogglePlay={togglePlay}
             caption={captionText}
             hasTranscript={!!transcript}
+            currentTime={videoTime - segStart}
           />
         </div>
 

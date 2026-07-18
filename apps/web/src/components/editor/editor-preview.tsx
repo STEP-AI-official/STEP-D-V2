@@ -2,7 +2,7 @@
 
 import { useRef, useState, type CSSProperties, type Ref } from "react";
 import { Heart, MessageCircle, Send } from "lucide-react";
-import { ASPECTS, defaultElementSize, type CaptionStyle, type EditorState } from "@/lib/editor/presets";
+import { ASPECTS, defaultElementSize, filterCss, overlayVisibleAt, sampleKeyframes, type CaptionStyle, type EditorState } from "@/lib/editor/presets";
 import { Movable, SnapGuides, InlineText, type Guides } from "@/components/editor/editor-overlay";
 
 /**
@@ -46,6 +46,7 @@ export function EditorPreview({
   onTogglePlay,
   caption,
   hasTranscript,
+  currentTime,
 }: {
   state: EditorState;
   update: (patch: Partial<EditorState>) => void;
@@ -57,8 +58,15 @@ export function EditorPreview({
   caption?: string;
   /** Whether a transcript is loaded — false ⇒ show the sample placeholder instead. */
   hasTranscript?: boolean;
+  /** Segment-relative playhead seconds — drives keyframe interpolation. */
+  currentTime?: number;
 }) {
   const ratio = ASPECTS[state.aspect].ratio;
+  // Keyframe times are relative to the clip start (trim-in).
+  const localT = (currentTime ?? state.trimIn) - state.trimIn;
+  // Overlay show-windows (startSec/endSec) are segment-relative, like trimIn/trimOut.
+  const segT = currentTime ?? state.trimIn;
+  const videoFilter = filterCss(state.tracks?.[0]?.filters);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const bgRef = useRef<HTMLVideoElement | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -83,8 +91,28 @@ export function EditorPreview({
 
   const setLine = (id: string, patch: Partial<EditorState["titleLines"][number]>) =>
     update({ titleLines: state.titleLines.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
+  // Dragging an animated element would be a dead control (keyframes override x/y), so the
+  // drag retargets the keyframe nearest to the playhead instead — WYSIWYG under animation.
   const moveEl = (id: string, x: number, y: number) =>
-    update({ elements: state.elements.map((e) => (e.id === id ? { ...e, x, y } : e)) });
+    update({
+      elements: state.elements.map((e) => {
+        if (e.id !== id) return e;
+        const kfs = e.keyframes ?? [];
+        if (kfs.some((k) => k.x != null || k.y != null)) {
+          let ni = 0;
+          let best = Infinity;
+          kfs.forEach((k, i) => {
+            const d = Math.abs(k.time - localT);
+            if (d < best) {
+              best = d;
+              ni = i;
+            }
+          });
+          return { ...e, keyframes: kfs.map((k, i) => (i === ni ? { ...k, x, y } : k)) };
+        }
+        return { ...e, x, y };
+      }),
+    });
   const setElText = (id: string, text: string) =>
     update({ elements: state.elements.map((e) => (e.id === id ? { ...e, text } : e)) });
 
@@ -122,7 +150,10 @@ export function EditorPreview({
               playsInline
               muted
               className="pointer-events-none absolute inset-0 size-full object-cover"
-              style={{ filter: "blur(16px) brightness(0.65)", transform: "scale(1.15)" }}
+              style={{
+                filter: `blur(16px) brightness(0.65)${videoFilter ? ` ${videoFilter}` : ""}`,
+                transform: "scale(1.15)",
+              }}
             />
             <video
               key={videoUrl}
@@ -136,6 +167,7 @@ export function EditorPreview({
               onTimeUpdate={(e) => syncBg(e.currentTarget)}
               onClick={onTogglePlay}
               className="absolute inset-0 size-full cursor-pointer object-contain"
+              style={{ filter: videoFilter }}
             />
           </>
         ) : (
@@ -146,7 +178,12 @@ export function EditorPreview({
 
         <SnapGuides guides={guides} />
 
-        {/* title lines — draggable block, double-click a line to edit */}
+        {/* title lines — draggable block, double-click a line to edit. Lines outside their
+            show-window (startSec/endSec) hide with the playhead; the block stays mounted
+            while selected so it remains editable. */}
+        {(state.titleLines.some((l) => overlayVisibleAt(l, segT)) ||
+          selected === "title" ||
+          (editing != null && editing.startsWith("title:"))) && (
         <Movable
           xPct={state.titleX}
           yPct={state.titleY}
@@ -163,13 +200,24 @@ export function EditorPreview({
         >
           {state.titleLines.map((line) => {
             const key = `title:${line.id}`;
-            const font = {
+            // Title-line keyframe x/y are offsets from the block layout (cqw/cqh = % of stage).
+            const kf = sampleKeyframes(line.keyframes, localT);
+            const lineShown = overlayVisibleAt(line, segT) || editing === key;
+            const font: CSSProperties = {
               color: line.color,
               fontSize: line.size,
               fontWeight: 800,
               lineHeight: 1.15,
               textShadow: "0 2px 6px rgba(0,0,0,.5)",
-            } as const;
+              // display:none (not unmount) keeps resizeBase/onResize index mapping intact.
+              display: lineShown ? undefined : "none",
+              ...(kf
+                ? {
+                    opacity: kf.opacity,
+                    transform: `translate(${kf.x ?? 0}cqw, ${kf.y ?? 0}cqh) scale(${kf.scale}) rotate(${kf.rotation}deg)`,
+                  }
+                : {}),
+            };
             return editing === key ? (
               <InlineText
                 key={line.id}
@@ -195,6 +243,7 @@ export function EditorPreview({
             );
           })}
         </Movable>
+        )}
 
         {/* captions — the REAL STT line under the playhead (same transcript + timeline the
             render burns in, so preview = final). Falls back to a sample only when no
@@ -259,14 +308,17 @@ export function EditorPreview({
           </Movable>
         )}
 
-        {/* elements — draggable, double-click to edit text */}
+        {/* elements — draggable, double-click to edit text. Hidden outside their
+            show-window unless selected/editing (so they stay grabbable mid-edit). */}
         {state.elements.map((el) => {
           const key = `el:${el.id}`;
+          const kf = sampleKeyframes(el.keyframes, localT);
+          if (!overlayVisibleAt(el, segT) && selected !== key && editing !== key) return null;
           return (
             <Movable
               key={el.id}
-              xPct={el.x}
-              yPct={el.y}
+              xPct={kf?.x ?? el.x}
+              yPct={kf?.y ?? el.y}
               selected={selected === key}
               onSelect={() => setSelected(key)}
               onMove={(x, y) => moveEl(el.id, x, y)}
@@ -281,6 +333,13 @@ export function EditorPreview({
                 background: el.type === "cta" ? state.accent : el.type === "sticker" ? "#FFD400" : "#ffffff",
                 color: el.type === "arrow" ? state.accent : "#16120D",
                 fontSize: el.size ?? defaultElementSize(el.type),
+                // Overrides Movable's base transform, so the center anchor must be repeated.
+                ...(kf
+                  ? {
+                      opacity: kf.opacity,
+                      transform: `translate(-50%, -50%) scale(${kf.scale}) rotate(${kf.rotation}deg)`,
+                    }
+                  : {}),
               }}
             >
               {editing === key ? (
