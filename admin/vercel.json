@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "public": false,
+  "builds": [
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    { "src": "/api/lab/(.*)", "dest": "https://stepd.stepai.kr/api/lab/$1" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}

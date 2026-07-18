@@ -81,6 +81,47 @@
   .short .stags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
   .short .stag { font-size: 10px; padding: 2px 8px; border-radius: 20px; background: var(--panel2); color: var(--mut); }
   .short .play { align-self: center; color: var(--mut2); font-size: 24px; }
+
+  /* Timeline blocks */
+  .tl-block { display: flex; gap: 14px; padding: 14px; margin-bottom: 12px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; transition: border-color .12s; }
+  .tl-block:hover { border-color: var(--accent); }
+  .tl-time { min-width: 92px; text-align: center; cursor: pointer; align-self: stretch;
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 8px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border);
+    font-variant-numeric: tabular-nums; }
+  .tl-time b { color: var(--accent); font-size: 14px; }
+  .tl-time span { color: var(--mut2); font-size: 11px; }
+  .tl-body { flex: 1; min-width: 0; }
+  .tl-label { font-size: 15px; font-weight: 700; color: var(--text); }
+  .tl-summary { margin-top: 5px; font-size: 13px; color: var(--mut); line-height: 1.55; }
+  .tl-kps { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .tl-kp { font-size: 11px; padding: 2px 9px; border-radius: 20px; background: var(--panel2); color: var(--warn); }
+  .tl-meta { margin-top: 8px; font-size: 12px; color: var(--mut2); display: flex; gap: 12px; flex-wrap: wrap; }
+  .tl-meta .who { color: var(--good); font-weight: 600; }
+  .tl-meta .cnt { color: var(--accent); cursor: pointer; }
+  .tl-meta .cnt:hover { text-decoration: underline; }
+
+  /* Cast */
+  .cast-card { display: flex; gap: 14px; padding: 14px; margin-bottom: 12px; align-items: flex-start;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; transition: border-color .12s; }
+  .cast-card:hover { border-color: var(--accent); }
+  .portrait { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+    background: var(--panel2); border: 2px solid var(--border); }
+  .portrait.ph { display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 800; color: var(--mut2); }
+  .cast-body { flex: 1; min-width: 0; }
+  .cast-name { font-size: 15px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .cast-badge { font-size: 10px; padding: 1px 7px; border-radius: 20px; }
+  .cast-badge.matched { background: #10261a; color: var(--good); }
+  .cast-badge.candidate { background: #3a2a10; color: var(--warn); }
+  .cast-alias { margin-top: 3px; font-size: 11px; color: var(--mut2); }
+  .cast-desc { margin-top: 6px; font-size: 13px; color: var(--mut); line-height: 1.55; }
+  .cast-stats { margin-top: 7px; font-size: 12px; color: var(--mut2); }
+  .cast-spans { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .cast-span { font-size: 11px; padding: 2px 9px; border-radius: 20px; background: var(--panel2);
+    color: var(--accent); cursor: pointer; font-variant-numeric: tabular-nums; }
+  .cast-span:hover { background: var(--accent); color: #08111f; }
 </style>
 </head>
 <body>
@@ -98,10 +139,14 @@
   <div class="right">
     <div class="tabs">
       <div class="tab on" data-p="shorts">🔥 쇼츠 추천 <span id="cnt-shorts"></span></div>
+      <div class="tab" data-p="timeline">🕐 타임라인 <span id="cnt-timeline"></span></div>
+      <div class="tab" data-p="cast">👤 출연진 <span id="cnt-cast"></span></div>
       <div class="tab" data-p="scenes">장면 <span id="cnt-scenes"></span></div>
       <div class="tab" data-p="script">자막 <span id="cnt-script"></span></div>
     </div>
     <div class="pane on" id="pane-shorts"><div id="shorts"></div></div>
+    <div class="pane" id="pane-timeline"><div id="timeline"></div></div>
+    <div class="pane" id="pane-cast"><div id="cast"></div></div>
     <div class="pane" id="pane-scenes">
       <div class="toolbar">
         <button id="sort-time" class="on">시간순</button>
@@ -145,8 +190,18 @@ async function load() {
   $('#cnt-scenes').textContent = `(${st.scenes})`;
   $('#cnt-script').textContent = `(${st.refined || st.segments})`;
   $('#cnt-shorts').textContent = st.shorts ? `(${st.shorts})` : '';
-  renderShorts(); renderScenes(); renderScript();
+  const blocks = (DATA.timeline && DATA.timeline.blocks) || [];
+  const people = castPeople();
+  $('#cnt-timeline').textContent = blocks.length ? `(${blocks.length})` : '';
+  $('#cnt-cast').textContent = people.length ? `(${people.length})` : '';
+  renderShorts(); renderTimeline(); renderCast(); renderScenes(); renderScript();
   trackNow();
+}
+
+function castPeople() {
+  const c = DATA && DATA.cast;
+  if (!c) return [];
+  return Array.isArray(c) ? c : (c.people || []);
 }
 
 function seek(t) { const p = $('#player'); p.currentTime = t + 0.05; p.play(); }
@@ -170,6 +225,69 @@ function renderShorts() {
         ${tags ? `<div class="stags">${tags}</div>` : ''}
       </div>
       <div class="play">▶</div>
+    </div>`;
+  }).join('');
+}
+
+function renderTimeline() {
+  const blocks = (DATA.timeline && DATA.timeline.blocks) || [];
+  if (!blocks.length) {
+    $('#timeline').innerHTML = '<div class="empty-note">타임라인 분석이 없습니다. <code>python -m core.timeline core/scenes.json</code> 실행 후 새로고침.</div>';
+    return;
+  }
+  $('#timeline').innerHTML = blocks.map(b => {
+    const kps = (b.key_points || []).map(k => `<span class="tl-kp">${k}</span>`).join('');
+    const who = (b.on_screen_names || []).slice(0, 8).join(', ');
+    return `
+    <div class="tl-block">
+      <div class="tl-time" onclick="seek(${b.start})" title="이 구간으로 이동">
+        <b>${fmt(b.start)}</b><span>~ ${fmt(b.end)}</span><span>▶</span>
+      </div>
+      <div class="tl-body">
+        <div class="tl-label">${b.label || ''}</div>
+        ${b.summary ? `<div class="tl-summary">${b.summary}</div>` : ''}
+        ${kps ? `<div class="tl-kps">${kps}</div>` : ''}
+        <div class="tl-meta">
+          ${who ? `<span class="who">👤 ${who}</span>` : ''}
+          <span class="cnt" onclick="showTab('scenes')">씬 ${b.scene_count}개 →</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCast() {
+  const people = castPeople();
+  if (!people.length) {
+    $('#cast').innerHTML = '<div class="empty-note">출연진 정보가 없습니다.</div>';
+    return;
+  }
+  $('#cast').innerHTML = people.map(p => {
+    const spans = p.appearances || [];
+    const first = p.first_seen ?? (spans.length ? Math.min(...spans.map(a => a.start)) : null);
+    const last = p.last_seen ?? (spans.length ? Math.max(...spans.map(a => a.end)) : null);
+    const count = p.total_appearances ?? spans.length;
+    const img = p.thumbnail
+      ? `<img class="portrait" src="${API}/api/lab/portraits/${encodeURIComponent(p.thumbnail)}" alt="" loading="lazy">`
+      : `<div class="portrait ph">${(p.name || '?').slice(0, 1)}</div>`;
+    const aliases = [...new Set([...(p.on_screen_names || []), ...(p.evidence || [])])].filter(a => a !== p.name);
+    const badge = p.status === 'matched'
+      ? '<span class="cast-badge matched">확정</span>'
+      : '<span class="cast-badge candidate">후보</span>';
+    const chips = spans.slice(0, 8).map(a =>
+      `<span class="cast-span" onclick="seek(${a.start})">${fmt(a.start)}~${fmt(a.end)}</span>`).join('');
+    return `
+    <div class="cast-card">
+      ${img}
+      <div class="cast-body">
+        <div class="cast-name">${p.name || '?'} ${badge}
+          ${p.confidence != null ? `<span style="font-size:11px;color:var(--mut2)">conf ${Number(p.confidence).toFixed(2)}</span>` : ''}
+        </div>
+        ${aliases.length ? `<div class="cast-alias">🏷 ${aliases.join(', ')}</div>` : ''}
+        ${p.description ? `<div class="cast-desc">${p.description}</div>` : ''}
+        <div class="cast-stats">등장 ${count}회${first != null ? ` · 첫 등장 ${fmt(first)}` : ''}${last != null ? ` · 마지막 ${fmt(last)}` : ''}${p.totalSec != null ? ` · 총 ${Math.round(p.totalSec)}초` : ''}</div>
+        ${chips ? `<div class="cast-spans">${chips}</div>` : ''}
+      </div>
     </div>`;
   }).join('');
 }
@@ -234,11 +352,12 @@ function trackNow() {
 }
 
 // tabs
-document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
-  document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.p === name));
   document.querySelectorAll('.pane').forEach(x => x.classList.remove('on'));
-  t.classList.add('on'); $('#pane-' + t.dataset.p).classList.add('on');
-});
+  $('#pane-' + name).classList.add('on');
+}
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => showTab(t.dataset.p));
 // scene sort/filter
 $('#sort-time').onclick = () => { sceneSort='time'; sceneBtns(); renderScenes(); };
 $('#sort-score').onclick = () => { sceneSort='score'; sceneBtns(); renderScenes(); };

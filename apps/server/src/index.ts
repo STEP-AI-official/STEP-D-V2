@@ -2320,36 +2320,79 @@ app.delete("/api/youtube/videos/:videoId", async (c) => {
 });
 
 // ── Lab (실험 admin) ──────────────────────────────────────────────────────────
-// Serves the core pipeline's local outputs to the standalone admin frontend.
-// This reads repo-root core/ directly — a LOCAL-DEV shim. In production the core
-// pipeline runs on the worker VM and its results live in the DB/GCS; these routes
-// would then read from there. Kept on this single server so "one backend" holds.
+// Reads pipeline analysis from GCS (production) or local core/ (dev).
+import { Storage } from "@google-cloud/storage";
+
 const LAB_CORE_DIR = process.env.CORE_DIR
   ? path.resolve(process.env.CORE_DIR)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../core");
 const ADMIN_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../admin");
+const GCS_BUCKET = process.env.GCS_BUCKET;
 
-function labJson(name: string): unknown | null {
+/** Latest analysis media ID from GCS, or null (local dev). */
+let _cachedMediaId: string | null | undefined = undefined;
+async function latestAnalysisId(): Promise<string | null> {
+  if (!GCS_BUCKET) return null;
+  if (_cachedMediaId !== undefined) return _cachedMediaId;
   try {
-    return JSON.parse(fs.readFileSync(path.join(LAB_CORE_DIR, name), "utf-8"));
-  } catch {
+    const storage = new Storage();
+    const [files] = await storage.bucket(GCS_BUCKET).getFiles({
+      prefix: "analysis/",
+    });
+    const dirs = new Set<string>();
+    for (const f of files) {
+      // Extract the subdirectory name (e.g., "m_7135cabb" from "analysis/m_7135cabb/...")
+      const parts = f.name.split("/");
+      if (parts.length >= 2 && parts[1]) dirs.add(parts[1]);
+    }
+    _cachedMediaId = dirs.size ? [...dirs].sort().pop()! : null;
+  } catch (e) {
+    console.warn("latestAnalysisId failed:", e);
+    _cachedMediaId = null;
+  }
+  return _cachedMediaId;
+}
+
+/** Read a JSON file from lab analysis (GCS or local fallback). */
+async function labReadJson(localName: string, gcsName: string): Promise<unknown | null> {
+  const mediaId = await latestAnalysisId();
+  if (mediaId && GCS_BUCKET) {
+    try {
+      const storage = new Storage();
+      const [data] = await storage.bucket(GCS_BUCKET).file(`analysis/${mediaId}/${gcsName}`).download();
+      return JSON.parse(data.toString("utf-8"));
+    } catch (e) {
+      console.warn(`labReadJson(GCS) failed for ${mediaId}/${gcsName}:`, e);
+      /* fall through to local */
+    }
+  }
+  // Local dev fallback
+  try {
+    return JSON.parse(fs.readFileSync(path.join(LAB_CORE_DIR, localName), "utf-8"));
+  } catch (e) {
+    if (!mediaId) console.warn(`labReadJson(local) no GCS mediaId, local ${localName}:`, e);
     return null;
   }
 }
 
 /** Combined lab payload: video + stats + raw/refined transcript + scenes. */
-app.get("/api/lab/data", (c) => {
-  const pipe = (labJson("pipeline_output.json") as any) || {};
-  const refined = (labJson("refined_segments.json") as any[]) || [];
-  const scenes = (labJson("scenes.json") as any[]) || [];
-  // shorts.json: legacy bare array, or {genre, shorts} since the two-phase recommender.
-  const shortsRaw = labJson("shorts.json") as any;
+app.get("/api/lab/data", async (c) => {
+  const pipe = ((await labReadJson("pipeline_output.json", "analysis.json")) as any) || {};
+  const refined = ((await labReadJson("refined_segments.json", "refined.json")) as any[]) || [];
+  const scenes = ((await labReadJson("scenes.json", "scenes.json")) as any[]) || [];
+  const shortsRaw = (await labReadJson("shorts.json", "shorts.json")) as any;
   const shorts: any[] = Array.isArray(shortsRaw) ? shortsRaw : (shortsRaw?.shorts ?? []);
-  const raw = pipe.segments || [];
+  // cast.json: {registrySize, people:[...]} (enriched with thumbnail/description by core.portraits)
+  const cast = (await labReadJson("cast.json", "cast.json")) as any;
+  // timeline.json: {block_minutes, blocks:[...]} from core.timeline
+  const timeline = (await labReadJson("timeline.json", "timeline.json")) as any;
+  // analysis.json uses "transcript" (GCS); pipeline_output.json uses "segments" (local dev)
+  const raw = pipe.segments || pipe.transcript || [];
   const videoName = pipe.video ? path.basename(pipe.video) : null;
+  const mediaId = await latestAnalysisId();
   const talk = scenes.filter((s) => s?.has_dialogue).length;
   return c.json({
-    video: videoName ? "/api/lab/video" : null,
+    video: videoName && mediaId ? `/api/lab/video/${mediaId}` : null,
     video_name: videoName,
     stats: {
       duration: pipe.duration ?? null,
@@ -2364,12 +2407,54 @@ app.get("/api/lab/data", (c) => {
     refined,
     scenes,
     shorts,
+    cast: cast ?? null,
+    timeline: timeline ?? null,
   });
 });
 
-/** Scene frame by basename (path-traversal guarded). */
-app.get("/api/lab/frames/:name", (c) => {
+/** Cast portrait image by name (GCS or local). Accepts "portrait_영철.jpg" or bare "영철.jpg". */
+app.get("/api/lab/portraits/:name", async (c) => {
+  let name = path.basename(c.req.param("name"));
+  if (!name.startsWith("portrait_")) name = `portrait_${name}`;
+  if (!name.endsWith(".jpg")) name = `${name}.jpg`;
+  const mediaId = await latestAnalysisId();
+  if (mediaId && GCS_BUCKET) {
+    try {
+      const storage = new Storage();
+      const [data] = await storage.bucket(GCS_BUCKET).file(`analysis/${mediaId}/scene_frames/${name}`).download();
+      return new Response(data, {
+        headers: { "Content-Type": "image/jpeg", "Cache-Control": "max-age=3600" },
+      });
+    } catch {
+      /* fall through */
+    }
+  }
+  // Local fallback
+  const file = path.join(LAB_CORE_DIR, "scene_frames", name);
+  if (!file.startsWith(path.join(LAB_CORE_DIR, "scene_frames")) || !fs.existsSync(file)) {
+    return c.json({ error: "not found" }, 404);
+  }
+  return new Response(fs.readFileSync(file), {
+    headers: { "Content-Type": "image/jpeg", "Cache-Control": "max-age=3600" },
+  });
+});
+
+/** Scene frame by name (GCS or local). */
+app.get("/api/lab/frames/:name", async (c) => {
   const name = path.basename(c.req.param("name"));
+  const mediaId = await latestAnalysisId();
+  if (mediaId && GCS_BUCKET) {
+    try {
+      const storage = new Storage();
+      const [data] = await storage.bucket(GCS_BUCKET).file(`analysis/${mediaId}/scene_frames/${name}`).download();
+      return new Response(data, {
+        headers: { "Content-Type": "image/jpeg", "Cache-Control": "max-age=3600" },
+      });
+    } catch {
+      /* fall through */
+    }
+  }
+  // Local fallback
   const file = path.join(LAB_CORE_DIR, "scene_frames", name);
   if (!file.startsWith(path.join(LAB_CORE_DIR, "scene_frames")) || !fs.existsSync(file)) {
     return c.json({ error: "not found" }, 404);
@@ -2380,8 +2465,40 @@ app.get("/api/lab/frames/:name", (c) => {
 });
 
 /** Source video with HTTP range support (so <video> seeking works). */
-app.get("/api/lab/video", (c) => {
-  const pipe = labJson("pipeline_output.json") as any;
+app.get("/api/lab/video/:mediaId", async (c) => {
+  const mediaId = c.req.param("mediaId");
+  const videoPath = `uploads/${mediaId}.mp4`;
+  if (GCS_BUCKET) {
+    const storage = new Storage();
+    const bucket = storage.bucket(GCS_BUCKET);
+    const file = bucket.file(videoPath);
+    const [exists] = await file.exists();
+    if (!exists) return c.json({ error: "not found" }, 404);
+    const [meta] = await file.getMetadata();
+    const size = Number(meta.size);
+    const range = c.req.header("range");
+    if (range) {
+      const m = /bytes=(\d*)-(\d*)/.exec(range);
+      const start = m && m[1] ? parseInt(m[1], 10) : 0;
+      const end = m && m[2] ? parseInt(m[2], 10) : size - 1;
+      const stream = file.createReadStream({ start, end });
+      return new Response(Readable.toWeb(stream) as ReadableStream, {
+        status: 206,
+        headers: {
+          "Content-Range": `bytes ${start}-${end}/${size}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": String(end - start + 1),
+          "Content-Type": "video/mp4",
+        },
+      });
+    }
+    const stream = file.createReadStream();
+    return new Response(Readable.toWeb(stream) as ReadableStream, {
+      headers: { "Content-Length": String(size), "Content-Type": "video/mp4", "Accept-Ranges": "bytes" },
+    });
+  }
+  // Local fallback
+  const pipe = ((await labReadJson("pipeline_output.json", "analysis.json")) as any) || {};
   const name = pipe?.video ? path.basename(pipe.video) : null;
   if (!name) return c.json({ error: "no video" }, 404);
   const file = path.join(LAB_CORE_DIR, name);

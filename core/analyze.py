@@ -43,7 +43,7 @@ from .scenes import build_scenes, extract_frame
 from .vision import analyze_frames, _frame_done
 from .recommend import recommend
 
-CHECKPOINTS = ("stt.json", "refined.json", "scenes.json", "cast.json", "shorts.json", "analysis.json")
+CHECKPOINTS = ("stt.json", "refined.json", "scenes.json", "cast.json", "timeline.json", "shorts.json", "analysis.json")
 
 
 # ── checkpoint plumbing ─────────────────────────────────────────────────────────
@@ -299,6 +299,47 @@ def analyze(
             cast = None
     timed("cast", ts)
 
+    # 4d) timeline blocks — N분 단위 구간 요약 (scenes만 의존, 실패해도 파이프라인 계속)
+    ts = time.time()
+    timeline = _load_json(out_dir / "timeline.json")
+    if isinstance(timeline, dict) and timeline.get("blocks"):
+        step(f"타임라인 — 체크포인트 재사용 ({len(timeline['blocks'])} 블록)")
+    else:
+        try:
+            from .timeline import build_timeline
+            _progress("timeline", 76, "구간 요약 생성")
+            timeline = build_timeline(
+                scenes,
+                on_progress=lambda done, total: _progress("timeline", 76 + 3 * done / max(1, total), f"구간 요약 {done}/{total} 배치"),
+            )
+            _save_json(out_dir / "timeline.json", timeline)
+            step(f"타임라인 — {len(timeline['blocks'])} 블록 ({timeline['block_minutes']}분 단위)")
+        except Exception as e:
+            step(f"  (타임라인 건너뜀: {str(e)[:70]})")
+            timeline = None
+    timed("timeline", ts)
+
+    # 4e) cast portraits — 인물별 대표 프레임 + Gemini 설명. cast.json을 in-place 보강.
+    # portraitsGenerated 마커가 체크포인트 역할 (cast.json이 param 변경으로 날아가면 같이 재생성).
+    ts = time.time()
+    if isinstance(cast, dict) and cast.get("people"):
+        if cast.get("portraitsGenerated"):
+            step("출연진 포트레이트 — 체크포인트 재사용")
+        else:
+            try:
+                from .portraits import build_portraits
+                _progress("portraits", 79, "출연진 포트레이트 생성")
+                cast = build_portraits(
+                    cast, scenes, out_dir,
+                    on_progress=lambda done, total: _progress("portraits", 79 + 3 * done / max(1, total), f"인물 {done}/{total}"),
+                )
+                _save_json(out_dir / "cast.json", cast)
+                made = sum(1 for p in cast["people"] if p.get("thumbnail"))
+                step(f"출연진 포트레이트 — {made}명 생성")
+            except Exception as e:
+                step(f"  (포트레이트 건너뜀: {str(e)[:70]})")
+    timed("portraits", ts)
+
     # 5) shorts recommendation (two-phase, genre-aware) ---------------------------
     ts = time.time()
     rec = _load_json(out_dir / "shorts.json")
@@ -308,10 +349,10 @@ def analyze(
     # genuinely-empty leftovers.
     if not (isinstance(rec, dict) and isinstance(rec.get("shorts"), list) and rec.get("shorts")):
         step("쇼츠 추천…")
-        _progress("recommend", 76, "쇼츠 추천 중")
+        _progress("recommend", 82, "쇼츠 추천 중")
         rec = recommend(
             scenes, n=shorts_n, genre=genre, profile=profile, channels=channels,
-            on_progress=lambda done, total: _progress("recommend", 76 + 16 * done / max(1, total), f"후보 추출 {done}/{total} 구간"),
+            on_progress=lambda done, total: _progress("recommend", 82 + 12 * done / max(1, total), f"후보 추출 {done}/{total} 구간"),
         )
         _save_json(out_dir / "shorts.json", rec)
     else:
@@ -330,6 +371,7 @@ def analyze(
         "transcript": refined,
         "scenes": scenes,
         "cast": cast,
+        "timeline": timeline,
         "shorts": shorts,
         "took_sec": round(time.time() - t0, 1),
         "stage_sec": stage_took,
