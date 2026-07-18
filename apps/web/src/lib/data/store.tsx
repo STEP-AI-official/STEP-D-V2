@@ -547,23 +547,50 @@ export function AppDataProvider({
   );
 
   const retryDistribution = useCallback((clipId: string, channel: DistributionChannel) => {
-    setState((prev) => ({
-      ...prev,
-      clips: prev.clips.map((clip) =>
-        clip.id === clipId
-          ? {
-              ...clip,
-              distributions: clip.distributions.map((d) =>
-                d.channel === channel ? { ...d, status: "published", error: undefined } : d,
-              ),
-            }
-          : clip,
-      ),
-      jobs: prev.jobs.map((j) =>
-        j.episodeId && j.status === "failed" ? { ...j, status: "done", needsAction: false } : j,
-      ),
-    }));
-    if (connectedRef.current) void retryDist(clipId, channel).catch(() => {});
+    // Optimistic: mark ONLY this clip's channel in-flight (pending) — retry queues an
+    // upload, it doesn't instantly publish. The /api/state poll reconciles to the real
+    // published/failed status. Previously this marked EVERY failed job across all episodes
+    // 'done' and hard-set 'published', so the board lied on any server error.
+    setState((prev) => {
+      const target = prev.clips.find((c) => c.id === clipId);
+      return {
+        ...prev,
+        clips: prev.clips.map((clip) =>
+          clip.id === clipId
+            ? {
+                ...clip,
+                distributions: clip.distributions.map((d) =>
+                  d.channel === channel ? { ...d, status: "pending", error: undefined } : d,
+                ),
+              }
+            : clip,
+        ),
+        // Only the retried clip's own episode jobs move to running — never a blanket sweep.
+        jobs: prev.jobs.map((j) =>
+          target && j.episodeId === target.episodeId && j.status === "failed"
+            ? { ...j, status: "running", needsAction: false }
+            : j,
+        ),
+      };
+    });
+    if (connectedRef.current) {
+      void retryDist(clipId, channel).catch(() => {
+        // Roll back so the board reflects reality instead of a phantom success.
+        setState((prev) => ({
+          ...prev,
+          clips: prev.clips.map((clip) =>
+            clip.id === clipId
+              ? {
+                  ...clip,
+                  distributions: clip.distributions.map((d) =>
+                    d.channel === channel ? { ...d, status: "failed", error: "재시도 요청 실패" } : d,
+                  ),
+                }
+              : clip,
+          ),
+        }));
+      });
+    }
   }, []);
 
   const uploadVideo = useCallback(

@@ -532,6 +532,28 @@ app.get("/api/media/:id/analysis", async (c) => {
   return c.json(row);
 });
 
+// ── re-run the AI content pipeline for one media (operator recovery from a failed run) ──
+// A failed analysis was a dead-end in the UI — nothing let the operator re-kick it. Resumes
+// from checkpoints, so a re-run only pays for the stages that never finished.
+app.post("/api/media/:id/analyze", async (c) => {
+  const mediaId = c.req.param("id");
+  const media = await getMedia(mediaId);
+  if (!media) return c.json({ error: "media not found" }, 404);
+  await markContentAnalysisPending(mediaId);
+  const jobId = await enqueue("content.analyze", { mediaId }, { dedupeKey: `content.analyze:${mediaId}` });
+  if (media.episodeId) {
+    const ep = await getEntity<Record<string, unknown>>("episode", media.episodeId);
+    if (ep) {
+      await putEntity("episode", media.episodeId, {
+        ...ep,
+        pipeline: { stage: "analyze", stageStatus: "progress", note: "재분석 대기 중", progress: 0 },
+      });
+    }
+  }
+  // jobId null = a run is already queued/in-flight; treat as success (idempotent).
+  return c.json({ ok: true, queued: jobId != null });
+});
+
 // ── stored scene frames (uploaded by the worker to analysis/{mediaId}/scene_frames/) ──
 // scenes[].frame in the analysis data is "scene_frames/scene_0001.jpg" — the web/Lab
 // fetch it here. 404 for pre-persistence analyses (framesStored !== true).
