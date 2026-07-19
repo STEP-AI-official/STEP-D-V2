@@ -112,6 +112,32 @@ export async function getMediaAnalysis(mediaId: string): Promise<MediaAnalysis> 
   return res.json();
 }
 
+export interface EpisodeCastPerson {
+  name: string;
+  castId: string | null;
+  role?: string;
+  status?: string;
+  matchType?: string;
+  confidence?: number;
+  sceneCount?: number;
+  totalSec?: number;
+  evidence?: string[];
+  appearances?: Array<{ start: number; end: number; scenes: number[]; source: string }>;
+}
+
+export interface EpisodeCastResponse {
+  mediaId: string;
+  people: EpisodeCastPerson[];
+  matchedCount: number;
+  candidateCount: number;
+}
+
+export async function fetchEpisodeCast(mediaId: string): Promise<EpisodeCastResponse> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/cast`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`cast fetch failed (${res.status})`);
+  return res.json();
+}
+
 /** Re-run the AI content pipeline for a media (operator recovery from a failed analysis). */
 export async function reanalyzeMedia(mediaId: string): Promise<{ ok: boolean; queued: boolean }> {
   const res = await fetch(`${API_BASE}/media/${mediaId}/analyze`, { method: "POST" });

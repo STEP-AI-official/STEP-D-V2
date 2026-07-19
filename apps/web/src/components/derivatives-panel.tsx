@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Sparkles,
@@ -12,6 +12,7 @@ import {
   Flame,
   Loader2,
   BookOpen,
+  Users,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -20,9 +21,15 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RecommendationCard } from "@/components/recommendation-card";
 import { NarrativeView } from "./narrative-view";
+import { CastView } from "./cast-view";
 import { PublishDialog } from "@/components/publish-dialog";
 import { useAppData } from "@/lib/data/store";
-import { type AnalysisScene, reanalyzeMedia } from "@/lib/data/api";
+import {
+  type AnalysisScene,
+  type EpisodeCastResponse,
+  fetchEpisodeCast,
+  reanalyzeMedia,
+} from "@/lib/data/api";
 import { useMediaAnalysisPoll } from "@/lib/data/use-media-analysis";
 import { useToast } from "@/components/ui/toast";
 import {
@@ -231,7 +238,7 @@ function scoreColorClass(v: number): string {
   return v >= 70 ? "text-status-done" : v >= 45 ? "text-status-warn" : "text-muted-foreground";
 }
 
-type AnalyzeView = "shorts" | "scenes" | "script" | "narrative";
+type AnalyzeView = "shorts" | "scenes" | "script" | "narrative" | "cast";
 
 function AnalyzeTab({ episodeId }: { episodeId: string }) {
   const { mediaForEpisode } = useAppData();
@@ -240,6 +247,21 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
   const { analysis, loading } = useMediaAnalysisPoll(master?.id);
   const [view, setView] = useState<AnalyzeView>("shorts");
   const [retrying, setRetrying] = useState(false);
+  const [castData, setCastData] = useState<EpisodeCastResponse | null>(null);
+
+  const masterId = master?.id;
+  useEffect(() => {
+    if (!masterId) return;
+    let cancelled = false;
+    fetchEpisodeCast(masterId)
+      .then((d) => {
+        if (!cancelled) setCastData(d);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [masterId]);
 
   async function retryAnalysis() {
     if (!master) return;
@@ -298,6 +320,7 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
     { key: "scenes", label: "장면", icon: Layers, count: scenes.length },
     { key: "script", label: "자막", icon: FileText, count: transcript.length },
     { key: "narrative", label: "서사", icon: BookOpen, count: narrative?.segments?.length ?? 0 },
+    { key: "cast", label: "인물", icon: Users, count: castData?.people?.length ?? 0 },
   ];
 
   return (
@@ -351,6 +374,8 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
       {view === "scenes" && <ScenesView scenes={scenes} />}
 
       {view === "narrative" && <NarrativeView narrative={narrative} />}
+
+      {view === "cast" && <CastView mediaId={master?.id} />}
 
       {view === "script" && (
         <Card className="max-h-[50vh] overflow-y-auto">
