@@ -144,16 +144,23 @@ export async function completeJob(id: string): Promise<void> {
  * Bump a running job's lock timestamp so `requeueStale` doesn't reclaim a job that is
  * still legitimately executing. Long jobs (content.analyze can exceed STALE_LOCK_MS on a
  * long master) MUST heartbeat, or the 30-min sweep hands the row back to another worker
- * mid-run and the two race on the same media work dir. Only touches a row still 'running'
- * and still owned by this lock (its lockedAt is what we last set), so a legitimately
- * reclaimed-and-reassigned job is never resurrected.
+ * mid-run and the two race on the same media work dir.
+ *
+ * `expectedLockedAt` is the lock value THIS worker last wrote (claim time, then whatever the
+ * previous beat returned). The update is guarded on it, so once `requeueStale` reclaims the
+ * row and another worker re-locks it (new lockedAt), a straggler beat from the old owner
+ * matches nothing and is a no-op — it can never resurrect a reassigned job. Returns the new
+ * lock value on success, or null when the row is gone / no longer owned (caller stops beating).
  */
-export async function heartbeatJob(id: string): Promise<void> {
+export async function heartbeatJob(id: string, expectedLockedAt: number): Promise<number | null> {
   const now = Date.now();
-  await getPool().query(
-    `UPDATE job_queue SET lockedAt = $2, updatedAt = $2 WHERE id = $1 AND status = 'running'`,
-    [id, now],
+  const { rows } = await getPool().query(
+    `UPDATE job_queue SET lockedAt = $2, updatedAt = $2
+       WHERE id = $1 AND status = 'running' AND lockedAt = $3
+       RETURNING lockedat AS "lockedAt"`,
+    [id, now, expectedLockedAt],
   );
+  return rows.length ? (rows[0] as { lockedAt: number }).lockedAt : null;
 }
 
 /**

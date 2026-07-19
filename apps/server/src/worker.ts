@@ -328,6 +328,34 @@ async function handleVideoComments(job: Job): Promise<void> {
 
 const YT_DLP = process.env.YT_DLP ?? "yt-dlp";
 
+// Failed-forever downloads keep their .part files (see the catch below) so a retry resumes.
+// But once a job exhausts maxAttempts it's dead and nothing ever deletes its (possibly
+// multi-GB) partial — this sweep reclaims those, mirroring content-pipeline's WORK_ROOT TTL.
+const YT_WORK_ROOT = path.join(os.tmpdir(), "stepd-youtube");
+const YT_WORK_TTL_MS = 48 * 60 * 60 * 1000;
+
+function sweepStaleYoutubeDirs(): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(YT_WORK_ROOT, { withFileTypes: true });
+  } catch {
+    return; // root doesn't exist yet
+  }
+  const cutoff = Date.now() - YT_WORK_TTL_MS;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const dir = path.join(YT_WORK_ROOT, e.name);
+    try {
+      if (fs.statSync(dir).mtimeMs < cutoff) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        console.log(`[worker] youtube.download: swept stale work dir ${e.name}`);
+      }
+    } catch {
+      // raced/locked — next sweep gets it
+    }
+  }
+}
+
 function runYtDlp(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(YT_DLP, args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -364,8 +392,9 @@ async function handleYoutubeDownload(job: Job): Promise<void> {
     }
   };
 
+  sweepStaleYoutubeDirs();
   // Stable per-media dir: a retried job resumes yt-dlp's .part file instead of restarting.
-  const workDir = path.join(os.tmpdir(), "stepd-youtube", mediaId);
+  const workDir = path.join(YT_WORK_ROOT, mediaId);
   fs.mkdirSync(workDir, { recursive: true });
   const outPath = path.join(workDir, "source.mp4");
 
@@ -589,9 +618,23 @@ async function loop(): Promise<void> {
 
     // Keep the lock fresh while the job runs, so requeueStale (30-min sweep) never hands a
     // still-executing long job (content.analyze) to a second worker. 5-min cadence, well
-    // under the 30-min stale window.
+    // under the 30-min stale window. Track the lock value we own so heartbeatJob's guard can
+    // reject a beat once the row has been reclaimed and reassigned (see queue.ts).
+    let ownedLock = job.lockedAt ?? 0;
     const beat = setInterval(() => {
-      void heartbeatJob(job!.id).catch((err) => console.error("[worker] heartbeat failed", err));
+      void heartbeatJob(job!.id, ownedLock)
+        .then((next) => {
+          if (next != null) ownedLock = next;
+          else {
+            // Row reclaimed (loop starvation) and re-locked by another worker — stop beating
+            // so a straggler beat can't keep overwriting the new owner's lock and starve its
+            // own stale-sweep. (completeJob on this run may still flip the row to done; that's
+            // the pre-existing reclaim edge, not made worse here.)
+            clearInterval(beat);
+            console.warn(`[worker] job ${job!.id}: lock lost to another worker — heartbeat stopped`);
+          }
+        })
+        .catch((err) => console.error("[worker] heartbeat failed", err));
     }, 5 * 60 * 1000);
     if (typeof beat.unref === "function") beat.unref();
     try {

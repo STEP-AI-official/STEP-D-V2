@@ -2419,10 +2419,17 @@ const ADMIN_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const GCS_BUCKET = process.env.GCS_BUCKET;
 
 /** Latest analysis media ID from GCS, or null (local dev). */
+// Short TTL, not a permanent memo: a new analysis lands in the bucket while the server runs,
+// so caching the first lookup forever would pin Lab to a stale (or, if the bucket was empty
+// at boot, permanently null) media id until restart. Re-list at most once per TTL window.
 let _cachedMediaId: string | null | undefined = undefined;
+let _cachedMediaAt = 0;
+const LATEST_ANALYSIS_TTL_MS = 60 * 1000;
 async function latestAnalysisId(): Promise<string | null> {
   if (!GCS_BUCKET) return null;
-  if (_cachedMediaId !== undefined) return _cachedMediaId;
+  if (_cachedMediaId !== undefined && Date.now() - _cachedMediaAt < LATEST_ANALYSIS_TTL_MS) {
+    return _cachedMediaId;
+  }
   try {
     const storage = new Storage();
     const [files] = await storage.bucket(GCS_BUCKET).getFiles({
@@ -2435,9 +2442,12 @@ async function latestAnalysisId(): Promise<string | null> {
       if (parts.length >= 2 && parts[1]) dirs.add(parts[1]);
     }
     _cachedMediaId = dirs.size ? [...dirs].sort().pop()! : null;
+    _cachedMediaAt = Date.now();
   } catch (e) {
     console.warn("latestAnalysisId failed:", e);
-    _cachedMediaId = null;
+    // Don't cache the failure long — a transient GCS error shouldn't blank Lab for a full
+    // TTL. Return null now but leave the timestamp stale so the next call re-lists.
+    return _cachedMediaId ?? null;
   }
   return _cachedMediaId;
 }

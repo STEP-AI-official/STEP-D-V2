@@ -131,6 +131,13 @@ def analyze_frames(
         targets = targets[:limit]
     total = len(targets)
     skipped = sum(1 for s in scenes if s.get("frame") and _frame_done(s))
+    # Prior REAL Gemini successes — excludes prefilter's heuristic pre-fill (_prefiltered),
+    # which sets vision_score/on_screen_names without ever calling Vertex. Only a genuine
+    # prior success proves Vertex was reachable, so only this count may suppress the
+    # cold-outage guard below.
+    prior_success = sum(
+        1 for s in scenes if s.get("frame") and _frame_done(s) and not s.get("_prefiltered")
+    )
     if skipped:
         print(f"   (재개: 이미 분석된 {skipped} 장면 스킵)")
     if not total:
@@ -186,12 +193,15 @@ def analyze_frames(
         list(ex.map(work, targets))
 
     # Distinguish a real Vertex outage from a poison frame. Only a COLD start where every
-    # call failed and nothing had ever succeeded (skipped == 0) is treated as an outage
-    # worth failing the job for. If earlier frames already scored (skipped > 0), a remaining
-    # all-fail is a handful of un-analyzable frames — they exhaust MAX_FRAME_ATTEMPTS and get
-    # permanently skipped above, so we must NOT raise (that would dead-letter the whole run).
+    # call failed and Gemini had never once succeeded (prior_success == 0) is treated as an
+    # outage worth failing the job for. If earlier frames already scored (prior_success > 0),
+    # a remaining all-fail is a handful of un-analyzable frames — they exhaust
+    # MAX_FRAME_ATTEMPTS and get permanently skipped above, so we must NOT raise (that would
+    # dead-letter the whole run). Prefiltered heuristic scores don't count as successes:
+    # with VISION_PREFILTER=on they always exist, so gating on `skipped` here would silently
+    # disable outage retry on the common path.
     failures = sum(1 for s in targets if s.get("_frame_error"))
-    if total and failures == total and skipped == 0:
+    if total and failures == total and prior_success == 0:
         raise RuntimeError(f"frame analysis: all {total} Gemini calls failed (Vertex outage?)")
 
     return scenes
