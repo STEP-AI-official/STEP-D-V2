@@ -132,7 +132,12 @@ def refine_segments(segments: list[dict]) -> list[dict]:
                 contents=numbered,
                 config=types.GenerateContentConfig(
                     system_instruction=system,
-                    temperature=0.2,
+                    # Temp 0, like every other stage: subtitle cleanup is a correction task, not
+                    # a creative one, and downstream determinism matters — refined text becomes
+                    # each scene's `text`, which seeds hooks/titles and dialogue-density signals.
+                    # At 0.2 a retry produced different subtitles → different shorts, defeating the
+                    # deterministic DELETE+INSERT board rewire the pipeline relies on.
+                    temperature=0,
                     response_mime_type="application/json",
                     response_schema=RESPONSE_SCHEMA,
                 ),
