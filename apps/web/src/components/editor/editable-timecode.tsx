@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Precise, typeable timecode field (m:ss.d). Commits on blur / Enter, reverts on
@@ -53,6 +53,10 @@ export function TimecodeInput({
 }) {
   const [text, setText] = useState(() => formatTc(value));
   const [editing, setEditing] = useState(false);
+  // Escape sets this before calling blur(); commit() (fired by that blur) reads the flag and
+  // bails. Without it, blur re-parses the still-current `text` closure and commits anyway —
+  // so Escape "reverted" the display but silently persisted the typed value.
+  const cancelRef = useRef(false);
 
   useEffect(() => {
     if (!editing) setText(formatTc(value));
@@ -60,6 +64,11 @@ export function TimecodeInput({
 
   function commit() {
     setEditing(false);
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      setText(formatTc(value)); // Escape: revert, never persist
+      return;
+    }
     const parsed = parseTc(text);
     if (parsed == null) {
       setText(formatTc(value)); // revert
@@ -68,6 +77,13 @@ export function TimecodeInput({
     let v = parsed;
     if (max != null) v = Math.min(v, max);
     v = Math.max(min, v);
+    // No-op guard: a focus→blur with no real edit would otherwise re-commit
+    // parseTc(formatTc(value)), dropping sub-100ms precision (formatTc floors to deciseconds)
+    // and marking the doc dirty + pushing a history entry for a value that didn't change.
+    if (Math.abs(v - value) < 0.05) {
+      setText(formatTc(value));
+      return;
+    }
     onCommit(v);
     setText(formatTc(v));
   }
@@ -81,6 +97,7 @@ export function TimecodeInput({
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
         else if (e.key === "Escape") {
+          cancelRef.current = true;
           setText(formatTc(value));
           setEditing(false);
           (e.target as HTMLInputElement).blur();

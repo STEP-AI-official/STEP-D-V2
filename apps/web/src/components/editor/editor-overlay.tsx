@@ -53,12 +53,16 @@ export function Movable({
 }) {
   // Capture only once movement passes a threshold, so a plain click / double-click is
   // never swallowed by pointer capture (that would block inline-edit / selection).
-  const drag = useRef<{ sx: number; sy: number; active: boolean } | null>(null);
+  // Snapshot the element's position at grab time (ox/oy) alongside the pointer start, so the
+  // drag moves the element by the cursor DELTA — preserving where inside the element the user
+  // grabbed. Positioning purely from the cursor would snap the anchor (center, or top edge for
+  // titles) under the pointer, making a large overlay jump on the activating frame.
+  const drag = useRef<{ sx: number; sy: number; ox: number; oy: number; active: boolean } | null>(null);
 
   function down(e: React.PointerEvent) {
     e.stopPropagation();
     onSelect();
-    drag.current = { sx: e.clientX, sy: e.clientY, active: false };
+    drag.current = { sx: e.clientX, sy: e.clientY, ox: xPct, oy: yPct, active: false };
   }
   function move(e: React.PointerEvent) {
     if (!drag.current || !stageRef.current) return;
@@ -68,8 +72,10 @@ export function Movable({
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     }
     const r = stageRef.current.getBoundingClientRect();
-    let nx = Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100));
-    let ny = Math.max(0, Math.min(100, ((e.clientY - r.top) / r.height) * 100));
+    const dxPct = ((e.clientX - drag.current.sx) / r.width) * 100;
+    const dyPct = ((e.clientY - drag.current.sy) / r.height) * 100;
+    let nx = Math.max(0, Math.min(100, drag.current.ox + dxPct));
+    let ny = Math.max(0, Math.min(100, drag.current.oy + dyPct));
     const g: Guides = {};
     if (!lockX && Math.abs(nx - 50) < SNAP_PCT) {
       nx = 50;

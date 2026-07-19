@@ -216,7 +216,12 @@ export function EditorShell({ clipId }: { clipId: string }) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [undo, redo, canUndo, canRedo]);
-  const applyTpl = (id: EditorState["templateId"]) => setState((s) => applyTemplate(s, id));
+  const applyTpl = (id: EditorState["templateId"]) => {
+    setState((s) => applyTemplate(s, id));
+    // Mark dirty like every other mutator — else the header shows "저장됨" and confirmExport's
+    // `if (!saved)` skips the persist, rendering the pre-template state (template lost).
+    setSaved(false);
+  };
 
   function applyRec(rec: Recommendation) {
     setState((s) => {
@@ -261,6 +266,17 @@ export function EditorShell({ clipId }: { clipId: string }) {
   // runs in segment-relative seconds [0, durationSec]; the video seeks at segStart + r.
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const timelineDuration = duration;
+
+  // The timeline waveform decodes this URL fully in the browser (editor-waveform.tsx). That's
+  // fine for a short baked clip, but a DRAFT previews the whole episode master — decoding a
+  // long master client-side downloads hundreds of MB and can OOM the tab. Feed the waveform a
+  // source only when it's short enough to decode safely; otherwise it renders no waveform
+  // (peaks=null) instead of stalling. (A server-side peaks endpoint is the scale path — §7.4.)
+  const WAVEFORM_MAX_SEC = 300;
+  const waveformUrl =
+    previewingMaster
+      ? (master?.durationSec && master.durationSec <= WAVEFORM_MAX_SEC ? videoUrl : undefined)
+      : videoUrl;
 
   // Track the element's position (master-absolute) to drive the live caption overlay.
   const [videoTime, setVideoTime] = useState(0);
@@ -492,7 +508,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
           duration={timelineDuration}
           startOffset={segStart}
           video={videoEl}
-          videoUrl={videoUrl}
+          videoUrl={waveformUrl}
           tracks={state.tracks}
           onTogglePlay={togglePlay}
         />
