@@ -154,6 +154,13 @@ export function EditorShell({ clipId }: { clipId: string }) {
     }
   }
 
+  // Always-fresh handle to save() for the keydown listener below. The listener isn't
+  // re-bound on every edit (its deps deliberately exclude state), so calling save()
+  // directly would capture a stale `state` and persist an outdated snapshot on Ctrl+S —
+  // silently dropping any non-trim edit (caption/keyword color, title, elements, filters).
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
   // The single expensive render (plan §2.4): everything above was metadata. Persist the
   // latest decisions first so the render (and its revision-hash cache) reflects them.
   async function confirmExport() {
@@ -329,7 +336,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
       const key = e.key.toLowerCase();
       if ((e.ctrlKey || e.metaKey) && key === "s") {
         e.preventDefault();
-        void save();
+        void saveRef.current();
         return;
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return;

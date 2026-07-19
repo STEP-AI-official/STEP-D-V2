@@ -330,8 +330,17 @@ def analyze(
     # 4f) narrative summary — 전체 서사 요약 + 구간별/인물/갈등 분석 (timeline 없어도 refined만으로 동작)
     ts = time.time()
     narrative = _load_json(out_dir / "narrative.json")
-    if isinstance(narrative, dict) and narrative.get("full_summary") and narrative.get("segments"):
-        step(f"서사 요약 — 체크포인트 재사용 ({len(narrative['segments'])} 구간)")
+    # A completed checkpoint has at least one non-empty output. Requiring full_summary AND
+    # segments both truthy re-ran the whole (expensive) stage on every resume whenever the
+    # summary came back empty (Gemini block) or the episode had no timeline blocks (segments
+    # legitimately []). Only a fully-empty result (every Gemini call failed) is worth retrying.
+    if isinstance(narrative, dict) and (
+        narrative.get("full_summary")
+        or narrative.get("segments")
+        or narrative.get("characters")
+        or narrative.get("key_conflicts")
+    ):
+        step(f"서사 요약 — 체크포인트 재사용 ({len(narrative.get('segments') or [])} 구간)")
     else:
         try:
             _progress("narrative", 82, "서사 요약 생성")
