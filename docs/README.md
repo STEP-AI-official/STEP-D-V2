@@ -41,6 +41,7 @@
 |---|---|
 | [step-d-master-build-plan.md](plans/step-d-master-build-plan.md) | **종합 빌드 플랜 (정본)** — 아키텍처·로드맵·갭·착수점 |
 | [pipeline-plan.md](plans/pipeline-plan.md) | AI 파이프라인 청사진 (발명신고서 구성 A~J) |
+| [channel-domain-adaptation.md](plans/channel-domain-adaptation.md) | 채널 도메인 적응 학습 — 숏폼 성과 라벨로 추천 재랭킹(`apply_learned_rerank`) |
 | [context-engine-plan.md](plans/context-engine-plan.md) | 인물·서사 컨텍스트 엔진(CX 트랙) 설계 |
 | [opencut-integration-plan.md](plans/opencut-integration-plan.md) | 검수 에디터 OpenCut 부품 이식 (Phase 1 완료) |
 | [publish-fields-ux-plan.md](plans/publish-fields-ux-plan.md) | 채널별 배포 필수 필드 분리 설계 근거 (프론트 구현 완료) |
