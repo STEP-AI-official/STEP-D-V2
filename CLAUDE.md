@@ -27,7 +27,8 @@ apps/web/      Next.js 16 (App Router) + React 19 + Tailwind v4 + base-ui  → V
 apps/server/   Hono + PostgreSQL(Cloud SQL) + GCS + ffmpeg                 → Cloud Run (stepd-server)
                + src/worker.ts = 별도 워커 프로세스                          → GCE VM (stepd-worker)
 core/          Python AI 파이프라인 (analyze·asr·refine·scenes·vision·names·recommend)
-admin/         STEP D Lab — core/ 분석 결과 검수 도구 (서버 /lab 라우트가 서빙)
+admin/         STEP D Lab — Vite+React SPA. 분석 결과 검수 + 숏폼↔롱폼 매칭
+               → Vercel 독립 배포(stepd-lab). 서버 /lab은 dist/ 서빙(로컬 편의, 빌드 필요)
 apps/api/      ⚠️ 레거시 (구 STEPD, Python FastAPI). 미사용 — 새 코드 금지. 제거 여부 미결정.
 deploy/        배포 스크립트 (deploy-server.ps1 · deploy-web.ps1) + worker-vm.sh 프로비저닝
 docs/          ops(현황·운영) / plans(계획) / reference / research / prototypes / archive
@@ -75,7 +76,9 @@ PATCH /api/clips/:id/editor · /link-video
 GET/POST /api/youtube/*                  # auth(mode=analytics|publish) · oauth/callback · channels ·
                                          # analytics/:id(/daily) · sync · videos · trends · pipeline/run
 GET  /api/queue/stats · POST /api/admin/reset · /api/admin/queue/purge
-GET  /lab · /api/lab/*                   # admin Lab 검수 도구
+GET  /lab · /api/lab/*                   # admin Lab (읽기 무인증)
+POST /api/lab/match · DELETE /api/lab/match/:id   # 숏폼↔롱폼 매칭 — LAB_WRITE_TOKEN 필요
+GET  /api/lab/match/videos/:channelId · /match/export/:channelId  # 매칭 대상·LEARN 데이터셋
 ```
 
 **환경변수** (실제 코드가 읽는 것)
@@ -84,6 +87,7 @@ DATABASE_URL          Cloud SQL 접속 (없으면 DB 초기화 실패)
 GCS_BUCKET            있으면 GCS 모드 / STEPD_STORAGE_DIR  로컬 모드 저장 경로
 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / PUBLIC_URL       YouTube OAuth
 PORT                  Cloud Run 주입(8080). cloudbuild에서 직접 설정 금지 — 예약 변수
+LAB_WRITE_TOKEN       Lab 매칭 쓰기 가드 (Secret Manager: stepd-lab-write-token). 없으면 쓰기 503
 CORE_DIR / CORE_PYTHON                    core/ 파이프라인 위치·파이썬 (워커)
 STT_PROVIDER          기본 gemini (whisper=로컬 GPU 경로, 프로덕션 아님)
 GOOGLE_CLOUD_PROJECT(기본 step-d) / VERTEX_LOCATION(기본 asia-northeast3)   Vertex Gemini
