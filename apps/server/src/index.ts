@@ -60,6 +60,9 @@ import {
   getVideoAnalytics,
   getVideoRetention,
   listVideoComments,
+  upsertShortSourceMap,
+  listShortSourceMaps,
+  deleteShortSourceMap,
   getPool,
   type MediaRow,
   type YouTubeChannel,
@@ -2696,12 +2699,244 @@ app.get("/api/lab/video/:mediaId", async (c) => {
   });
 });
 
-/** Serve the admin frontend locally (in prod it deploys to Vercel separately). */
+// ── Lab: 숏폼 ↔ 롱폼 매칭 ─────────────────────────────────────────────────────
+//
+// A channel's existing shorts carry no record of which longform segment they came from
+// (channel_videos has no parent column, and nothing derives one). An operator supplies the
+// link here; the result is the training input for channel point-profile learning.
+//
+// ⚠️ These are the FIRST write endpoints under /api/lab/*. Everything under /api/* is
+// publicly reachable and has no auth, so writes are gated by a shared secret. Reads stay
+// open, matching the rest of the Lab.
+const LAB_WRITE_TOKEN = process.env.LAB_WRITE_TOKEN ?? "";
+
+/** Returns an error Response when the caller may not write, else null. */
+function labWriteDenied(c: Context) {
+  if (!LAB_WRITE_TOKEN) {
+    return c.json(
+      { error: "lab_write_disabled", message: "LAB_WRITE_TOKEN이 서버에 설정되지 않아 쓰기가 비활성입니다." },
+      503,
+    );
+  }
+  if (c.req.header("x-lab-token") !== LAB_WRITE_TOKEN) {
+    return c.json({ error: "unauthorized", message: "Lab 쓰기 토큰이 올바르지 않습니다." }, 401);
+  }
+  return null;
+}
+
+/** Channels available for matching (name + subscriber count only — no tokens). */
+app.get("/api/lab/match/channels", async (c) => {
+  const channels = await listYouTubeChannels();
+  return c.json({
+    channels: channels.map((ch) => ({
+      channelId: ch.channelId,
+      channelName: ch.channelName,
+      subscribers: ch.subscribers,
+    })),
+  });
+});
+
+/**
+ * Everything the matching screen needs for one channel: its shorts, its candidate source
+ * longforms, and the mappings made so far.
+ *
+ * `isShort = false` is ambiguous (it also means "not yet classified" — shortCheckedAt is
+ * NULL), so duration is used as the tiebreaker: a ≤3min upload is treated as a short.
+ */
+app.get("/api/lab/match/videos/:channelId", async (c) => {
+  const channelId = c.req.param("channelId");
+  const ch = await getYouTubeChannelByChannelId(channelId);
+  if (!ch) return c.json({ error: "channel not found" }, 404);
+
+  const videos = await listChannelVideos(channelId);
+  // node-pg hands back BIGINT columns as strings — coerce so the client can do math.
+  const norm = (v: ChannelVideo) => ({
+    videoId: v.videoId,
+    title: v.title,
+    publishedAt: v.publishedAt,
+    durationSec: Number(v.durationSec) || 0,
+    thumbnail: v.thumbnail,
+    viewCount: Number(v.viewCount) || 0,
+    likeCount: Number(v.likeCount) || 0,
+    commentCount: Number(v.commentCount) || 0,
+    isShort: Boolean(v.isShort),
+  });
+  const isShortish = (v: ChannelVideo) => Boolean(v.isShort) || (Number(v.durationSec) || 0) <= 180;
+
+  return c.json({
+    channelId,
+    channelName: ch.channelName,
+    shorts: videos.filter(isShortish).map(norm),
+    longs: videos.filter((v) => !isShortish(v)).map(norm),
+    maps: await listShortSourceMaps(channelId),
+  });
+});
+
+/** Create/replace one mapping. */
+app.post("/api/lab/match", async (c) => {
+  const denied = labWriteDenied(c);
+  if (denied) return denied;
+
+  const b = await c.req.json<{
+    shortVideoId?: string; channelId?: string; longVideoId?: string;
+    segStart?: number; segEnd?: number; note?: string;
+  }>().catch(() => null);
+  if (!b?.shortVideoId || !b.channelId || !b.longVideoId) {
+    return c.json({ error: "bad_request", message: "shortVideoId, channelId, longVideoId가 필요합니다." }, 400);
+  }
+  const segStart = Number(b.segStart);
+  const segEnd = Number(b.segEnd);
+  if (!isFinite(segStart) || !isFinite(segEnd) || segStart < 0 || segEnd <= segStart) {
+    return c.json({ error: "bad_request", message: "구간이 올바르지 않습니다 (끝 > 시작)." }, 400);
+  }
+  // Both ids must be real uploads on this channel — a typo'd id would silently produce a
+  // pair that can never be resolved back to a video.
+  const [shortV, longV] = await Promise.all([
+    getChannelVideoByVideoId(b.shortVideoId),
+    getChannelVideoByVideoId(b.longVideoId),
+  ]);
+  if (!shortV || shortV.channelId !== b.channelId) {
+    return c.json({ error: "bad_request", message: "숏폼이 이 채널에 없습니다." }, 400);
+  }
+  if (!longV || longV.channelId !== b.channelId) {
+    return c.json({ error: "bad_request", message: "롱폼이 이 채널에 없습니다." }, 400);
+  }
+  const dur = Number(longV.durationSec) || 0;
+  if (dur > 0 && segStart >= dur) {
+    return c.json({ error: "bad_request", message: `시작(${segStart}s)이 롱폼 길이(${dur}s)를 넘습니다.` }, 400);
+  }
+
+  const map = await upsertShortSourceMap({
+    shortVideoId: b.shortVideoId,
+    channelId: b.channelId,
+    longVideoId: b.longVideoId,
+    segStart,
+    segEnd: dur > 0 ? Math.min(segEnd, dur) : segEnd,
+    note: b.note?.trim() || null,
+  });
+  return c.json({ ok: true, map });
+});
+
+app.delete("/api/lab/match/:shortVideoId", async (c) => {
+  const denied = labWriteDenied(c);
+  if (denied) return denied;
+  const removed = await deleteShortSourceMap(c.req.param("shortVideoId"));
+  return c.json({ ok: true, removed });
+});
+
+/**
+ * The LEARN dataset for one channel: every mapped pair, with an AGE-NORMALIZED performance
+ * tier instead of raw views.
+ *
+ * Absolute view counts are forbidden as a performance signal (docs/plans/pipeline-plan.md):
+ * a 3-year-old short and last month's are not comparable — raw views mostly measure age.
+ * So each short is scored against the median of the channel's shorts published within a
+ * ±90-day window of it, and tiered on that ratio.
+ */
+app.get("/api/lab/match/export/:channelId", async (c) => {
+  const channelId = c.req.param("channelId");
+  const ch = await getYouTubeChannelByChannelId(channelId);
+  if (!ch) return c.json({ error: "channel not found" }, 404);
+
+  const videos = await listChannelVideos(channelId);
+  const byId = new Map(videos.map((v) => [v.videoId, v]));
+  const maps = await listShortSourceMaps(channelId);
+
+  const WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+  const shorts = videos.filter((v) => Boolean(v.isShort) || (Number(v.durationSec) || 0) <= 180);
+  const median = (xs: number[]) => {
+    if (!xs.length) return 0;
+    const s = [...xs].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  /** Median views of same-era shorts — the baseline this short is judged against. */
+  const baselineFor = (publishedAt: string): number => {
+    const t = Date.parse(publishedAt);
+    const peers = shorts
+      .filter((v) => Math.abs(Date.parse(v.publishedAt) - t) <= WINDOW_MS)
+      .map((v) => Number(v.viewCount) || 0);
+    return median(peers.length >= 3 ? peers : shorts.map((v) => Number(v.viewCount) || 0));
+  };
+
+  const pairs = maps.map((m) => {
+    const s = byId.get(m.shortVideoId);
+    const l = byId.get(m.longVideoId);
+    const views = Number(s?.viewCount) || 0;
+    const baseline = s ? baselineFor(s.publishedAt) : 0;
+    const ratio = baseline > 0 ? views / baseline : 0;
+    return {
+      pair_id: m.shortVideoId,
+      short: {
+        videoId: m.shortVideoId,
+        title: s?.title ?? null,
+        publishedAt: s?.publishedAt ?? null,
+        views,
+        durationSec: Number(s?.durationSec) || 0,
+      },
+      // Age-fair performance: multiple of the same-era channel median.
+      performance: {
+        baseline_median_views: Math.round(baseline),
+        ratio: Number(ratio.toFixed(3)),
+        tier: ratio >= 2 ? "high" : ratio >= 0.7 ? "mid" : "low",
+      },
+      source: {
+        longVideoId: m.longVideoId,
+        title: l?.title ?? null,
+        durationSec: Number(l?.durationSec) || 0,
+        segStart: m.segStart,
+        segEnd: m.segEnd,
+        segLenSec: Number((m.segEnd - m.segStart).toFixed(2)),
+        // Filled once the longform has been analyzed — the LEARN prompt needs these.
+        transcript_slice: null,
+        scene_summary: null,
+      },
+      note: m.note,
+    };
+  });
+
+  const tally = { high: 0, mid: 0, low: 0 } as Record<string, number>;
+  for (const p of pairs) tally[p.performance.tier]++;
+  return c.json({ channelId, channelName: ch.channelName, count: pairs.length, tally, pairs });
+});
+
+/**
+ * Serve the admin frontend locally (in prod it deploys to Vercel separately).
+ * The Lab is a Vite+React SPA now, so this serves the build output — run
+ * `pnpm --filter @stepd/admin build` first. Falls back to a clear message, not a 404 page,
+ * because "no dist" is a missing build step rather than a broken route.
+ */
 app.get("/lab", (c) => {
   try {
-    return c.html(fs.readFileSync(path.join(ADMIN_DIR, "index.html"), "utf-8"));
+    return c.html(fs.readFileSync(path.join(ADMIN_DIR, "dist", "index.html"), "utf-8"));
   } catch {
-    return c.text("admin/index.html not found", 404);
+    return c.text(
+      "admin이 아직 빌드되지 않았습니다. `pnpm --filter @stepd/admin build` 후 다시 열거나, 개발 중이면 `pnpm --filter @stepd/admin dev`(:4200)를 쓰세요.",
+      503,
+    );
+  }
+});
+
+/**
+ * Static assets for the built Lab SPA. Vite emits root-absolute `/assets/…` URLs (base "/"),
+ * which is what the Vercel deployment needs, so the local /lab route has to serve them from
+ * the same root path. basename() keeps the lookup inside dist/assets.
+ */
+app.get("/assets/:name", (c) => {
+  const name = path.basename(c.req.param("name"));
+  const file = path.join(ADMIN_DIR, "dist", "assets", name);
+  try {
+    const body = fs.readFileSync(file);
+    const type = name.endsWith(".css")
+      ? "text/css"
+      : name.endsWith(".js")
+        ? "text/javascript"
+        : name.endsWith(".map")
+          ? "application/json"
+          : "application/octet-stream";
+    return new Response(new Uint8Array(body), { headers: { "Content-Type": type } });
+  } catch {
+    return c.text("not found", 404);
   }
 });
 

@@ -640,6 +640,70 @@ export async function deleteChannelVideosForChannel(channelId: string): Promise<
   await pool.query("DELETE FROM video_analytics WHERE channelId = $1", [channelId]);
   await pool.query("DELETE FROM video_retention WHERE channelId = $1", [channelId]);
   await pool.query("DELETE FROM video_comments WHERE channelId = $1", [channelId]);
+  // short_source_map is deliberately NOT cleared here — a re-sync that drops and re-adds
+  // the same videoIds must not destroy the operator's hand-made matching work.
+}
+
+// ── 숏폼 ↔ 롱폼 매칭 (short_source_map, migrations/0005) ────────────────────────
+//
+// The channel's existing shorts carry no record of which longform segment they came from,
+// so an operator supplies it in the Lab. This is the input for channel point-profile
+// learning: (롱폼 구간 → 발행 숏폼 → 성과).
+
+export interface ShortSourceMap {
+  shortVideoId: string;
+  channelId: string;
+  longVideoId: string;
+  segStart: number;
+  segEnd: number;
+  note: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const SOURCE_MAP_COLS = `shortvideoid AS "shortVideoId", channelid AS "channelId",
+  longvideoid AS "longVideoId", segstart AS "segStart", segend AS "segEnd", note,
+  createdat AS "createdAt", updatedat AS "updatedAt"`;
+
+/** Create or replace the mapping for one short (re-matching overwrites). */
+export async function upsertShortSourceMap(m: {
+  shortVideoId: string;
+  channelId: string;
+  longVideoId: string;
+  segStart: number;
+  segEnd: number;
+  note?: string | null;
+}): Promise<ShortSourceMap> {
+  const now = Date.now();
+  const { rows } = await pool.query(
+    `INSERT INTO short_source_map (shortVideoId, channelId, longVideoId, segStart, segEnd, note, createdAt, updatedAt)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+     ON CONFLICT (shortVideoId) DO UPDATE SET
+       channelId   = EXCLUDED.channelId,
+       longVideoId = EXCLUDED.longVideoId,
+       segStart    = EXCLUDED.segStart,
+       segEnd      = EXCLUDED.segEnd,
+       note        = EXCLUDED.note,
+       updatedAt   = EXCLUDED.updatedAt
+     RETURNING ${SOURCE_MAP_COLS}`,
+    [m.shortVideoId, m.channelId, m.longVideoId, m.segStart, m.segEnd, m.note ?? null, now],
+  );
+  return rows[0] as ShortSourceMap;
+}
+
+export async function listShortSourceMaps(channelId: string): Promise<ShortSourceMap[]> {
+  const { rows } = await pool.query(
+    `SELECT ${SOURCE_MAP_COLS} FROM short_source_map WHERE channelId = $1 ORDER BY updatedAt DESC`,
+    [channelId],
+  );
+  return rows as ShortSourceMap[];
+}
+
+export async function deleteShortSourceMap(shortVideoId: string): Promise<boolean> {
+  const { rowCount } = await pool.query("DELETE FROM short_source_map WHERE shortVideoId = $1", [
+    shortVideoId,
+  ]);
+  return (rowCount ?? 0) > 0;
 }
 
 export async function insertVideoStat(s: VideoStat): Promise<void> {
