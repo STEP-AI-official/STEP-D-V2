@@ -64,6 +64,41 @@ export const autoAlign = (m: { channelId: string; longVideoId: string; shortVide
     writeInit("POST", m),
   );
 
+export interface BulkPreview {
+  channelId: string;
+  channelName: string;
+  longforms: number;
+  shorts: number;
+  keywordGroups: number;
+  plan: { longVideoId: string; longTitle: string; keywordHits: number; shortVideoIds: string[] }[];
+}
+
+/** 채널 전체 자동 매칭 계획 미리보기 (큐잉하지 않음). */
+export const previewBulk = (channelId: string, limit = 100) =>
+  req<BulkPreview>(`/api/lab/match/auto-bulk/preview/${encodeURIComponent(channelId)}?limit=${limit}`);
+
+export const runBulk = (channelId: string, limit = 100) =>
+  req<{ ok: true; queued: number; deduped: number; shorts: number; etaMinutes: number }>(
+    "/api/lab/match/auto-bulk",
+    writeInit("POST", { channelId, limit }),
+  );
+
+/** 연동된 모든 채널을 한 번에 (channelIds 생략 시 전체). */
+export const runBulkAll = (limitPerChannel = 100) =>
+  req<{
+    ok: true; channels: number; queued: number; etaMinutes: number;
+    results: { channelName: string; queued: number; shorts: number }[];
+  }>("/api/lab/match/auto-bulk/all", writeInit("POST", { limitPerChannel }));
+
+export interface MatchStatus {
+  jobs: { pending: number; running: number; done: number; failed: number };
+  matched: number;
+  auto: number;
+  confirmed: number;
+}
+export const fetchMatchStatus = (channelId: string) =>
+  req<MatchStatus>(`/api/lab/match/status/${encodeURIComponent(channelId)}`);
+
 export const deleteMatch = (shortVideoId: string) =>
   req<{ ok: true }>(`/api/lab/match/${encodeURIComponent(shortVideoId)}`, writeInit("DELETE"));
 

@@ -2879,6 +2879,203 @@ app.delete("/api/lab/match/:shortVideoId", async (c) => {
   return c.json({ ok: true, removed });
 });
 
+// ── 채널 일괄 자동 매칭 ────────────────────────────────────────────────────────
+//
+// 미매칭 숏폼마다 "어느 롱폼에서 나왔을까"를 추정해 롱폼 단위로 묶고 match.align을 건다.
+// 추정이 틀려도 손해가 없다 — 오디오 정렬이 일치도 0.8 미만을 거부하므로, 잘못된 짝은
+// 저장되지 않고 "걸러진 건수"로만 남는다. 그래서 넓게 넣고 정렬이 판정하게 둔다.
+
+/** 제목에서 의미 토큰 추출 (한글 2자+ / 영문 3자+). 해시태그·상투어는 버린다. */
+const TITLE_STOPWORDS = new Set([
+  "쇼츠", "하하", "영상", "공개", "이번", "우리", "eng", "sub", "shorts", "feat", "with", "the",
+]);
+function titleTokens(title: string): Set<string> {
+  const cleaned = title.replace(/#\S+/g, " ");
+  const out = new Set<string>();
+  for (const m of cleaned.matchAll(/[가-힣]{2,}|[A-Za-z]{3,}/g)) {
+    const w = m[0].toLowerCase();
+    if (!TITLE_STOPWORDS.has(w)) out.add(w);
+  }
+  return out;
+}
+
+const BULK_MAX_DAYS = 180;      // 숏폼은 롱폼 게시 후 이 기간 안에 나온다고 본다
+const BULK_MIN_LONG_SEC = 240;  // 4분 미만은 원본 롱폼으로 보지 않는다
+const BULK_MAX_SHORTS_PER_JOB = 14;
+
+/**
+ * 채널의 미매칭 숏폼을 롱폼별로 묶은 계획을 만든다. queue=false면 계획만 돌려준다(미리보기).
+ * 점수 = 제목 키워드 겹침(가중 10) − 게시일 간격(가중 0.02), 무겹침은 −6 페널티.
+ */
+async function planBulkMatch(channelId: string, limitLongforms: number) {
+  const videos = await listChannelVideos(channelId);
+  const isShortish = (v: ChannelVideo) => Boolean(v.isShort) || (Number(v.durationSec) || 0) <= 180;
+  const maps = await listShortSourceMaps(channelId);
+  const already = new Set(maps.map((m) => m.shortVideoId));
+
+  const longs = videos.filter((v) => !isShortish(v) && (Number(v.durationSec) || 0) >= BULK_MIN_LONG_SEC);
+  const shorts = videos.filter(
+    (v) => isShortish(v) && !already.has(v.videoId) && (Number(v.durationSec) || 0) >= 8,
+  );
+  const longTok = new Map(longs.map((l) => [l.videoId, titleTokens(l.title)]));
+
+  const groups = new Map<string, { long: ChannelVideo; shorts: ChannelVideo[]; keywordHits: number }>();
+  for (const s of shorts) {
+    const st = titleTokens(s.title);
+    const sp = Date.parse(s.publishedAt);
+    let best: { score: number; long: ChannelVideo; overlap: number } | null = null;
+    for (const l of longs) {
+      const gapDays = (sp - Date.parse(l.publishedAt)) / 86_400_000;
+      if (!(gapDays >= 0 && gapDays <= BULK_MAX_DAYS)) continue;
+      let overlap = 0;
+      for (const w of longTok.get(l.videoId)!) if (st.has(w)) overlap++;
+      const score = overlap * 10 - gapDays * 0.02 - (overlap === 0 ? 6 : 0);
+      if (!best || score > best.score) best = { score, long: l, overlap };
+    }
+    if (!best) continue;
+    const g = groups.get(best.long.videoId) ?? { long: best.long, shorts: [], keywordHits: 0 };
+    g.shorts.push(s);
+    if (best.overlap > 0) g.keywordHits++;
+    groups.set(best.long.videoId, g);
+  }
+
+  // 키워드가 겹친 그룹부터 — 적중률이 높아 먼저 처리될수록 데이터가 빨리 쌓인다.
+  return [...groups.values()]
+    .sort((a, b) => b.keywordHits - a.keywordHits || b.shorts.length - a.shorts.length)
+    .slice(0, limitLongforms)
+    .map((g) => ({
+      longVideoId: g.long.videoId,
+      longTitle: g.long.title,
+      publishedAt: g.long.publishedAt,
+      durationSec: Number(g.long.durationSec) || 0,
+      keywordHits: g.keywordHits,
+      shortVideoIds: g.shorts.slice(0, BULK_MAX_SHORTS_PER_JOB).map((s) => s.videoId),
+    }));
+}
+
+/** 계획 미리보기 (쓰기 아님 — 토큰 불필요). */
+app.get("/api/lab/match/auto-bulk/preview/:channelId", async (c) => {
+  const channelId = c.req.param("channelId");
+  const ch = await getYouTubeChannelByChannelId(channelId);
+  if (!ch) return c.json({ error: "channel not found" }, 404);
+  const limit = Math.min(Math.max(Number(c.req.query("limit")) || 100, 1), 300);
+  const plan = await planBulkMatch(channelId, limit);
+  return c.json({
+    channelId,
+    channelName: ch.channelName,
+    longforms: plan.length,
+    shorts: plan.reduce((n, g) => n + g.shortVideoIds.length, 0),
+    keywordGroups: plan.filter((g) => g.keywordHits > 0).length,
+    plan: plan.slice(0, 60),
+  });
+});
+
+/** 계획대로 큐잉. 잡마다 시차를 둬 업로드 분석(같은 레인)이 밀리지 않게 한다. */
+app.post("/api/lab/match/auto-bulk", async (c) => {
+  const denied = labWriteDenied(c);
+  if (denied) return denied;
+  const b = await c.req.json<{ channelId?: string; limit?: number; staggerMs?: number }>().catch(() => null);
+  if (!b?.channelId) return c.json({ error: "bad_request", message: "channelId가 필요합니다." }, 400);
+  const ch = await getYouTubeChannelByChannelId(b.channelId);
+  if (!ch) return c.json({ error: "channel not found" }, 404);
+
+  const limit = Math.min(Math.max(Number(b.limit) || 100, 1), 300);
+  const stagger = Math.min(Math.max(Number(b.staggerMs) || 240_000, 0), 30 * 60_000);
+  const plan = await planBulkMatch(b.channelId, limit);
+
+  let queued = 0;
+  let deduped = 0;
+  for (let i = 0; i < plan.length; i++) {
+    const g = plan[i];
+    const id = await enqueue(
+      "match.align",
+      { channelId: b.channelId, longVideoId: g.longVideoId, shortVideoIds: g.shortVideoIds },
+      { dedupeKey: `match.align:${g.longVideoId}`, delayMs: i * stagger },
+    );
+    if (id) queued++;
+    else deduped++; // 이미 대기/실행 중인 롱폼 — 정상
+  }
+  return c.json({
+    ok: true,
+    queued,
+    deduped,
+    shorts: plan.reduce((n, g) => n + g.shortVideoIds.length, 0),
+    etaMinutes: Math.round((plan.length * stagger) / 60_000),
+  });
+});
+
+/**
+ * 여러 채널을 한 번에. 채널을 넘기지 않으면 연동된 전 채널이 대상이다.
+ * 시차는 채널을 가로질러 누적한다 — 채널마다 0부터 시작하면 결국 동시에 몰린다.
+ */
+app.post("/api/lab/match/auto-bulk/all", async (c) => {
+  const denied = labWriteDenied(c);
+  if (denied) return denied;
+  const b = await c.req.json<{ channelIds?: string[]; limitPerChannel?: number; staggerMs?: number }>()
+    .catch(() => null);
+
+  const all = await listYouTubeChannels();
+  const targets = b?.channelIds?.length
+    ? all.filter((ch) => b.channelIds!.includes(ch.channelId))
+    : all;
+  if (!targets.length) return c.json({ error: "bad_request", message: "대상 채널이 없습니다." }, 400);
+
+  const limit = Math.min(Math.max(Number(b?.limitPerChannel) || 100, 1), 300);
+  const stagger = Math.min(Math.max(Number(b?.staggerMs) || 240_000, 0), 30 * 60_000);
+
+  let slot = 0; // 채널을 가로지르는 전역 시차 슬롯
+  const results: { channelId: string; channelName: string; queued: number; deduped: number; shorts: number }[] = [];
+  for (const ch of targets) {
+    const plan = await planBulkMatch(ch.channelId, limit);
+    let queued = 0;
+    let deduped = 0;
+    for (const g of plan) {
+      const id = await enqueue(
+        "match.align",
+        { channelId: ch.channelId, longVideoId: g.longVideoId, shortVideoIds: g.shortVideoIds },
+        { dedupeKey: `match.align:${g.longVideoId}`, delayMs: slot * stagger },
+      );
+      if (id) { queued++; slot++; } else deduped++;
+    }
+    results.push({
+      channelId: ch.channelId,
+      channelName: ch.channelName,
+      queued,
+      deduped,
+      shorts: plan.reduce((n, g) => n + g.shortVideoIds.length, 0),
+    });
+  }
+  const totalQueued = results.reduce((n, r) => n + r.queued, 0);
+  return c.json({
+    ok: true,
+    channels: results.length,
+    queued: totalQueued,
+    etaMinutes: Math.round((totalQueued * stagger) / 60_000),
+    results,
+  });
+});
+
+/** 진행 상황 — Lab이 폴링해 보여준다. */
+app.get("/api/lab/match/status/:channelId", async (c) => {
+  const channelId = c.req.param("channelId");
+  const { rows } = await getPool().query<{ status: string; n: number }>(
+    `SELECT status, COUNT(*)::int AS n FROM job_queue
+      WHERE type = 'match.align' AND payload->>'channelId' = $1
+      GROUP BY status`,
+    [channelId],
+  );
+  const by: Record<string, number> = {};
+  for (const r of rows) by[r.status] = Number(r.n);
+  const maps = await listShortSourceMaps(channelId);
+  return c.json({
+    channelId,
+    jobs: { pending: by.pending ?? 0, running: by.running ?? 0, done: by.done ?? 0, failed: by.failed ?? 0 },
+    matched: maps.length,
+    auto: maps.filter((m) => m.source === "auto").length,
+    confirmed: maps.filter((m) => m.confirmedAt).length,
+  });
+});
+
 /**
  * The LEARN dataset for one channel: every mapped pair, with an AGE-NORMALIZED performance
  * tier instead of raw views.

@@ -2,12 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   autoAlign,
   deleteMatch,
+  fetchMatchStatus,
+  previewBulk,
+  runBulk,
+  runBulkAll,
   fetchMatchChannels,
   fetchMatchData,
   getToken,
   saveMatch,
   setToken,
 } from "../api";
+import type { MatchStatus } from "../api";
 import type { LabChannel, LabMatchData, LabSourceMap } from "../types";
 import { fmtDur, fmtLong, nfmt, parseTime } from "../util";
 
@@ -117,6 +122,8 @@ export default function MatchTab() {
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [aligning, setAligning] = useState(false);
+  const [bulking, setBulking] = useState(false);
+  const [status, setStatus] = useState<MatchStatus | null>(null);
   const [token, setTok] = useState(getToken());
 
   const longPlayer = useRef<YTPlayer | null>(null);
@@ -329,6 +336,80 @@ export default function MatchTab() {
     }
   }
 
+  // ── 일괄 자동 매칭 ─────────────────────────────────────────────────────────
+  // 미매칭 숏폼을 제목 키워드·게시일로 롱폼에 배정해 한 번에 큐잉한다. 배정이 틀려도
+  // 오디오 정렬이 거부하므로 저장되지 않는다 — 그래서 넓게 넣고 정렬이 판정하게 둔다.
+
+  async function onPreviewBulk() {
+    if (!channelId) return;
+    setBulking(true);
+    try {
+      const p = await previewBulk(channelId);
+      const ok = window.confirm(
+        `${p.channelName}\n\n` +
+          `롱폼 ${p.longforms}편 · 숏폼 ${p.shorts}개를 자동 매칭합니다.\n` +
+          `(제목 키워드가 겹치는 그룹 ${p.keywordGroups}편 — 적중률이 높아 먼저 처리됩니다)\n\n` +
+          `잡은 4분 간격으로 들어가 업로드 분석을 막지 않습니다.\n` +
+          `예상 소요 ${Math.round((p.longforms * 4) / 60)}시간. 진행할까요?`,
+      );
+      if (!ok) return;
+      const r = await runBulk(channelId, p.longforms);
+      setMsg({
+        kind: "ok",
+        text: `${r.queued}편 큐잉 (숏폼 ${r.shorts}개)${r.deduped ? ` · ${r.deduped}편은 이미 대기 중` : ""} · 예상 ${r.etaMinutes}분`,
+      });
+      void refreshStatus();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBulking(false);
+    }
+  }
+
+  async function onBulkAll() {
+    if (!window.confirm("연동된 모든 채널에 대해 자동 매칭을 겁니다. 진행할까요?")) return;
+    setBulking(true);
+    try {
+      const r = await runBulkAll();
+      const lines = r.results.filter((x) => x.queued).map((x) => `${x.channelName} ${x.queued}편`);
+      setMsg({
+        kind: "ok",
+        text: `채널 ${r.channels}곳 · 총 ${r.queued}편 큐잉 (예상 ${Math.round(r.etaMinutes / 60)}시간) — ${lines.join(", ")}`,
+      });
+      void refreshStatus();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBulking(false);
+    }
+  }
+
+  const refreshStatus = useCallback(async () => {
+    if (!channelId) return;
+    try {
+      setStatus(await fetchMatchStatus(channelId));
+    } catch {
+      /* 상태는 부가 정보 — 실패해도 화면을 막지 않는다 */
+    }
+  }, [channelId]);
+
+  // 잡이 남아 있는 동안만 폴링한다(끝나면 멈춰 불필요한 요청을 만들지 않는다).
+  useEffect(() => {
+    void refreshStatus();
+    const t = window.setInterval(() => {
+      void refreshStatus();
+    }, 30_000);
+    return () => window.clearInterval(t);
+  }, [refreshStatus]);
+
+  // 잡이 진행되는 동안 매칭 결과도 따라 갱신 — 사용자가 새로고침하지 않아도 채워진다.
+  const busy = (status?.jobs.pending ?? 0) + (status?.jobs.running ?? 0) > 0;
+  useEffect(() => {
+    if (!busy || !channelId) return;
+    const t = window.setInterval(() => reload(channelId), 60_000);
+    return () => window.clearInterval(t);
+  }, [busy, channelId, reload]);
+
   const totalMapped = data?.maps.length ?? 0;
 
   return (
@@ -346,6 +427,18 @@ export default function MatchTab() {
           이 채널 누적 매칭 <b className="m-picked">{totalMapped}</b>건
           {data ? ` · 롱폼 ${data.longs.length} · 숏폼 ${data.shorts.length}` : ""}
         </span>
+        <button onClick={onPreviewBulk} disabled={!channelId || bulking}>
+          ⚡ 채널 전체 자동 매칭
+        </button>
+        <button onClick={onBulkAll} disabled={bulking || !token} title="연동된 모든 채널을 한 번에">
+          ⚡⚡ 전 채널
+        </button>
+        {status && (
+          <span className="m-msg">
+            대기 {status.jobs.pending} · 실행 {status.jobs.running} · 완료 {status.jobs.done}
+            {status.jobs.failed ? ` · 실패 ${status.jobs.failed}` : ""}
+          </span>
+        )}
         {/* 토큰은 빌드에 주입돼 있다. 비어 있을 때만(=env 없이 빌드된 경우) 수동 입력을 노출. */}
         {!token && (
           <input
