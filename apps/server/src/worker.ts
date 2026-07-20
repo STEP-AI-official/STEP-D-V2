@@ -78,7 +78,9 @@ const TICK_INTERVAL_MS = 15 * 60 * 1000;
  * jobs, and vice versa. Unset / "all" keeps the legacy single worker that drains everything.
  */
 const JOB_LANES: Record<"content" | "youtube", JobType[]> = {
-  content: ["content.analyze", "youtube.download"],
+  // match.align도 content 레인 — 파이썬·ffmpeg로 오디오를 돌리는 무거운 잡이라
+  // YouTube API 레인(짧고 쿼터 위주)에 섞으면 그쪽을 막는다.
+  content: ["content.analyze", "youtube.download", "match.align"],
   youtube: ["channel.analyze", "video.analyze", "video.hotwatch", "video.comments", "distribution.publish"],
 };
 const WORKER_JOBS = (process.env.WORKER_JOBS ?? "all").trim().toLowerCase();
