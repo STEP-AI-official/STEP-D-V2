@@ -3055,6 +3055,43 @@ app.post("/api/lab/match/auto-bulk/all", async (c) => {
   });
 });
 
+/**
+ * 전 채널 현황 한 장 — 어디를 더 돌려야 하는지 보이게 한다.
+ * 채널마다 숏폼 총계·매칭·미확인(auto)·남은 수와 그 채널의 잡 상태를 함께 준다.
+ */
+app.get("/api/lab/match/overview", async (c) => {
+  const channels = await listYouTubeChannels();
+  const { rows: jobRows } = await getPool().query<{ channelid: string; status: string; n: number }>(
+    `SELECT payload->>'channelId' AS channelid, status, COUNT(*)::int AS n
+       FROM job_queue WHERE type = 'match.align'
+      GROUP BY 1, 2`,
+  );
+
+  const out = [];
+  for (const ch of channels) {
+    const videos = await listChannelVideos(ch.channelId);
+    const isShortish = (v: ChannelVideo) => Boolean(v.isShort) || (Number(v.durationSec) || 0) <= 180;
+    const shorts = videos.filter(isShortish);
+    const longs = videos.filter((v) => !isShortish(v));
+    const maps = await listShortSourceMaps(ch.channelId);
+    const jobs = { pending: 0, running: 0, done: 0, failed: 0 } as Record<string, number>;
+    for (const r of jobRows) if (r.channelid === ch.channelId) jobs[r.status] = Number(r.n);
+    out.push({
+      channelId: ch.channelId,
+      channelName: ch.channelName,
+      subscribers: Number(ch.subscribers) || 0,
+      longs: longs.length,
+      shorts: shorts.length,
+      matched: maps.length,
+      auto: maps.filter((m) => m.source === "auto" && !m.confirmedAt).length,
+      remaining: Math.max(0, shorts.length - maps.length),
+      jobs,
+    });
+  }
+  out.sort((a, b) => b.matched - a.matched || b.shorts - a.shorts);
+  return c.json({ channels: out });
+});
+
 /** 진행 상황 — Lab이 폴링해 보여준다. */
 app.get("/api/lab/match/status/:channelId", async (c) => {
   const channelId = c.req.param("channelId");

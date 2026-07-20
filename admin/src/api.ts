@@ -102,8 +102,34 @@ export const fetchMatchStatus = (channelId: string) =>
 export const deleteMatch = (shortVideoId: string) =>
   req<{ ok: true }>(`/api/lab/match/${encodeURIComponent(shortVideoId)}`, writeInit("DELETE"));
 
+export interface LearnPair {
+  pair_id: string;
+  short: { videoId: string; title: string | null; publishedAt: string | null; views: number; durationSec: number };
+  performance: { baseline_median_views: number; ratio: number; tier: "high" | "mid" | "low" };
+  source: {
+    longVideoId: string; title: string | null; durationSec: number;
+    segStart: number; segEnd: number; segLenSec: number;
+    transcript_slice: string | null; scene_summary: string | null;
+  };
+  note: string | null;
+}
+
 /** LEARN 입력 미리보기/내보내기 — 매칭된 쌍 + 채널 기준 상대 성과 티어. */
 export const fetchMatchExport = (channelId: string) =>
-  req<{ channelId: string; channelName: string; pairs: unknown[] }>(
+  req<{ channelId: string; channelName: string; count: number; tally: Record<string, number>; pairs: LearnPair[] }>(
     `/api/lab/match/export/${encodeURIComponent(channelId)}`,
   );
+
+export interface OverviewChannel {
+  channelId: string;
+  channelName: string;
+  subscribers: number;
+  longs: number;
+  shorts: number;
+  matched: number;
+  auto: number;
+  remaining: number;
+  jobs: { pending: number; running: number; done: number; failed: number };
+}
+export const fetchOverview = () =>
+  req<{ channels: OverviewChannel[] }>("/api/lab/match/overview").then((r) => r.channels);
