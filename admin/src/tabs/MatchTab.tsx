@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  autoAlign,
   deleteMatch,
   fetchMatchChannels,
   fetchMatchData,
@@ -115,6 +116,7 @@ export default function MatchTab() {
   const [picked, setPicked] = useState<Record<string, Draft>>({});
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [aligning, setAligning] = useState(false);
   const [token, setTok] = useState(getToken());
 
   const longPlayer = useRef<YTPlayer | null>(null);
@@ -292,6 +294,39 @@ export default function MatchTab() {
     reload(channelId);
   }
 
+  /**
+   * 선택한 숏폼들의 구간을 워커가 오디오 정렬로 찾게 한다. 롱폼 오디오를 받아 대조하므로
+   * 수 분 걸린다 — 큐잉만 하고 결과는 주기적 재조회로 확인한다.
+   */
+  async function runAutoAlign() {
+    if (!long || !pickedIds.length) return;
+    const target = long.videoId;
+    const ids = [...pickedIds];
+    setAligning(true);
+    setMsg({ kind: "ok", text: "구간 추적을 요청했습니다. 롱폼 오디오를 받아 대조하므로 몇 분 걸립니다…" });
+    try {
+      await autoAlign({ channelId, longVideoId: target, shortVideoIds: ids });
+      // 워커가 한 건씩 채워 넣는다. 20초 간격으로 최대 5분 재조회.
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 20_000));
+        const fresh = await fetchMatchData(channelId);
+        setData(fresh);
+        const filled = fresh.maps.filter(
+          (m) => m.longVideoId === target && ids.includes(m.shortVideoId),
+        );
+        if (filled.length >= ids.length) {
+          setMsg({ kind: "ok", text: `${filled.length}건 구간을 찾았습니다. 값을 확인하고 저장하세요.` });
+          return;
+        }
+      }
+      setMsg({ kind: "err", text: "아직 진행 중입니다 — 잠시 후 롱폼을 다시 열어 확인하세요." });
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setAligning(false);
+    }
+  }
+
   const totalMapped = data?.maps.length ?? 0;
 
   return (
@@ -309,9 +344,10 @@ export default function MatchTab() {
           이 채널 누적 매칭 <b className="m-picked">{totalMapped}</b>건
           {data ? ` · 롱폼 ${data.longs.length} · 숏폼 ${data.shorts.length}` : ""}
         </span>
+        {/* 토큰은 빌드에 주입돼 있다. 비어 있을 때만(=env 없이 빌드된 경우) 수동 입력을 노출. */}
         {!token && (
           <input
-            placeholder="쓰기 토큰 입력"
+            placeholder="쓰기 토큰"
             onBlur={(e) => {
               if (!e.target.value.trim()) return;
               setToken(e.target.value);
@@ -322,11 +358,6 @@ export default function MatchTab() {
       </div>
 
       {err && <div className="m-msg err" style={{ marginBottom: 10 }}>불러오기 실패: {err}</div>}
-      {!token && (
-        <div className="m-msg err" style={{ marginBottom: 10 }}>
-          저장하려면 쓰기 토큰이 필요합니다 (서버 LAB_WRITE_TOKEN 값).
-        </div>
-      )}
 
       <div className="m-wrap">
         {/* 1단계: 롱폼 고르기 */}
@@ -449,6 +480,11 @@ export default function MatchTab() {
                       <div key={id} className={`m-row${st.ok ? " ok" : ""}`}>
                         <div className="m-row-h">
                           <span className="m-row-t">{s?.title ?? id}</span>
+                          {other?.source === "auto" && !other.confirmedAt && (
+                            <span className="m-auto" title="오디오 정렬 자동 추정 — 값을 확인하고 저장하면 확정됩니다">
+                              🎯 자동 추정{other.confidence ? ` ${other.confidence.toFixed(1)}x` : ""}
+                            </span>
+                          )}
                           <span className="m-row-v">조회 {nfmt(s?.viewCount ?? 0)}</span>
                           <button className="cap ghost" onClick={() => toggle(id)}>
                             선택 해제
@@ -507,6 +543,14 @@ export default function MatchTab() {
               <div className="m-actions">
                 <button className="save" disabled={!validCount || saving || !token} onClick={saveAll}>
                   {saving ? "저장 중…" : `선택 ${validCount}건 저장`}
+                </button>
+                <button
+                  className="cap"
+                  disabled={!pickedIds.length || aligning || !token}
+                  onClick={runAutoAlign}
+                  title="선택한 숏폼의 오디오를 롱폼과 대조해 시작 지점을 자동으로 찾습니다"
+                >
+                  {aligning ? "추적 중… (수 분)" : `🎯 선택 ${pickedIds.length}건 구간 자동 추적`}
                 </button>
                 {msg && <span className={`m-msg ${msg.kind}`}>{msg.text}</span>}
               </div>

@@ -117,6 +117,12 @@ export interface LabSourceMap {
   segStart: number;
   segEnd: number;
   note: string | null;
+  /** 'manual' = 사람이 찍음 · 'auto' = 오디오 정렬 추정 (미확인) */
+  source: "manual" | "auto";
+  /** auto일 때 정렬 신뢰도(peak ratio). 높을수록 확실. */
+  confidence: number | null;
+  /** 자동 추정을 사람이 확인한 시각. null이면 검수 전. */
+  confirmedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }

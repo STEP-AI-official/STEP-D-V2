@@ -7,11 +7,17 @@ export const API = new URLSearchParams(location.search).get("api") || "";
 
 /**
  * Write token for the mapping endpoints. /api/lab/* is publicly reachable and has no auth,
- * so writes are gated by a shared secret the server holds in LAB_WRITE_TOKEN. Kept in
- * localStorage so it's entered once per browser.
+ * so writes carry a shared secret the server holds in LAB_WRITE_TOKEN.
+ *
+ * Baked in at build time (VITE_LAB_TOKEN) so the operator never types it. Note what this
+ * does and doesn't buy: it stops drive-by/automated writes, but anyone who can LOAD this
+ * page can read the token out of the bundle — the page itself must be gated by Vercel
+ * Deployment Protection for that to matter. localStorage still wins if set, so a build
+ * without the env var can be unblocked by hand.
  */
 const TOKEN_KEY = "stepd-lab-token";
-export const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
+const BUILT_IN_TOKEN = (import.meta.env.VITE_LAB_TOKEN as string | undefined) ?? "";
+export const getToken = () => localStorage.getItem(TOKEN_KEY) || BUILT_IN_TOKEN;
 export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t.trim());
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -50,6 +56,13 @@ export const saveMatch = (m: {
   segEnd: number;
   note?: string;
 }) => req<{ ok: true; map: LabSourceMap }>("/api/lab/match", writeInit("POST", m));
+
+/** 선택한 숏폼들의 구간을 오디오 정렬로 자동 추적 (워커 잡 큐잉 — 결과는 재조회로 확인). */
+export const autoAlign = (m: { channelId: string; longVideoId: string; shortVideoIds: string[] }) =>
+  req<{ queued: boolean; alreadyPending: boolean; count: number }>(
+    "/api/lab/match/auto",
+    writeInit("POST", m),
+  );
 
 export const deleteMatch = (shortVideoId: string) =>
   req<{ ok: true }>(`/api/lab/match/${encodeURIComponent(shortVideoId)}`, writeInit("DELETE"));

@@ -161,6 +161,9 @@ video { width: 100%; border-radius: 10px; background: #000; }
 .m-cand .warnq { color: var(--warn); font-weight: 600; }
 /* 롱폼 게시일 ±2주 안에 나온 숏폼 — 같은 회차에서 잘렸을 가능성이 높은 후보 */
 .m-cand .near { color: var(--accent); font-weight: 700; }
+/* 오디오 정렬로 자동 추정된 구간 — 사람이 확인해 저장하기 전까지 표시 */
+.m-auto { font-size: 10px; padding: 2px 8px; border-radius: 20px;
+  background: #2a2410; color: var(--warn); font-weight: 700; white-space: nowrap; }
 .m-col { min-width: 0; }
 .m-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 220px); overflow-y: auto; padding-right: 4px; }
 .m-item { display: flex; gap: 10px; padding: 8px; border-radius: 10px; cursor: pointer;

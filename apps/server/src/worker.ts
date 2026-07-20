@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   initDb,
   listYouTubeChannels,
@@ -33,6 +34,7 @@ import {
   getMedia,
   updateMediaSource,
   markContentAnalysisPending,
+  upsertShortSourceMap,
   type YouTubeChannel,
 } from "./db-pg.ts";
 import { probe, captureThumbnail } from "./ffmpeg.ts";
@@ -145,6 +147,7 @@ async function handle(job: Job): Promise<FollowUp | void> {
     case "distribution.publish": return handleDistributionPublish(job);
     case "content.analyze": { await runContentAnalyze(String(job.payload.mediaId ?? "")); return; }
     case "youtube.download": return handleYoutubeDownload(job);
+    case "match.align": return handleMatchAlign(job);
     default:
       throw new Error(`unknown job type: ${(job as Job).type}`);
   }
@@ -469,6 +472,118 @@ async function handleYoutubeDownload(job: Job): Promise<void> {
   } catch (err) {
     await setEpisodeNote("YouTube 다운로드 실패 — 자동 재시도 대기", "error", 0).catch(() => {});
     throw err;
+  }
+}
+
+// ── match.align — 숏폼이 롱폼의 어느 구간에서 나왔는지 오디오로 추적 ────────────────
+//
+// 롱폼 하나에서 숏폼이 10개 넘게 나오는 일이 흔해서 구간을 전부 손으로 찍는 건 비현실적이다.
+// 숏폼은 롱폼 오디오를 그대로 잘라 쓰므로, core/align.py 가 스펙트로그램 상호상관으로 시작
+// 지점을 찾아낸다(Gemini 불필요, CPU만). 롱폼 오디오는 한 번만 받아 재사용한다.
+//
+// 자동 결과는 source='auto' + confidence 로 저장하고 confirmedAt 은 비워 둔다 — 틀린 구간이
+// 사람이 찍은 것과 구분 없이 섞이면 학습 데이터가 조용히 오염되기 때문이다. Lab에서 사람이
+// 확인하면 그때 manual 로 승격된다.
+
+const ALIGN_ROOT = path.join(os.tmpdir(), "stepd-align");
+// content-pipeline과 같은 파이썬/루트를 쓴다 (워커 VM은 CORE_PYTHON을 env로 지정).
+const CORE_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const CORE_PYTHON_BIN =
+  process.env.CORE_PYTHON || path.join(CORE_REPO_ROOT, "core", ".venv310", "Scripts", "python.exe");
+
+function ytAudioUrl(videoId: string): string {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+/** yt-dlp로 오디오만 받는다 (영상 트랙은 정렬에 불필요 — 다운로드 시간·용량을 크게 줄인다). */
+async function fetchAudio(videoId: string, dest: string): Promise<void> {
+  if (fs.existsSync(dest) && fs.statSync(dest).size > 0) return; // 롱폼 재사용
+  await runYtDlp(["-q", "--no-playlist", "-f", "bestaudio/best", "-o", dest, ytAudioUrl(videoId)]);
+  if (!fs.existsSync(dest)) throw new Error(`오디오를 받지 못했습니다: ${videoId}`);
+}
+
+interface AlignOut {
+  ok: boolean;
+  offset_sec: number;
+  duration_sec: number;
+  score: number;
+  peak_ratio: number;
+  reason?: string;
+}
+
+function runAlign(longPath: string, shortPath: string): Promise<AlignOut> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(CORE_PYTHON_BIN, ["-m", "core.align", longPath, shortPath], {
+      cwd: CORE_REPO_ROOT,
+      env: { ...process.env, PYTHONPATH: "", PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let errText = "";
+    proc.stdout.on("data", (d) => (out += String(d)));
+    proc.stderr.on("data", (d) => (errText += String(d)));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`core.align exited ${code}: ${errText.slice(-300)}`));
+      try {
+        resolve(JSON.parse(out.trim().split("\n").pop() || "{}") as AlignOut);
+      } catch (e) {
+        reject(new Error(`core.align 출력 파싱 실패: ${String(e)} / ${out.slice(-200)}`));
+      }
+    });
+  });
+}
+
+async function handleMatchAlign(job: Job): Promise<void> {
+  const channelId = String(job.payload.channelId ?? "");
+  const longVideoId = String(job.payload.longVideoId ?? "");
+  const shortIds = Array.isArray(job.payload.shortVideoIds)
+    ? (job.payload.shortVideoIds as unknown[]).map(String)
+    : [];
+  if (!channelId || !longVideoId || !shortIds.length) {
+    throw new Error("match.align requires channelId + longVideoId + shortVideoIds[]");
+  }
+
+  fs.mkdirSync(ALIGN_ROOT, { recursive: true });
+  const dir = path.join(ALIGN_ROOT, longVideoId.replace(/[^\w-]/g, "_"));
+  fs.mkdirSync(dir, { recursive: true });
+  const longPath = path.join(dir, "long.m4a");
+
+  let ok = 0;
+  let low = 0;
+  try {
+    await fetchAudio(longVideoId, longPath);
+    for (const sid of shortIds) {
+      const shortPath = path.join(dir, `${sid.replace(/[^\w-]/g, "_")}.m4a`);
+      try {
+        await fetchAudio(sid, shortPath);
+        const r = await runAlign(longPath, shortPath);
+        if (!r.ok) {
+          low++;
+          console.warn(`[worker] match.align ${sid}: 신뢰도 미달 — ${r.reason ?? ""}`);
+          continue;
+        }
+        await upsertShortSourceMap({
+          shortVideoId: sid,
+          channelId,
+          longVideoId,
+          segStart: r.offset_sec,
+          segEnd: r.offset_sec + r.duration_sec,
+          source: "auto",
+          confidence: r.peak_ratio,
+          note: null,
+        });
+        ok++;
+      } catch (e) {
+        console.error(`[worker] match.align ${sid} 실패:`, e);
+      } finally {
+        fs.rmSync(shortPath, { force: true });
+      }
+    }
+    console.log(`[worker] match.align ${longVideoId}: ${ok}건 추정, ${low}건 신뢰도 미달`);
+  } finally {
+    // 롱폼 오디오는 25분짜리라 남겨두면 VM 디스크를 먹는다. 잡 단위로 정리.
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 

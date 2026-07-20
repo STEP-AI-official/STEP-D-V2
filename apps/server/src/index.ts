@@ -2839,6 +2839,34 @@ app.post("/api/lab/match", async (c) => {
   return c.json({ ok: true, map });
 });
 
+/**
+ * 선택한 숏폼들의 구간을 오디오 정렬로 자동 추적하도록 워커에 요청한다.
+ * Cloud Run은 큐잉만 한다 (다운로드·정렬은 VM에서 수 분 걸린다). 결과는 클라이언트가
+ * /match/videos 를 다시 불러 확인한다 — source='auto' 로 들어온다.
+ */
+app.post("/api/lab/match/auto", async (c) => {
+  const denied = labWriteDenied(c);
+  if (denied) return denied;
+
+  const b = await c.req.json<{ channelId?: string; longVideoId?: string; shortVideoIds?: string[] }>()
+    .catch(() => null);
+  const shortIds = Array.isArray(b?.shortVideoIds) ? b!.shortVideoIds.filter(Boolean) : [];
+  if (!b?.channelId || !b.longVideoId || !shortIds.length) {
+    return c.json({ error: "bad_request", message: "channelId, longVideoId, shortVideoIds[]가 필요합니다." }, 400);
+  }
+  const long = await getChannelVideoByVideoId(b.longVideoId);
+  if (!long || long.channelId !== b.channelId) {
+    return c.json({ error: "bad_request", message: "롱폼이 이 채널에 없습니다." }, 400);
+  }
+  // 한 잡이 롱폼 오디오를 한 번만 받아 재사용하므로 롱폼 단위로 dedupe.
+  const jobId = await enqueue(
+    "match.align",
+    { channelId: b.channelId, longVideoId: b.longVideoId, shortVideoIds: shortIds },
+    { dedupeKey: `match.align:${b.longVideoId}` },
+  );
+  return c.json({ queued: true, jobId, alreadyPending: jobId == null, count: shortIds.length });
+});
+
 app.delete("/api/lab/match/:shortVideoId", async (c) => {
   const denied = labWriteDenied(c);
   if (denied) return denied;

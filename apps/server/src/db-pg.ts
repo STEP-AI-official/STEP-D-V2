@@ -657,12 +657,19 @@ export interface ShortSourceMap {
   segStart: number;
   segEnd: number;
   note: string | null;
+  /** 'manual' = 사람이 찍음 · 'auto' = core/align.py 오디오 정렬 추정 (미확인) */
+  source: "manual" | "auto";
+  /** auto일 때 정렬 신뢰도(peak ratio). 사람이 찍은 건 null. */
+  confidence: number | null;
+  /** 자동 추정을 사람이 확인한 시각. null이면 아직 검수 전. */
+  confirmedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
 const SOURCE_MAP_COLS = `shortvideoid AS "shortVideoId", channelid AS "channelId",
   longvideoid AS "longVideoId", segstart AS "segStart", segend AS "segEnd", note,
+  source, confidence, confirmedat AS "confirmedAt",
   createdat AS "createdAt", updatedat AS "updatedAt"`;
 
 /** Create or replace the mapping for one short (re-matching overwrites). */
@@ -673,20 +680,31 @@ export async function upsertShortSourceMap(m: {
   segStart: number;
   segEnd: number;
   note?: string | null;
+  source?: "manual" | "auto";
+  confidence?: number | null;
 }): Promise<ShortSourceMap> {
   const now = Date.now();
+  const source = m.source ?? "manual";
+  // 사람이 저장하면 그 자리에서 확인된 것으로 본다. 자동 추정은 confirmedAt을 비워 둬
+  // "아직 검수 전"임이 데이터에 남게 한다.
+  const confirmedAt = source === "manual" ? now : null;
   const { rows } = await pool.query(
-    `INSERT INTO short_source_map (shortVideoId, channelId, longVideoId, segStart, segEnd, note, createdAt, updatedAt)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+    `INSERT INTO short_source_map
+       (shortVideoId, channelId, longVideoId, segStart, segEnd, note, source, confidence, confirmedAt, createdAt, updatedAt)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
      ON CONFLICT (shortVideoId) DO UPDATE SET
        channelId   = EXCLUDED.channelId,
        longVideoId = EXCLUDED.longVideoId,
        segStart    = EXCLUDED.segStart,
        segEnd      = EXCLUDED.segEnd,
        note        = EXCLUDED.note,
+       source      = EXCLUDED.source,
+       confidence  = EXCLUDED.confidence,
+       confirmedAt = EXCLUDED.confirmedAt,
        updatedAt   = EXCLUDED.updatedAt
      RETURNING ${SOURCE_MAP_COLS}`,
-    [m.shortVideoId, m.channelId, m.longVideoId, m.segStart, m.segEnd, m.note ?? null, now],
+    [m.shortVideoId, m.channelId, m.longVideoId, m.segStart, m.segEnd, m.note ?? null,
+     source, m.confidence ?? null, confirmedAt, now],
   );
   return rows[0] as ShortSourceMap;
 }
