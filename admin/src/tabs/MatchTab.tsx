@@ -105,8 +105,13 @@ export default function MatchTab() {
 
   const [longId, setLongId] = useState("");
   const [longQuery, setLongQuery] = useState("");
+  const [longSort, setLongSort] = useState<"date" | "views">("date");
+  const [longTodoOnly, setLongTodoOnly] = useState(false);
   const [shortQuery, setShortQuery] = useState("");
   const [showAllShorts, setShowAllShorts] = useState(false);
+  // 기본은 날짜순 — 조회순으로 두면 롱폼과 시기를 맞춰볼 수가 없다. 오름차순이라
+  // "이후 게시분만"과 합쳐지면 롱폼 직후에 나온 숏폼이 맨 위로 온다(가장 유력한 후보).
+  const [shortSort, setShortSort] = useState<"date" | "views">("date");
   const [picked, setPicked] = useState<Record<string, Draft>>({});
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -159,8 +164,13 @@ export default function MatchTab() {
     const q = longQuery.trim().toLowerCase();
     return (data?.longs ?? [])
       .filter((l) => !q || l.title.toLowerCase().includes(q))
-      .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
-  }, [data, longQuery]);
+      .filter((l) => !longTodoOnly || !countByLong.has(l.videoId))
+      .sort((a, b) =>
+        longSort === "views"
+          ? b.viewCount - a.viewCount
+          : Date.parse(b.publishedAt) - Date.parse(a.publishedAt),
+      );
+  }, [data, longQuery, longSort, longTodoOnly, countByLong]);
 
   const long = useMemo(
     () => (data?.longs ?? []).find((l) => l.videoId === longId) ?? null,
@@ -176,8 +186,22 @@ export default function MatchTab() {
       : all.filter((s) => Date.parse(s.publishedAt) >= Date.parse(long.publishedAt) - 24 * 3600 * 1000);
     return base
       .filter((s) => !q || s.title.toLowerCase().includes(q))
-      .sort((a, b) => b.viewCount - a.viewCount);
-  }, [data, long, showAllShorts, shortQuery]);
+      .sort((a, b) =>
+        shortSort === "views"
+          ? b.viewCount - a.viewCount
+          : Date.parse(a.publishedAt) - Date.parse(b.publishedAt),
+      );
+  }, [data, long, showAllShorts, shortQuery, shortSort]);
+
+  /** 롱폼 게시일 대비 며칠 뒤 숏폼인지 — 같은 회차에서 나온 것끼리 묶어 보기 위한 단서. */
+  const dayGap = useCallback(
+    (publishedAt: string): number | null => {
+      if (!long) return null;
+      const d = (Date.parse(publishedAt) - Date.parse(long.publishedAt)) / 86_400_000;
+      return Number.isFinite(d) ? Math.round(d) : null;
+    },
+    [long],
+  );
 
   // Opening a longform pre-selects the shorts already attributed to it.
   useEffect(() => {
@@ -315,6 +339,29 @@ export default function MatchTab() {
               onChange={(e) => setLongQuery(e.target.value)}
             />
           </div>
+          <div className="m-colhead">
+            <button
+              className={longSort === "date" ? "on" : ""}
+              onClick={() => setLongSort("date")}
+              title="최신 게시물부터"
+            >
+              최신순
+            </button>
+            <button
+              className={longSort === "views" ? "on" : ""}
+              onClick={() => setLongSort("views")}
+            >
+              조회순
+            </button>
+            <button
+              className={longTodoOnly ? "on" : ""}
+              onClick={() => setLongTodoOnly((v) => !v)}
+              title="아직 숏폼을 하나도 매칭하지 않은 롱폼만"
+            >
+              미작업만
+            </button>
+            <span className="m-msg">{longs.length}편</span>
+          </div>
           {loading ? (
             <div className="empty-note">불러오는 중…</div>
           ) : !longs.length ? (
@@ -368,8 +415,22 @@ export default function MatchTab() {
                   onChange={(e) => setShortQuery(e.target.value)}
                 />
                 <button
+                  className={shortSort === "date" ? "on" : ""}
+                  onClick={() => setShortSort("date")}
+                  title="게시일 오름차순 — 롱폼 직후에 나온 숏폼이 위로"
+                >
+                  날짜순
+                </button>
+                <button
+                  className={shortSort === "views" ? "on" : ""}
+                  onClick={() => setShortSort("views")}
+                >
+                  조회순
+                </button>
+                <button
                   className={showAllShorts ? "on" : ""}
                   onClick={() => setShowAllShorts((v) => !v)}
+                  title="끄면 롱폼 게시일 이후 숏폼만 표시"
                 >
                   {showAllShorts ? "전체 표시 중" : "이후 게시분만"}
                 </button>
@@ -467,7 +528,19 @@ export default function MatchTab() {
                       <div className="b">
                         <div className="t">{s.title}</div>
                         <div className="s">
-                          조회 {nfmt(s.viewCount)} · {s.publishedAt.slice(0, 10)}
+                          {s.publishedAt.slice(0, 10)}
+                          {(() => {
+                            const g = dayGap(s.publishedAt);
+                            if (g == null) return null;
+                            return (
+                              <span className={g >= 0 && g <= 14 ? "near" : ""}>
+                                {" "}
+                                ({g === 0 ? "당일" : g > 0 ? `+${g}일` : `${g}일`})
+                              </span>
+                            );
+                          })()}
+                          {" · 조회 "}
+                          {nfmt(s.viewCount)}
                           {m && !elsewhere && <span className="done"> · 이 롱폼</span>}
                           {elsewhere && <span className="warnq"> · 다른 롱폼</span>}
                         </div>
