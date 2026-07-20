@@ -56,21 +56,28 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, capture_output=True)
 
 
-def cut_segment(src_url_or_path: str, start: float, end: float, out_path: str) -> None:
-    """롱폼에서 구간만 잘라 낸다. URL이면 yt-dlp가 그 구간만 받는다(전체 다운로드 회피)."""
+def fetch_longform(url: str, out_path: str, max_height: int = 360) -> None:
+    """롱폼 1편을 저해상도로 받는다. 구간마다 받지 않는 이유는 아래 cut_segment 주석 참고."""
+    _run([
+        "yt-dlp", "-q", "--no-playlist",
+        "-f", f"bv*[height<={max_height}]+ba/b[height<={max_height}]/b",
+        "-o", out_path, url,
+    ])
+
+
+def cut_segment(src_path: str, start: float, end: float, out_path: str) -> None:
+    """받아둔 롱폼에서 구간을 잘라 낸다.
+
+    ⚠️ yt-dlp `--download-sections`를 쓰지 않는 이유: 정확한 경계를 맞추려면
+    `--force-keyframes-at-cuts`가 필요한데, 그러면 사실상 전체를 받아 재인코딩한다
+    (61분 영상에서 10분 넘게 안 끝났다). 롱폼 한 편에 매칭 구간이 여러 개이므로
+    **한 번 받아 여러 번 자르는** 편이 압도적으로 싸다 — match.align과 같은 구조다.
+    """
     dur = max(0.5, end - start)
-    if src_url_or_path.startswith("http"):
-        _run([
-            "yt-dlp", "-q", "--no-playlist",
-            "--download-sections", f"*{start}-{end}",
-            # 구간 다운로드는 keyframe 단위라 정확히 맞추려면 재인코딩이 필요하다.
-            "--force-keyframes-at-cuts",
-            "-f", "bv*[height<=720]+ba/b[height<=720]/b",
-            "-o", out_path, src_url_or_path,
-        ])
-    else:
-        _run(["ffmpeg", "-v", "error", "-y", "-ss", str(start), "-t", str(dur),
-              "-i", src_url_or_path, "-c", "copy", out_path])
+    # -ss를 -i 앞에 둬 빠르게 탐색하고, 경계 정확도를 위해 재인코딩한다(구간이 짧아 저렴).
+    _run(["ffmpeg", "-v", "error", "-y", "-ss", str(start), "-t", str(dur),
+          "-i", src_path, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+          "-c:a", "aac", out_path])
 
 
 def _frames(video: str, out_dir: Path, n: int = N_FRAMES) -> list[Path]:
@@ -137,22 +144,46 @@ def describe(video_path: str) -> dict:
     return json.loads(resp.text or "{}")
 
 
-def describe_url(url: str, start: float, end: float) -> dict:
-    """유튜브 URL의 [start,end] 구간만 받아 설명한다 (워커 경로)."""
+def describe_many(url: str, spans: list[dict]) -> list[dict]:
+    """롱폼 URL 1편 + 구간 여러 개 → 구간별 설명. 다운로드는 단 한 번.
+
+    spans: [{"id": str, "start": float, "end": float}, ...]
+    반환은 입력 순서와 1:1. 한 구간이 실패해도 나머지는 계속한다(부분 성공 허용).
+    """
+    out: list[dict] = []
     with tempfile.TemporaryDirectory() as td:
-        seg = str(Path(td) / "seg.mp4")
-        cut_segment(url, start, end, seg)
-        if not os.path.exists(seg):
-            return {"transcript": "", "scene_summary": "", "emotion": "", "hook": "",
-                    "error": "구간을 받지 못했습니다"}
-        return describe(seg)
+        long_path = str(Path(td) / "long.mp4")
+        fetch_longform(url, long_path)
+        for sp in spans:
+            seg = str(Path(td) / f"seg_{len(out)}.mp4")
+            try:
+                cut_segment(long_path, float(sp["start"]), float(sp["end"]), seg)
+                r = describe(seg)
+            except Exception as e:  # noqa: BLE001 — 구간 하나의 실패가 배치를 죽이면 안 된다
+                r = {"transcript": "", "scene_summary": "", "emotion": "", "hook": "",
+                     "error": str(e)[:200]}
+            r["id"] = sp.get("id")
+            out.append(r)
+            try:
+                os.remove(seg)
+            except OSError:
+                pass
+    return out
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 2:
+        # 로컬 영상 파일 하나
         print(json.dumps(describe(sys.argv[1]), ensure_ascii=False))
     elif len(sys.argv) == 4:
-        print(json.dumps(describe_url(sys.argv[1], float(sys.argv[2]), float(sys.argv[3])), ensure_ascii=False))
+        # URL + 구간 하나 (수동 확인용)
+        print(json.dumps(describe_many(sys.argv[1], [{"id": "one", "start": float(sys.argv[2]),
+                                                      "end": float(sys.argv[3])}])[0], ensure_ascii=False))
+    elif len(sys.argv) == 3 and sys.argv[2] == "-":
+        # URL + stdin JSON spans (워커 경로) → 구간별 JSON 한 줄씩
+        for r in describe_many(sys.argv[1], json.load(sys.stdin)):
+            print(json.dumps(r, ensure_ascii=False), flush=True)
     else:
-        print("usage: python -m core.segment <video> | <url> <start> <end>", file=sys.stderr)
+        print("usage: python -m core.segment <video> | <url> <start> <end> | <url> - < spans.json",
+              file=sys.stderr)
         raise SystemExit(2)
