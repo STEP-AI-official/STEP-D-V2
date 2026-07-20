@@ -2848,8 +2848,9 @@ app.post("/api/lab/match/auto", async (c) => {
   const denied = labWriteDenied(c);
   if (denied) return denied;
 
-  const b = await c.req.json<{ channelId?: string; longVideoId?: string; shortVideoIds?: string[] }>()
-    .catch(() => null);
+  const b = await c.req.json<{
+    channelId?: string; longVideoId?: string; shortVideoIds?: string[]; delayMs?: number;
+  }>().catch(() => null);
   const shortIds = Array.isArray(b?.shortVideoIds) ? b!.shortVideoIds.filter(Boolean) : [];
   if (!b?.channelId || !b.longVideoId || !shortIds.length) {
     return c.json({ error: "bad_request", message: "channelId, longVideoId, shortVideoIds[]가 필요합니다." }, 400);
@@ -2858,13 +2859,17 @@ app.post("/api/lab/match/auto", async (c) => {
   if (!long || long.channelId !== b.channelId) {
     return c.json({ error: "bad_request", message: "롱폼이 이 채널에 없습니다." }, 400);
   }
+  // delayMs: 대량 백필용 시차. match.align은 content.analyze와 같은 레인이라, 수십~수백 건을
+  // 한꺼번에 넣으면 그 뒤에 들어온 업로드 분석이 몇 시간 밀린다(큐는 runAfter 순). 잡마다
+  // 시차를 두면 그 사이로 업로드가 먼저 잡힌다. 상한 24h — 그 이상은 실수일 가능성이 높다.
+  const delayMs = Math.min(Math.max(Number(b.delayMs) || 0, 0), 24 * 60 * 60 * 1000);
   // 한 잡이 롱폼 오디오를 한 번만 받아 재사용하므로 롱폼 단위로 dedupe.
   const jobId = await enqueue(
     "match.align",
     { channelId: b.channelId, longVideoId: b.longVideoId, shortVideoIds: shortIds },
-    { dedupeKey: `match.align:${b.longVideoId}` },
+    { dedupeKey: `match.align:${b.longVideoId}`, delayMs },
   );
-  return c.json({ queued: true, jobId, alreadyPending: jobId == null, count: shortIds.length });
+  return c.json({ queued: true, jobId, alreadyPending: jobId == null, count: shortIds.length, delayMs });
 });
 
 app.delete("/api/lab/match/:shortVideoId", async (c) => {
