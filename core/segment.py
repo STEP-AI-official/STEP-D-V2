@@ -53,16 +53,32 @@ _PROMPT = """이 영상 구간은 롱폼에서 잘려 숏폼으로 발행된 부
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, capture_output=True)
+    """실패 시 stderr를 예외 메시지에 담는다 — 안 그러면 원인이 통째로 사라진다."""
+    p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if p.returncode != 0:
+        raise RuntimeError(f"{cmd[0]} exited {p.returncode}: {(p.stderr or '')[-400:]}")
 
 
-def fetch_longform(url: str, out_path: str, max_height: int = 360) -> None:
-    """롱폼 1편을 저해상도로 받는다. 구간마다 받지 않는 이유는 아래 cut_segment 주석 참고."""
+def fetch_longform(url: str, out_path: str, max_height: int = 360) -> str:
+    """롱폼 1편을 저해상도로 받고, 실제로 저장된 경로를 돌려준다.
+
+    ⚠️ yt-dlp는 `-o long.mp4`를 줘도 원본 컨테이너를 붙여 `long.mp4.webm`으로 저장한다
+    (실제로 여기서 ffmpeg가 "No such file"로 죽었다). `--merge-output-format mp4`로
+    컨테이너를 고정하되, 그래도 다른 확장자가 나오면 glob으로 찾아 반환한다.
+    """
     _run([
         "yt-dlp", "-q", "--no-playlist",
         "-f", f"bv*[height<={max_height}]+ba/b[height<={max_height}]/b",
+        "--merge-output-format", "mp4",
         "-o", out_path, url,
     ])
+    if os.path.exists(out_path):
+        return out_path
+    base = Path(out_path)
+    for cand in sorted(base.parent.glob(base.name + ".*")) + sorted(base.parent.glob(base.stem + ".*")):
+        if cand.is_file() and cand.stat().st_size > 0:
+            return str(cand)
+    raise FileNotFoundError(f"다운로드 결과를 찾지 못했습니다: {out_path}")
 
 
 def cut_segment(src_path: str, start: float, end: float, out_path: str) -> None:
@@ -152,8 +168,7 @@ def describe_many(url: str, spans: list[dict]) -> list[dict]:
     """
     out: list[dict] = []
     with tempfile.TemporaryDirectory() as td:
-        long_path = str(Path(td) / "long.mp4")
-        fetch_longform(url, long_path)
+        long_path = fetch_longform(url, str(Path(td) / "long.mp4"))
         for sp in spans:
             seg = str(Path(td) / f"seg_{len(out)}.mp4")
             try:
