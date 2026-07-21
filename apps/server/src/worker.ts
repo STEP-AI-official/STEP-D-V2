@@ -37,6 +37,8 @@ import {
   upsertShortSourceMap,
   listSourceMapsMissingSegment,
   setShortSourceSegment,
+  listShortSourceMaps,
+  setChannelPointProfile,
   type YouTubeChannel,
 } from "./db-pg.ts";
 import { probe, captureThumbnail } from "./ffmpeg.ts";
@@ -82,7 +84,7 @@ const TICK_INTERVAL_MS = 15 * 60 * 1000;
 const JOB_LANES: Record<"content" | "youtube", JobType[]> = {
   // match.align도 content 레인 — 파이썬·ffmpeg로 오디오를 돌리는 무거운 잡이라
   // YouTube API 레인(짧고 쿼터 위주)에 섞으면 그쪽을 막는다.
-  content: ["content.analyze", "youtube.download", "match.align", "match.segment"],
+  content: ["content.analyze", "youtube.download", "match.align", "match.segment", "match.learn"],
   youtube: ["channel.analyze", "video.analyze", "video.hotwatch", "video.comments", "distribution.publish"],
 };
 const WORKER_JOBS = (process.env.WORKER_JOBS ?? "all").trim().toLowerCase();
@@ -153,6 +155,7 @@ async function handle(job: Job): Promise<FollowUp | void> {
     case "youtube.download": return handleYoutubeDownload(job);
     case "match.align": return handleMatchAlign(job);
     case "match.segment": return handleMatchSegment(job);
+    case "match.learn": return handleMatchLearn(job);
     default:
       throw new Error(`unknown job type: ${(job as Job).type}`);
   }
@@ -709,6 +712,104 @@ async function handleMatchSegment(job: Job): Promise<void> {
     await enqueue("match.segment", { channelId, limitLongforms: limit },
       { dedupeKey: `match.segment:${channelId}`, delayMs: 5_000 }).catch(() => null);
   }
+}
+
+// ── match.learn — 채널 매칭 데이터에서 고성과 규칙을 학습 ──────────────────────────
+//
+// 자동화의 마지막 단계: 매칭·구간설명이 채워진 채널에서 core.learn_profile로 규칙을 뽑아
+// youtube_channels.pointProfile에 저장한다. 이후 그 채널 영상을 분석하면 content-pipeline이
+// 이 프로파일을 --profile로 넘겨 recommend가 채널에 맞는 후보를 고른다(기존 스티어링 배선).
+//
+// 미설명 구간이 남아 있으면 match.segment를 먼저 돌리고 재큐한다 — 설명 없이 학습하면
+// 표본이 얇아 규칙이 부실하다.
+
+/** LEARN 데이터셋(export)을 만들어 core.learn_profile에 넘기고 결과를 받는다. */
+function runLearn(channelId: string, exportJson: string): Promise<{ profile: unknown; text: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(CORE_PYTHON_BIN, ["-m", "core.learn_profile", "-"], {
+      cwd: CORE_REPO_ROOT,
+      env: { ...process.env, PYTHONPATH: "", PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    proc.stdout.on("data", (d) => (out += String(d)));
+    proc.stderr.on("data", (d) => (err += String(d)));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`core.learn_profile exited ${code}: ${err.slice(-300)}`));
+      try {
+        resolve({ profile: JSON.parse(out), text: out });
+      } catch (e) {
+        reject(new Error(`learn_profile 출력 파싱 실패: ${String(e)} / ${out.slice(-200)}`));
+      }
+    });
+    proc.stdin.write(exportJson);
+    proc.stdin.end();
+  });
+}
+
+async function handleMatchLearn(job: Job): Promise<void> {
+  const channelId = String(job.payload.channelId ?? "");
+  if (!channelId) throw new Error("match.learn requires payload.channelId");
+  const ch = await getYouTubeChannelByChannelId(channelId);
+  if (!ch) { console.warn(`[worker] match.learn: channel ${channelId} gone`); return; }
+
+  // 미설명 구간이 남았으면 설명부터 채우고 학습을 뒤로 미룬다(설명 없이 학습하면 표본 부실).
+  const missing = await listSourceMapsMissingSegment(channelId);
+  if (missing.length > 0) {
+    console.log(`[worker] match.learn ${channelId}: 미설명 ${missing.length}건 → 먼저 채우고 재시도`);
+    await enqueue("match.segment", { channelId, limitLongforms: 10 },
+      { dedupeKey: `match.segment:${channelId}` }).catch(() => null);
+    await enqueue("match.learn", { channelId },
+      { dedupeKey: `match.learn:${channelId}`, delayMs: 10 * 60_000 }).catch(() => null);
+    return;
+  }
+
+  // export를 서버에서 만들지 않고 여기서 직접 구성 (같은 로직). 성과 tier는 index.ts의
+  // export 라우트와 동일하게 ±90일 중앙값 대비 배수 — 여기선 저장된 seg* 컬럼을 함께 싣는다.
+  const maps = await listShortSourceMaps(channelId);
+  const videos = await listChannelVideos(channelId);
+  const byId = new Map(videos.map((v) => [v.videoId, v]));
+  const shorts = videos.filter((v) => Boolean(v.isShort) || (Number(v.durationSec) || 0) <= 180);
+  const WINDOW = 90 * 24 * 3600 * 1000;
+  const median = (xs: number[]) => {
+    if (!xs.length) return 0;
+    const s = [...xs].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const pairs = maps.map((m) => {
+    const sv = byId.get(m.shortVideoId);
+    const lv = byId.get(m.longVideoId);
+    const t = sv ? Date.parse(sv.publishedAt) : 0;
+    const peers = shorts.filter((v) => Math.abs(Date.parse(v.publishedAt) - t) <= WINDOW)
+      .map((v) => Number(v.viewCount) || 0);
+    const base = median(peers.length >= 3 ? peers : shorts.map((v) => Number(v.viewCount) || 0));
+    const views = Number(sv?.viewCount) || 0;
+    const ratio = base > 0 ? views / base : 0;
+    return {
+      pair_id: m.shortVideoId,
+      performance: { ratio: Number(ratio.toFixed(3)), tier: ratio >= 2 ? "high" : ratio >= 0.7 ? "mid" : "low" },
+      short: { title: sv?.title ?? null, views },
+      source: {
+        longVideoId: m.longVideoId, title: lv?.title ?? null,
+        segStart: m.segStart, segEnd: m.segEnd, segLenSec: Number((m.segEnd - m.segStart).toFixed(1)),
+        transcript: (m as { segTranscript?: string }).segTranscript ?? null,
+        scene_summary: (m as { segSummary?: string }).segSummary ?? null,
+        hook: (m as { segHook?: string }).segHook ?? null,
+        emotion: (m as { segEmotion?: string }).segEmotion ?? null,
+      },
+      note: m.note,
+    };
+  });
+
+  const exportJson = JSON.stringify({ channelId, channelName: ch.channelName, count: pairs.length, pairs });
+  const { profile } = await runLearn(channelId, exportJson);
+  await setChannelPointProfile(channelId, profile);
+
+  const p = profile as { ready?: boolean; confidence?: number; sample?: unknown };
+  console.log(`[worker] match.learn ${channelId}: 저장 (ready=${p.ready} conf=${p.confidence ?? "-"} sample=${JSON.stringify(p.sample ?? {})})`);
 }
 
 // ── distribution.publish — upload a rendered clip to YouTube ──────────────────────

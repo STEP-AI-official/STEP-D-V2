@@ -25,6 +25,8 @@ export type JobType =
   | "match.align"
   // Lab: 매칭된 구간의 자막·장면요약을 채워 LEARN 입력을 완성.
   | "match.segment"
+  // Lab: 채널 매칭 데이터에서 고성과 규칙을 학습해 채널 프로파일 저장.
+  | "match.learn"
   // Distribution: resumable-upload a rendered clip to a connected YouTube channel.
   | "distribution.publish";
 

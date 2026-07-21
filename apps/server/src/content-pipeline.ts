@@ -32,6 +32,7 @@ import { Readable } from "node:stream";
 
 import {
   getMedia, saveContentAnalysis, saveTranscript, saveEpisodeCast, listProgramCast,
+  getChannelPointProfile,
   getPool, getEntity, putEntity,
 } from "./db-pg.ts";
 import type { TranscriptSegment } from "./db-pg.ts";
@@ -500,9 +501,20 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
     try {
       const episode = media.episodeId ? await getEntity<any>("episode", media.episodeId) : undefined;
       const program = episode?.programId ? await getEntity<any>("program", episode.programId) : undefined;
-      if (program?.profile && typeof program.profile === "object") {
+      // 우선순위: 사람이 입력한 프로그램 프로파일 > 학습된 채널 프로파일. 둘 다 recommend가
+      // 같은 형식으로 읽는다. 채널 프로파일은 learn_profile이 만든 recommend_profile을 쓴다.
+      let profileObj: unknown = program?.profile && typeof program.profile === "object" ? program.profile : null;
+      if (!profileObj && episode?.sourceChannelId) {
+        const cp = await getChannelPointProfile(episode.sourceChannelId);
+        const rp = (cp?.profile as { recommend_profile?: unknown } | null)?.recommend_profile;
+        if (rp && typeof rp === "object") {
+          profileObj = rp;
+          console.log(`[worker] content.analyze ${mediaId}: 채널 학습 프로파일 적용 (${episode.sourceChannelId})`);
+        }
+      }
+      if (profileObj) {
         profilePath = path.join(work, "profile.json");
-        fs.writeFileSync(profilePath, JSON.stringify(program.profile), "utf-8");
+        fs.writeFileSync(profilePath, JSON.stringify(profileObj), "utf-8");
       }
       if (episode?.programId) {
         const roster = await listProgramCast(episode.programId);

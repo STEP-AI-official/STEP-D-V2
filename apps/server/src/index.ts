@@ -64,6 +64,7 @@ import {
   listShortSourceMaps,
   listSourceMapsMissingSegment,
   deleteShortSourceMap,
+  getChannelPointProfile,
   getPool,
   type MediaRow,
   type YouTubeChannel,
@@ -949,6 +950,14 @@ app.post("/api/media/from-youtube", async (c) => {
   const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "YouTube 영상";
   const mediaId = newId("m");
 
+  // 이 영상이 어느 연동 채널 것인지 해석해 에피소드에 남긴다 — 분석 시 채널 포인트
+  // 프로파일을 적용하기 위한 연결고리(계획서가 지적한 "채널→에피소드 연결 부재"를 메움).
+  const vidMatch = url.match(/(?:v=|shorts\/|live\/|youtu\.be\/)([\w-]{6,})/);
+  const sourceVideoId = vidMatch?.[1] ?? null;
+  const sourceChannelId = sourceVideoId
+    ? (await getChannelVideoByVideoId(sourceVideoId))?.channelId ?? null
+    : null;
+
   const result = await buildEpisodeAndMedia({
     mediaId,
     programId,
@@ -962,6 +971,12 @@ app.post("/api/media/from-youtube", async (c) => {
     thumbPath: null,
     pendingIngestNote: "YouTube 영상 다운로드 대기 중…",
   });
+
+  // 채널 연결 기록 — content-pipeline이 이 값으로 채널 포인트 프로파일을 찾는다.
+  if (sourceChannelId && result.episode?.id) {
+    const ep = await getEntity<Record<string, unknown>>("episode", result.episode.id);
+    if (ep) await putEntity("episode", result.episode.id, { ...ep, sourceChannelId, sourceVideoId });
+  }
 
   let jobId: string | null;
   try {
@@ -3118,6 +3133,24 @@ app.post("/api/lab/match/segment", async (c) => {
     missing: missing.length,
     longforms: new Set(missing.map((m) => m.longVideoId)).size,
   });
+});
+
+/** 채널 규칙 학습 트리거 — 매칭·설명 데이터에서 고성과 규칙을 뽑아 채널 프로파일로 저장. */
+app.post("/api/lab/match/learn", async (c) => {
+  const denied = labWriteDenied(c);
+  if (denied) return denied;
+  const b = await c.req.json<{ channelId?: string }>().catch(() => null);
+  if (!b?.channelId) return c.json({ error: "bad_request", message: "channelId가 필요합니다." }, 400);
+  const jobId = await enqueue("match.learn", { channelId: b.channelId },
+    { dedupeKey: `match.learn:${b.channelId}` });
+  return c.json({ ok: true, queued: jobId != null, alreadyPending: jobId == null });
+});
+
+/** 학습된 채널 프로파일 조회 (규칙·confidence 확인용). */
+app.get("/api/lab/match/profile/:channelId", async (c) => {
+  const cp = await getChannelPointProfile(c.req.param("channelId"));
+  if (!cp?.profile) return c.json({ profile: null, at: null });
+  return c.json(cp);
 });
 
 /** 진행 상황 — Lab이 폴링해 보여준다. */

@@ -514,6 +514,24 @@ export async function updateYouTubeTokens(
  * WHICH token died, pass it: the update then no-ops if a reconnect already swapped tokens,
  * so a slow in-flight request can never re-park a just-reconnected channel.
  */
+/** 학습된 채널 포인트 프로파일 저장 (core/learn_profile.py 결과 → recommend 스티어링용). */
+export async function setChannelPointProfile(channelId: string, profile: unknown): Promise<void> {
+  await pool.query(
+    `UPDATE youtube_channels SET pointProfile = $2::jsonb, pointProfileAt = $3 WHERE channelId = $1`,
+    [channelId, JSON.stringify(profile), Date.now()],
+  );
+}
+
+/** 채널의 학습된 프로파일 (없으면 null). recommend가 이 채널 영상 분석 시 스티어링에 쓴다. */
+export async function getChannelPointProfile(channelId: string): Promise<{ profile: unknown; at: number | null } | null> {
+  const { rows } = await pool.query(
+    `SELECT pointprofile AS profile, pointprofileat AS at FROM youtube_channels WHERE channelId = $1`,
+    [channelId],
+  );
+  if (!rows[0]) return null;
+  return { profile: rows[0].profile ?? null, at: rows[0].at == null ? null : Number(rows[0].at) };
+}
+
 export async function markYouTubeChannelRevoked(
   channelId: string,
   deadRefreshToken?: string,

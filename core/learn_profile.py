@@ -128,17 +128,71 @@ def learn(export: dict, min_desc: int = 5) -> dict:
     profile["ready"] = True
     profile["sample"] = {"high": len(high), "low": len(low), "described": len(described)}
     profile["stats"] = stats.get("reading", {})
+    # recommend.py가 이미 읽는 프로파일 형식으로 변환 — 기존 스티어링 배선을 그대로 탄다.
+    profile["recommend_profile"] = to_recommend_profile(profile)
     return profile
+
+
+# 훅 카테고리 매핑 (learn이 자유 텍스트로 훅을 뱉을 수 있어 8개 표준 키로 정규화)
+_HOOK_MAP = {
+    "반전": ["반전", "예상", "고정관념", "파괴"], "돌직구": ["돌직구", "단호", "소신", "직설"],
+    "갈등": ["갈등", "분노", "다툼"], "웃음": ["웃음", "폭소", "코믹", "좌충우돌"],
+    "공감": ["공감", "위로", "감동"], "감정고조": ["감정", "긴장", "몰입", "고조"],
+    "질문": ["질문", "궁금", "호기심"], "정보성": ["정보", "설명", "리뷰"],
+}
+
+
+def to_recommend_profile(learned: dict) -> dict:
+    """LEARN 규칙 → recommend/profile.ts가 읽는 ProgramProfile 형식.
+
+    핵심은 hookWeights(고성과 훅을 1.0 위로 올림)와 targetLength·taboos·watchPoints다.
+    recommend의 apply_profile_fit이 이 값들로 후보를 재랭킹한다 — 새 배선이 필요 없다.
+    confidence가 낮으면 가중을 약하게 실어 과적합을 막는다."""
+    conf = float(learned.get("confidence") or 0.5)
+    lift = 1.0 + 0.5 * conf  # confidence 0.6 → 1.30, 1.0 → 1.5 (약하게 시작)
+
+    # 고성과 패턴 텍스트에서 훅 카테고리를 뽑아 가중
+    win_text = " ".join(
+        (p.get("pattern", "") + " " + p.get("why", ""))
+        for p in learned.get("winning_patterns", [])
+    )
+    weights = {}
+    for hook, keys in _HOOK_MAP.items():
+        if any(k in win_text for k in keys):
+            weights[hook] = round(lift, 2)
+
+    length = learned.get("optimal_length_sec") or {}
+    lo, hi = length.get("min"), length.get("max")
+    target = f"{lo}~{hi}초" if lo and hi else ""
+
+    return {
+        "programName": learned.get("channel", ""),
+        "formatGrammar": "; ".join(p.get("pattern", "") for p in learned.get("winning_patterns", [])[:3]),
+        "watchPoints": [p.get("pattern", "") for p in learned.get("winning_patterns", [])][:8],
+        "hookWeights": weights,
+        "taboos": learned.get("avoid_patterns", [])[:6],
+        "memes": [],
+        "editTone": "",
+        "targetLength": target,
+        "castType": "",
+        # 출처 표식 — 프로그램 프로파일(사람 입력)과 구분, confidence 추적용
+        "_source": "learned",
+        "_confidence": conf,
+    }
 
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("usage: python -m core.learn_profile <export.json> [min_desc]", file=sys.stderr)
+        print("usage: python -m core.learn_profile <export.json|-> [min_desc]", file=sys.stderr)
         raise SystemExit(2)
-    with open(sys.argv[1], encoding="utf-8") as f:
-        export = json.load(f)
-    min_desc = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-    print(json.dumps(learn(export, min_desc), ensure_ascii=False, indent=2))
+    if sys.argv[1] == "-":  # 워커 경로: stdin으로 export JSON
+        export = json.load(sys.stdin)
+        min_desc = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    else:
+        with open(sys.argv[1], encoding="utf-8") as f:
+            export = json.load(f)
+        min_desc = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    print(json.dumps(learn(export, min_desc), ensure_ascii=False))
 
 
 if __name__ == "__main__":
