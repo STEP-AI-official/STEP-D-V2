@@ -506,10 +506,19 @@ export async function runContentAnalyze(mediaId: string): Promise<void> {
       let profileObj: unknown = program?.profile && typeof program.profile === "object" ? program.profile : null;
       if (!profileObj && episode?.sourceChannelId) {
         const cp = await getChannelPointProfile(episode.sourceChannelId);
-        const rp = (cp?.profile as { recommend_profile?: unknown } | null)?.recommend_profile;
-        if (rp && typeof rp === "object") {
+        const prof = cp?.profile as { recommend_profile?: unknown; confidence?: number } | null;
+        const rp = prof?.recommend_profile;
+        const conf = Number(prof?.confidence) || 0;
+        // ⚠️ 신뢰도 게이트: 저신뢰(소표본) 프로파일은 자동 적용하지 않는다. 2026-07-21 A/B 실측 —
+        // conf 0.6 프로파일이 홀드아웃 Hit@5를 0.67→0.33으로 오히려 떨어뜨렸다(hookWeights가
+        // 5개 훅에 균일 1.3으로 뭉개져 랭킹을 흔듦). 검증 없이 적용하면 회귀다. 기준은 실측 후
+        // 상향 가능. CHANNEL_PROFILE_MIN_CONF로 조정.
+        const minConf = Number(process.env.CHANNEL_PROFILE_MIN_CONF) || 0.75;
+        if (rp && typeof rp === "object" && conf >= minConf) {
           profileObj = rp;
-          console.log(`[worker] content.analyze ${mediaId}: 채널 학습 프로파일 적용 (${episode.sourceChannelId})`);
+          console.log(`[worker] content.analyze ${mediaId}: 채널 학습 프로파일 적용 (conf ${conf} ≥ ${minConf})`);
+        } else if (rp) {
+          console.log(`[worker] content.analyze ${mediaId}: 채널 프로파일 있으나 신뢰도 미달(conf ${conf} < ${minConf}) — 미적용`);
         }
       }
       if (profileObj) {

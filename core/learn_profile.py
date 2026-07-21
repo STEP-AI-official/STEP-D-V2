@@ -129,7 +129,8 @@ def learn(export: dict, min_desc: int = 5) -> dict:
     profile["sample"] = {"high": len(high), "low": len(low), "described": len(described)}
     profile["stats"] = stats.get("reading", {})
     # recommend.py가 이미 읽는 프로파일 형식으로 변환 — 기존 스티어링 배선을 그대로 탄다.
-    profile["recommend_profile"] = to_recommend_profile(profile)
+    # 전체 통계(hook_signals)를 넘겨 hookWeights를 lift로 차등한다(균일 가중 회귀 방지).
+    profile["recommend_profile"] = to_recommend_profile(profile, stats)
     return profile
 
 
@@ -142,24 +143,41 @@ _HOOK_MAP = {
 }
 
 
-def to_recommend_profile(learned: dict) -> dict:
+def to_recommend_profile(learned: dict, full_stats: dict | None = None) -> dict:
     """LEARN 규칙 → recommend/profile.ts가 읽는 ProgramProfile 형식.
 
     핵심은 hookWeights(고성과 훅을 1.0 위로 올림)와 targetLength·taboos·watchPoints다.
     recommend의 apply_profile_fit이 이 값들로 후보를 재랭킹한다 — 새 배선이 필요 없다.
-    confidence가 낮으면 가중을 약하게 실어 과적합을 막는다."""
-    conf = float(learned.get("confidence") or 0.5)
-    lift = 1.0 + 0.5 * conf  # confidence 0.6 → 1.30, 1.0 → 1.5 (약하게 시작)
 
-    # 고성과 패턴 텍스트에서 훅 카테고리를 뽑아 가중
-    win_text = " ".join(
-        (p.get("pattern", "") + " " + p.get("why", ""))
-        for p in learned.get("winning_patterns", [])
-    )
-    weights = {}
-    for hook, keys in _HOOK_MAP.items():
-        if any(k in win_text for k in keys):
-            weights[hook] = round(lift, 2)
+    ⚠️ hookWeights는 **통계적 lift로 차등**한다. 2026-07-21 A/B 실측에서, 고성과 텍스트에
+    언급된 훅을 전부 같은 1.3으로 올렸더니(5/8 훅 균일) 변별력이 없어 랭킹만 흔들려 Hit@5가
+    0.67→0.33으로 떨어졌다. lift(고성과 출현율/저성과 출현율)>1이면 올리고 <1이면 내려야
+    실제 신호가 된다. confidence로 강도를 눌러 소표본 과적합을 막는다."""
+    conf = float(learned.get("confidence") or 0.5)
+    gain = 0.5 * conf  # 가중 강도: conf 0.6 → 0.30, 1.0 → 0.5
+
+    # 통계적 hook lift에서 차등 가중 (lift>1 우대, <1 억제). full_stats 없으면 텍스트 폴백.
+    weights: dict[str, float] = {}
+    hook_sigs = (full_stats or {}).get("hook_signals") if isinstance(full_stats, dict) else None
+    if hook_sigs:
+        for sig in hook_sigs:
+            feat = sig.get("feature", "")  # "hook=반전"
+            if not feat.startswith("hook="):
+                continue
+            hook = feat.split("=", 1)[1]
+            if hook not in _HOOK_MAP or (sig.get("high_n", 0) + sig.get("low_n", 0)) < 2:
+                continue
+            lift = float(sig.get("lift") or 1.0)
+            # lift 1.0을 기준으로 위/아래로, gain만큼만. [0.6, 1.6]로 클램프(극단 방지).
+            w = 1.0 + gain * (min(2.5, max(0.4, lift)) - 1.0)
+            weights[hook] = round(min(1.6, max(0.6, w)), 2)
+    else:
+        # 폴백: 통계 없으면 고성과 텍스트 언급 훅만 약하게(+gain).
+        win_text = " ".join((p.get("pattern", "") + " " + p.get("why", ""))
+                            for p in learned.get("winning_patterns", []))
+        for hook, keys in _HOOK_MAP.items():
+            if any(k in win_text for k in keys):
+                weights[hook] = round(1.0 + gain, 2)
 
     length = learned.get("optimal_length_sec") or {}
     lo, hi = length.get("min"), length.get("max")
