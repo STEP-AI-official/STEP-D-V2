@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -139,6 +140,20 @@ def _audio(video: str, out_path: str) -> str | None:
         return None
 
 
+def _collapse_degenerate(text: str) -> str:
+    """Gemini 받아쓰기 degeneration 제거.
+
+    웃음·겹말·불명확한 오디오 구간에서 모델이 한 토큰에 갇혀 수십·수백 번 반복하는 현상이
+    있다("모 모 모 … 모"). 이게 그대로 저장되면 화면·LEARN 프롬프트까지 오염된다.
+    같은 짧은 토큰(1~4자)이 5회+ 연속이면 1회로, 같은 글자가 10회+ 연속이면 3회로 줄인다.
+    정상 강조("진짜 진짜")·짧은 웃음("ㅋㅋㅋ")은 임계 아래라 건드리지 않는다."""
+    if not text or not isinstance(text, str):
+        return text
+    text = re.sub(r"(\S{1,4})(?:\s+\1){4,}", r"\1", text)   # "모 모 모 모 모 …" → "모"
+    text = re.sub(r"(.)\1{9,}", r"\1\1\1", text)             # "모모모모모모모모모모…" → "모모모"
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def describe(video_path: str) -> dict:
     """구간 영상 → {transcript, scene_summary, emotion, hook} (Gemini 1회)."""
     client = genai.Client(vertexai=True, project=PROJECT, location=LOCATION)
@@ -164,7 +179,10 @@ def describe(video_path: str) -> dict:
                 response_schema=_SCHEMA,
             ),
         ))
-    return json.loads(resp.text or "{}")
+    data = json.loads(resp.text or "{}")
+    if isinstance(data.get("transcript"), str):
+        data["transcript"] = _collapse_degenerate(data["transcript"])
+    return data
 
 
 def describe_many(url: str, spans: list[dict]) -> list[dict]:
