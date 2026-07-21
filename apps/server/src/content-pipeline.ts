@@ -449,6 +449,8 @@ function collectPartial(work: string): Record<string, unknown> | undefined {
 /** Run the content pipeline for one uploaded media and persist the result.
  *  `fast`(잡 페이로드 fast:true) — 자막만으로 빠른 추천, 시각 분석 스킵(~10배). 기본 false=풀. */
 export async function runContentAnalyze(mediaId: string, fast = false): Promise<void> {
+  // 잡 페이로드 fast:true 또는 워커 전역 CORE_ANALYZE_FAST=1 이면 빠른 모드. 대량 배치용 전역 스위치.
+  fast = fast || process.env.CORE_ANALYZE_FAST === "1";
   const media = await getMedia(mediaId);
   if (!media) throw new Error(`content.analyze: media ${mediaId} not found`);
 
