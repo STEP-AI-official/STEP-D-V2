@@ -43,6 +43,8 @@
 | [pipeline-plan.md](plans/pipeline-plan.md) | AI 파이프라인 청사진 (발명신고서 구성 A~J) |
 | [channel-domain-adaptation.md](plans/channel-domain-adaptation.md) | 채널 도메인 적응 학습 — 숏폼 성과 라벨로 추천 재랭킹(`apply_learned_rerank`) |
 | [analysis-pipeline-next.md](plans/analysis-pipeline-next.md) | 분석 파이프라인 다음 단계 — 종결어미 스냅·채널 매트릭스 UI·구간 한정 정렬 |
+| [shorts-engine-experiments-2026-07-21.md](plans/shorts-engine-experiments-2026-07-21.md) | **쇼츠 엔진 실증 실험 종합** — 홀드아웃 Hit@N 0→67%, LEARN 교차검증, 자동화 |
+| [shorts-quality-eval.md](plans/shorts-quality-eval.md) | 쇼츠 추천 품질 평가 기준 — 발행 숏폼 정답으로 Hit@N 측정 |
 | [context-engine-plan.md](plans/context-engine-plan.md) | 인물·서사 컨텍스트 엔진(CX 트랙) 설계 |
 | [opencut-integration-plan.md](plans/opencut-integration-plan.md) | 검수 에디터 OpenCut 부품 이식 (Phase 1 완료) |
 | [publish-fields-ux-plan.md](plans/publish-fields-ux-plan.md) | 채널별 배포 필수 필드 분리 설계 근거 (프론트 구현 완료) |
