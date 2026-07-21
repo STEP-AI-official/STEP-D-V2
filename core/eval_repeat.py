@@ -26,31 +26,39 @@ from .recommend import recommend
 from .evaluate import _spans_from_shorts, _truth_from_export, evaluate
 
 
+_N_LIST = (5, 10, 20)
+
+
 def _run_condition(scenes_by_ho: dict, truth_by_ho: dict, profile, runs: int, genre: str) -> dict:
-    """조건(프로파일 유무) 하나를 runs회 반복. 각 회차는 모든 홀드아웃을 micro-average한다."""
-    per_run_hits = []
-    per_run_found = []
+    """조건(프로파일 유무) 하나를 runs회 반복. 각 회차는 모든 홀드아웃을 micro-average한다.
+
+    정답 수가 홀드아웃마다 18/5/3으로 크게 다르므로 Hit@5만 보면 왜곡된다(정답 18건이면
+    상위 5개로는 최대 5/18=0.28밖에 못 맞춘다). Hit@5/10/20을 모두 micro-average로 집계하고,
+    판정은 Hit@10(균형)으로 한다."""
+    per_run = {f"hit@{n}": [] for n in _N_LIST}
     for _ in range(runs):
-        tot_truth = tot_found = tot_hit5 = 0
+        tot_truth = 0
+        tot_hit = {n: 0 for n in _N_LIST}
         for ho, scenes in scenes_by_ho.items():
             truth = truth_by_ho.get(ho, [])
             if not truth:
                 continue
             sh = recommend(scenes, n=5, genre=genre, profile=profile)["shorts"]
-            r = evaluate(_spans_from_shorts({"shorts": sh}), truth)
+            r = evaluate(_spans_from_shorts({"shorts": sh}), truth, n_list=_N_LIST)
             tot_truth += r["truth_count"]
-            tot_found += r["found"]
-            tot_hit5 += round(r["hit@5"] * r["truth_count"])
-        per_run_hits.append(tot_hit5 / max(1, tot_truth))
-        per_run_found.append(tot_found)
-    return {
-        "runs": runs,
-        "hit5_mean": round(statistics.mean(per_run_hits), 3),
-        "hit5_stdev": round(statistics.pstdev(per_run_hits), 3) if len(per_run_hits) > 1 else 0.0,
-        "hit5_min": round(min(per_run_hits), 3),
-        "hit5_max": round(max(per_run_hits), 3),
-        "per_run": [round(x, 3) for x in per_run_hits],
-    }
+            for n in _N_LIST:
+                tot_hit[n] += round(r[f"hit@{n}"] * r["truth_count"])
+        for n in _N_LIST:
+            per_run[f"hit@{n}"].append(tot_hit[n] / max(1, tot_truth))
+
+    def stats(vals: list[float]) -> dict:
+        return {
+            "mean": round(statistics.mean(vals), 3),
+            "stdev": round(statistics.pstdev(vals), 3) if len(vals) > 1 else 0.0,
+            "min": round(min(vals), 3), "max": round(max(vals), 3),
+            "per_run": [round(x, 3) for x in vals],
+        }
+    return {"runs": runs, **{f"hit@{n}": stats(per_run[f"hit@{n}"]) for n in _N_LIST}}
 
 
 def main() -> None:
@@ -83,16 +91,24 @@ def main() -> None:
         prof = learned.get("recommend_profile")
         on = _run_condition(scenes_by_ho, truth_by_ho, prof, a.runs, a.genre)
         result["profile_on"] = on
-        # 판정: on 평균이 off 평균 + off σ 를 넘으면 "효과 있음", 아니면 "노이즈 내(미확정)"
-        diff = on["hit5_mean"] - off["hit5_mean"]
-        noise = max(off["hit5_stdev"], on["hit5_stdev"], 0.01)
-        result["verdict"] = (
-            "효과 있음 (차이 > 변동)" if diff > noise
-            else "효과 없음 (off가 더 높음)" if diff < -noise
-            else "미확정 (차이가 변동 안에 묻힘)"
-        )
-        result["diff"] = round(diff, 3)
-        result["noise_sigma"] = round(noise, 3)
+        # 판정 기준 = Hit@10 (정답 수 편차에 덜 민감). on 평균이 off 평균을 σ 넘어 상회해야 "효과".
+        verdicts = {}
+        for n in _N_LIST:
+            k = f"hit@{n}"
+            diff = on[k]["mean"] - off[k]["mean"]
+            noise = max(off[k]["stdev"], on[k]["stdev"], 0.01)
+            verdicts[k] = {
+                "off_mean": off[k]["mean"], "on_mean": on[k]["mean"],
+                "diff": round(diff, 3), "noise_sigma": round(noise, 3),
+                "verdict": (
+                    "효과 있음 (차이 > 변동)" if diff > noise
+                    else "효과 없음 (off가 더 높음)" if diff < -noise
+                    else "미확정 (차이가 변동 안에 묻힘)"
+                ),
+            }
+        result["verdicts"] = verdicts
+        result["headline"] = f"Hit@10 기준: {verdicts['hit@10']['verdict']} " \
+            f"(off {verdicts['hit@10']['off_mean']} → on {verdicts['hit@10']['on_mean']}, σ {verdicts['hit@10']['noise_sigma']})"
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
