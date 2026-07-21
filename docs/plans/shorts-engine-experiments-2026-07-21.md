@@ -2,9 +2,8 @@
 작성 2026-07-21 · **기준: 전 과정 실측(추측·과장 배제)**
 
 > 목표: "롱폼에서 쇼츠를 잘 뽑는가"를 **측정 가능하게** 만들고, 채널 데이터로 **강화되는가**를
-> 실데이터로 검증한다. 관련: [shorts-quality-eval.md](shorts-quality-eval.md)(평가 기준) ·
-> [channel-domain-adaptation.md](channel-domain-adaptation.md)(학습 설계) ·
-> [analysis-pipeline-next.md](analysis-pipeline-next.md)(엔진 개선).
+> 실데이터로 검증한다. 읽기용 요약: [shorts-engine-성과보고-2026-07-21.md](shorts-engine-성과보고-2026-07-21.md).
+> (평가 기준·학습 설계·엔진 개선 계획 문서는 실현 완료되어 이 문서로 통합됨 — 2026-07-21 정리.)
 
 ---
 

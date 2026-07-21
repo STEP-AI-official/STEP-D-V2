@@ -41,10 +41,8 @@
 |---|---|
 | [step-d-master-build-plan.md](plans/step-d-master-build-plan.md) | **종합 빌드 플랜 (정본)** — 아키텍처·로드맵·갭·착수점 |
 | [pipeline-plan.md](plans/pipeline-plan.md) | AI 파이프라인 청사진 (발명신고서 구성 A~J) |
-| [channel-domain-adaptation.md](plans/channel-domain-adaptation.md) | 채널 도메인 적응 학습 — 숏폼 성과 라벨로 추천 재랭킹(`apply_learned_rerank`) |
-| [analysis-pipeline-next.md](plans/analysis-pipeline-next.md) | 분석 파이프라인 다음 단계 — 종결어미 스냅·채널 매트릭스 UI·구간 한정 정렬 |
-| [shorts-engine-experiments-2026-07-21.md](plans/shorts-engine-experiments-2026-07-21.md) | **쇼츠 엔진 실증 실험 종합** — 홀드아웃 Hit@N 0→67%, LEARN 교차검증, 자동화 |
-| [shorts-quality-eval.md](plans/shorts-quality-eval.md) | 쇼츠 추천 품질 평가 기준 — 발행 숏폼 정답으로 Hit@N 측정 |
+| [shorts-engine-성과보고-2026-07-21.md](plans/shorts-engine-성과보고-2026-07-21.md) | **쇼츠 엔진 성과보고 (읽기용 요약·진입점)** — A/B 결과·빠른모드(61분→96초)·데이터셋 3층·다음 단계 |
+| [shorts-engine-experiments-2026-07-21.md](plans/shorts-engine-experiments-2026-07-21.md) | 쇼츠 엔진 실증 실험 **상세 로그** — 인프라·측정 방법론·다중 홀드아웃 A/B·폐기 실험·로드맵 (성과보고의 근거) |
 | [context-engine-plan.md](plans/context-engine-plan.md) | 인물·서사 컨텍스트 엔진(CX 트랙) 설계 |
 | [opencut-integration-plan.md](plans/opencut-integration-plan.md) | 검수 에디터 OpenCut 부품 이식 (Phase 1 완료) |
 | [publish-fields-ux-plan.md](plans/publish-fields-ux-plan.md) | 채널별 배포 필수 필드 분리 설계 근거 (프론트 구현 완료) |
@@ -72,5 +70,5 @@
 
 - **현황 문서(ops/·reference/)는 코드가 바뀌면 같이 바꾼다** — 특히 라우트 추가 시 api-reference.md, 테이블 추가 시 data-model.md.
 - 계획 문서(plans/)는 구현이 계획과 달라지면 지우지 말고 **'계획 vs 실제' 표에 기록**한다.
-- 완전히 낡은 문서는 archive/로 옮기지 말고 **삭제**한다 (git 히스토리가 보존; 2026-07-16에 backend-notes·integration-map·step-d-ux-plan·deploy/INFRA·deploy/runbook 삭제).
+- 완전히 낡은 문서는 archive/로 옮기지 말고 **삭제**한다 (git 히스토리가 보존; 2026-07-16에 backend-notes·integration-map·step-d-ux-plan·deploy/INFRA·deploy/runbook 삭제 · 2026-07-21에 실현 완료된 쇼츠 계획문서 3편 삭제: channel-domain-adaptation·analysis-pipeline-next·shorts-quality-eval → shorts-engine-성과보고/experiments로 통합).
 - 검증 커맨드: `apps/server`는 `npx tsc --noEmit`, `apps/web`은 `npx next build`.
