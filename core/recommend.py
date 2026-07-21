@@ -150,11 +150,12 @@ def _base_system(genre: str, profile: dict | None = None) -> str:
 {p['guidance']}
 
 공통 규칙(긴 영상에서 숏폼(쇼츠)을 뽑는 편집자의 눈으로):
-- 훅이 맨 앞이다: 가장 센 순간(펀치라인·리액션·사건)에서 곧바로 시작해 첫 1~2초에 시선을 잡아라.
-  빌드업·도입·배경설명으로 시작하지 마라 — 그 사이에 시청자는 넘긴다.
-- start는 그 강한 순간이 시작되는 지점. 늘어지는 여운·군더더기는 담지 말고 순간이 끝나면 바로 끊어라.
-- 스스로 이해되는 한 덩어리면 된다 (맥락이 꼭 필요하면 최소한만). 장면·문장 경계에서 깔끔히 끊어라.
-- 길이는 30~60초 (임팩트가 확실하면 15~30초도 좋다). 짧고 강하게.
+- 하나의 완결된 '장면'을 담아라 — 펀치라인 한 순간이 아니라, 그 순간이 터지게 만드는
+  짧은 빌드업(질문·상황설정·긴장)부터 리액션·마무리까지. 맥락이 있어야 웃음·감동이 터진다.
+- 훅은 앞쪽에 두되(첫 2~3초 안에 관심), 그렇다고 펀치라인만 잘라내지 마라. 셋업 없이
+  결정타만 있으면 왜 웃긴지 몰라 넘긴다 — 실제 잘 나가는 쇼츠는 셋업→터짐→여운을 담는다.
+- **길이는 30~60초를 기본으로 하라.** 이보다 짧으면 대개 맥락이 잘려 약해진다. 20초 미만은
+  정말 그 한 컷으로 완결될 때만. start/end는 장면·문장 경계에서 깔끔히 끊어라.
 - appeal은 바이럴 잠재력의 절대평가다: 5=확실히 터진다, 4=강함, 3=쓸만함, 2=약함, 1=비추천.{_profile_block(profile)}"""
 
 
@@ -443,12 +444,54 @@ def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: fl
 
 # ── validation ──────────────────────────────────────────────────────────────────
 
+# 모델이 펀치라인만 짧게 뽑는 경향 보정용 하한. 실측(2026-07-21 홀드아웃): 현행 엔진은
+# 4~8초로 자르는데 실제 발행 숏폼은 33~41초였다 — 셋업이 잘려 IoU가 무너졌다. 30초 미만은
+# 장면 경계로 전방 확장해 이 창에 맞춘다(휴리스틱 폴백 HEUR_AIM/MIN과 같은 규범).
+VALIDATE_MIN_SEC = 30.0
+VALIDATE_AIM_SEC = 45.0
+
+
+def _extend_to_min(start: float, end: float, scenes: list[dict] | None,
+                   aim: float = VALIDATE_AIM_SEC, hard_max: float = HEUR_MAX_SEC) -> tuple[float, float]:
+    """너무 짧은 구간을 장면 경계에 맞춰 목표 길이까지 늘린다.
+    모델이 잡은 지점(펀치라인)은 대개 '터지는 순간'이라, 앞으로 확장해 셋업을 담고 뒤로도
+    조금 확장해 여운을 담는다 — 실제 편집자의 30~60초 클립이 그렇게 구성된다.
+    scenes가 있으면 장면 경계로 스냅해 깔끔히 끊고, 없으면 시간으로만 늘린다."""
+    if end - start >= VALIDATE_MIN_SEC:
+        return start, end
+    if scenes:
+        bounds = [(float(s["start"]), float(s["end"])) for s in scenes
+                  if isinstance(s.get("start"), (int, float)) and isinstance(s.get("end"), (int, float))
+                  and float(s["end"]) > float(s["start"])]
+        starts_before = sorted((a for a, _ in bounds if a < start), reverse=True)
+        ends_after = sorted(b for _, b in bounds if b > end)
+        # 앞뒤를 번갈아 넓혀 균형 있게 aim에 도달한다(셋업:여운 ≈ 2:1이 되도록 앞을 먼저).
+        fi = ei = 0
+        for step in range(len(starts_before) + len(ends_after)):
+            if end - start >= aim:
+                break
+            widen_front = (step % 3 != 2) and fi < len(starts_before)  # 3번 중 2번은 앞
+            if widen_front:
+                cand = starts_before[fi]; fi += 1
+                if end - cand <= hard_max:
+                    start = cand
+            elif ei < len(ends_after):
+                cand = ends_after[ei]; ei += 1
+                if cand - start <= hard_max:
+                    end = cand
+    if end - start < VALIDATE_MIN_SEC:  # 장면이 부족하면 시간으로라도 채운다
+        end = start + min(aim, hard_max)
+    return max(0.0, start), end
+
+
 def validate_shorts(shorts: list[dict], duration: float, n: int,
-                    candidates: list[dict] | None = None) -> list[dict]:
+                    candidates: list[dict] | None = None,
+                    scenes: list[dict] | None = None) -> list[dict]:
     """Clamp/normalize the model output; drop degenerate spans instead of 'fixing' them.
     candidates가 있으면 모델이 돌려준 구간을 1단계 후보에 대조한다: start가 어떤 후보의
     start와 ±3s면 그 후보의 정확한 값으로 스냅(모델의 분:초 환산 오차 제거), 모든 후보와
-    15s 넘게 어긋나면 지어낸 구간으로 보고 버린다 (2단계 규칙: 후보 밖 구간 금지)."""
+    15s 넘게 어긋나면 지어낸 구간으로 보고 버린다 (2단계 규칙: 후보 밖 구간 금지).
+    scenes가 있으면 너무 짧은 구간을 장면 경계로 전방 확장해 30~60초 창에 맞춘다."""
     snap: list[tuple[float, float]] = []
     for c in candidates or []:
         try:
@@ -484,13 +527,16 @@ def validate_shorts(shorts: list[dict], duration: float, n: int,
             # Dropping here is exactly how a whole board went empty; trimming keeps the pick.
             print(f"   (길이 초과 {length:.0f}s → {MAX_SHORT_SEC}s 트림: {s.get('title', '')[:30]})")
             end = start + MAX_SHORT_SEC
-        elif length < MIN_SHORT_SEC:
-            # Too short → extend to the minimum; drop only if truly degenerate (can't reach 1s).
-            extended = min(duration, start + MIN_SHORT_SEC) if duration > 0 else start + MIN_SHORT_SEC
-            if extended - start < 1.0:
-                print(f"   (후보 제외 — 길이 {length:.1f}s: {s.get('title', '')[:30]})")
-                continue
-            end = extended
+        elif length < 1.0:
+            # 1초 미만은 데이터 오류 — 확장으로 살리지 않고 버린다.
+            print(f"   (후보 제외 — 길이 {length:.1f}s: {s.get('title', '')[:30]})")
+            continue
+        elif length < VALIDATE_MIN_SEC:
+            # 펀치라인만 짧게 뽑힌 것 → 장면 경계로 전방 확장해 30~60초 창에 맞춘다.
+            start, end = _extend_to_min(start, end, scenes)
+            if duration > 0:
+                end = min(end, duration)
+            print(f"   (짧은 구간 확장 {length:.0f}s → {end - start:.0f}s: {s.get('title', '')[:30]})")
         appeal = s.get("appeal")
         try:
             appeal = max(1, min(5, int(appeal)))
@@ -655,6 +701,12 @@ def recommend(
         return {"genre": DEFAULT_GENRE, "shorts": []}
     client = genai.Client(vertexai=True, project=PROJECT, location=LOCATION)
 
+    # 영상 길이에 맞춰 추천 수를 늘린다. 실측(2026-07-21): 13분 영상에서 편집자는 숏폼 3개를
+    # 뽑았는데 엔진은 n=5 고정이라 후반부 지점을 놓쳤다. 60분이면 편집자가 10개 넘게 만든다 —
+    # 고정 5개는 롱폼일수록 재현율을 떨어뜨린다. 약 10분당 3개, 상한 20개.
+    vid_min = (scenes[-1]["end"]) / 60.0
+    n = max(n, min(20, round(vid_min / 10.0 * 3) or n))
+
     if genre == "auto" or genre not in GENRE_PACKS:
         genre = detect_genre(client, scenes)
         print(f"   장르 감지: {genre} ({_pack(genre)['label']})")
@@ -722,7 +774,7 @@ def recommend(
         shorts = apply_profile_fit(shorts, profile, duration)
         if profile and before != len(shorts):
             print(f"   프로파일 적합 적용: {before} → {len(shorts)} (금기 제외)")
-        shorts = validate_shorts(shorts, duration, n, candidates=candidates)
+        shorts = validate_shorts(shorts, duration, n, candidates=candidates, scenes=scenes)
 
     # GUARANTEE — the board is never empty. If the AI path produced nothing shippable
     # (found nothing, synthesis flaked, or validation trimmed everything away), cut shorts
