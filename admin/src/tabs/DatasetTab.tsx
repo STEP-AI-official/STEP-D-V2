@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  fetchLearnedProfile,
   fetchMatchExport,
+  fetchMatchStatus,
   fetchOverview,
   getToken,
   runBulk,
   runBulkAll,
+  runLearn,
+  runSegment,
+  type LearnedProfile,
   type LearnPair,
+  type MatchStatus,
   type OverviewChannel,
 } from "../api";
 import { fmtDur, fmtLong, nfmt } from "../util";
@@ -26,7 +32,27 @@ export default function DatasetTab() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [status, setStatus] = useState<MatchStatus | null>(null);
+  const [learned, setLearned] = useState<LearnedProfile | null>(null);
   const token = getToken();
+
+  // 선택 채널의 단계별 진행(매칭·설명·잡) + 학습된 규칙을 주기적으로 갱신.
+  const refreshChannel = useCallback(async (id: string) => {
+    if (!id) return;
+    try {
+      const [s, p] = await Promise.all([fetchMatchStatus(id), fetchLearnedProfile(id)]);
+      setStatus(s);
+      setLearned(p.profile);
+    } catch {
+      /* 부가 정보 — 실패해도 화면을 막지 않는다 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshChannel(channelId);
+    const t = window.setInterval(() => void refreshChannel(channelId), 20_000);
+    return () => window.clearInterval(t);
+  }, [channelId, refreshChannel]);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -89,6 +115,38 @@ export default function DatasetTab() {
       const r = await runBulkAll(300);
       setMsg({ kind: "ok", text: `채널 ${r.channels}곳 · ${r.queued}편 큐잉 · 예상 ${Math.round(r.etaMinutes / 60)}시간` });
       void loadOverview();
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function fillSegments() {
+    setBusy(true);
+    try {
+      const r = await runSegment(channelId);
+      setMsg({
+        kind: "ok",
+        text: r.missing === 0 ? "채울 구간이 없습니다 (이미 완료)" : `구간 설명 시작 — 미설명 ${r.missing}건 (롱폼 ${r.longforms ?? "?"}편)`,
+      });
+      void refreshChannel(channelId);
+    } catch (e) {
+      setMsg({ kind: "err", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function learnRules() {
+    setBusy(true);
+    try {
+      await runLearn(channelId);
+      setMsg({
+        kind: "ok",
+        text: "규칙 학습을 요청했습니다. 미설명 구간이 있으면 먼저 자동으로 채운 뒤 학습합니다 (몇 분~수십 분).",
+      });
+      void refreshChannel(channelId);
     } catch (e) {
       setMsg({ kind: "err", text: (e as Error).message });
     } finally {
@@ -166,6 +224,98 @@ export default function DatasetTab() {
       </div>
 
       {msg && <div className={`m-msg ${msg.kind}`} style={{ margin: "10px 0" }}>{msg.text}</div>}
+
+      {/* ── 학습 파이프라인 (선택 채널) ────────────────────────────────── */}
+      {channelId && (() => {
+        const selName = rows.find((r) => r.channelId === channelId)?.channelName ?? channelId;
+        const matched = status?.matched ?? 0;
+        const described = status?.described ?? 0;
+        const jobs = status?.jobs;
+        const busyJobs = (jobs?.pending ?? 0) + (jobs?.running ?? 0) > 0;
+        const step = (n: number, label: string, doneCount: number, totalCount: number, active: boolean) => {
+          const done = totalCount > 0 && doneCount >= totalCount;
+          return (
+            <div className={`lp-step${done ? " done" : active ? " active" : ""}`}>
+              <span className="lp-num">{done ? "✓" : n}</span>
+              <div className="lp-body">
+                <div className="lp-label">{label}</div>
+                <div className="lp-sub">{totalCount > 0 ? `${doneCount} / ${totalCount}` : "—"}</div>
+              </div>
+            </div>
+          );
+        };
+        return (
+          <div style={{ marginTop: 22 }}>
+            <div className="d-head">
+              <b>🧠 학습 파이프라인 — {selName}</b>
+              {busyJobs && <span className="m-msg">잡 실행중 {jobs?.running ?? 0} · 대기 {jobs?.pending ?? 0}</span>}
+              {jobs?.failed ? <span className="m-msg err">실패 {jobs.failed}</span> : null}
+            </div>
+
+            <div className="lp-steps">
+              {step(1, "① 매칭 (숏폼↔롱폼 구간)", matched, matched || 1, busyJobs)}
+              {step(2, "② 구간 설명 (자막·장면)", described, matched, described < matched && busyJobs)}
+              {step(3, "③ 규칙 학습", learned?.ready ? 1 : 0, 1, false)}
+            </div>
+
+            <div className="m-actions" style={{ marginTop: 10 }}>
+              <button className="cap" disabled={busy || !token || matched === 0}
+                onClick={() => bulkOne(channelId)} title="미매칭 숏폼을 롱폼에 자동 매칭">
+                ⚡ 매칭 채우기
+              </button>
+              <button className="cap" disabled={busy || !token || described >= matched}
+                onClick={fillSegments} title="매칭 구간의 자막·장면요약 생성">
+                ✍️ 설명 채우기 ({matched - described} 남음)
+              </button>
+              <button className="save" disabled={busy || !token || matched === 0}
+                onClick={learnRules} title="고성과 규칙 학습 → 채널 프로파일 저장">
+                🧠 규칙 학습 실행
+              </button>
+              <span className="m-msg" style={{ marginLeft: 4 }}>
+                버튼 하나로 됩니다 — 설명이 덜 됐으면 학습이 알아서 먼저 채웁니다.
+              </span>
+            </div>
+
+            {/* 학습된 규칙 카드 */}
+            {learned?.ready ? (
+              <div className="lp-profile">
+                <div className="lp-phead">
+                  <b>학습된 채널 규칙</b>
+                  <span className={`lp-conf ${(learned.confidence ?? 0) >= 0.7 ? "hi" : "mid"}`}>
+                    신뢰도 {Math.round((learned.confidence ?? 0) * 100)}%
+                  </span>
+                  {learned.sample && (
+                    <span className="m-msg">표본 high {learned.sample.high} / low {learned.sample.low}</span>
+                  )}
+                  {(learned.confidence ?? 0) < 0.7 && (
+                    <span className="m-msg warn">· 표본 더 쌓이면 정확해집니다</span>
+                  )}
+                </div>
+                <div className="lp-cols">
+                  <div>
+                    <div className="lp-ctitle good">✓ 고성과 패턴</div>
+                    <ul>{(learned.winning_patterns ?? []).map((w, i) => (
+                      <li key={i}><b>{w.pattern}</b>{w.why ? <span className="dim"> — {w.why}</span> : null}</li>
+                    ))}</ul>
+                  </div>
+                  <div>
+                    <div className="lp-ctitle bad">✗ 피해야 할 패턴</div>
+                    <ul>{(learned.avoid_patterns ?? []).map((a, i) => <li key={i}>{a}</li>)}</ul>
+                    {learned.optimal_length_sec && (
+                      <div className="lp-len">최적 길이 <b>{learned.optimal_length_sec.min}~{learned.optimal_length_sec.max}초</b></div>
+                    )}
+                  </div>
+                </div>
+                <div className="m-hint">
+                  이 규칙은 저장돼, 이 채널 영상을 분석할 때 추천 엔진에 자동으로 반영됩니다.
+                </div>
+              </div>
+            ) : learned?.message ? (
+              <div className="m-msg" style={{ marginTop: 8 }}>아직 학습 전: {learned.message}</div>
+            ) : null}
+          </div>
+        );
+      })()}
 
       {/* ── LEARN 데이터셋 ───────────────────────────────────────────── */}
       <div className="d-head" style={{ marginTop: 22 }}>

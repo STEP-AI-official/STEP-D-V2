@@ -95,9 +95,40 @@ export interface MatchStatus {
   matched: number;
   auto: number;
   confirmed: number;
+  described?: number;
 }
 export const fetchMatchStatus = (channelId: string) =>
   req<MatchStatus>(`/api/lab/match/status/${encodeURIComponent(channelId)}`);
+
+/** 매칭 구간의 자막·장면요약 채우기 (LEARN 입력 완성) 트리거. */
+export const runSegment = (channelId: string) =>
+  req<{ ok: true; queued: boolean; missing: number; longforms?: number }>(
+    "/api/lab/match/segment",
+    writeInit("POST", { channelId }),
+  );
+
+/** 채널 규칙 학습 트리거 (매칭·설명 데이터 → 고성과 규칙 → 채널 프로파일). */
+export const runLearn = (channelId: string) =>
+  req<{ ok: true; queued: boolean; alreadyPending: boolean }>(
+    "/api/lab/match/learn",
+    writeInit("POST", { channelId }),
+  );
+
+export interface LearnedProfile {
+  ready?: boolean;
+  confidence?: number;
+  channel?: string;
+  winning_patterns?: { pattern: string; why?: string; evidence?: string[] }[];
+  avoid_patterns?: string[];
+  optimal_length_sec?: { min: number; max: number };
+  title_rules?: string[];
+  sample?: { high: number; low: number; described: number };
+  message?: string;
+}
+export const fetchLearnedProfile = (channelId: string) =>
+  req<{ profile: LearnedProfile | null; at: number | null }>(
+    `/api/lab/match/profile/${encodeURIComponent(channelId)}`,
+  );
 
 export const deleteMatch = (shortVideoId: string) =>
   req<{ ok: true }>(`/api/lab/match/${encodeURIComponent(shortVideoId)}`, writeInit("DELETE"));

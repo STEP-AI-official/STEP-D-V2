@@ -148,3 +148,32 @@ video { width: 100%; border-radius: 10px; background: #000; }
   font-size: 12px; color: var(--mut); margin-bottom: 12px; }
 .d-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
 .d-note { color: var(--mut2); font-size: 11px; }
+
+/* ── 학습 파이프라인 ─────────────────────────────────────────────────────── */
+.lp-steps { display: flex; gap: 10px; margin: 4px 0 6px; flex-wrap: wrap; }
+.lp-step { display: flex; gap: 10px; align-items: center; flex: 1; min-width: 200px;
+  padding: 10px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--border); }
+.lp-step.active { border-color: var(--accent); }
+.lp-step.done { border-color: var(--good); }
+.lp-num { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border-radius: 50%; background: var(--panel2); color: var(--mut); font-weight: 700; font-size: 13px; flex-shrink: 0; }
+.lp-step.done .lp-num { background: var(--good); color: #08150c; }
+.lp-step.active .lp-num { background: var(--accent); color: #08111f; }
+.lp-label { font-size: 12px; font-weight: 600; }
+.lp-sub { font-size: 11px; color: var(--mut2); font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+.lp-profile { margin-top: 12px; padding: 14px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--border); }
+.lp-phead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.lp-conf { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 20px; }
+.lp-conf.hi { background: #10261a; color: var(--good); }
+.lp-conf.mid { background: #2a2410; color: var(--warn); }
+.lp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.lp-ctitle { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.lp-ctitle.good { color: var(--good); } .lp-ctitle.bad { color: var(--bad); }
+.lp-cols ul { margin: 0; padding-left: 16px; }
+.lp-cols li { font-size: 12px; line-height: 1.55; margin-bottom: 5px; }
+.lp-cols li .dim { color: var(--mut2); }
+.lp-len { margin-top: 8px; font-size: 12px; color: var(--mut); }
+.lp-len b { color: var(--accent); }
+.m-msg.warn { color: var(--warn); }
