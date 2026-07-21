@@ -982,7 +982,7 @@ app.post("/api/media/from-youtube", async (c) => {
   try {
     jobId = await enqueue(
       "youtube.download",
-      { mediaId, url, programId, title },
+      { mediaId, url, programId, title, ...(body.fast ? { fast: true } : {}) },
       { dedupeKey: `youtube.download:${mediaId}` },
     );
   } catch (err) {

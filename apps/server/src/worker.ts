@@ -479,7 +479,9 @@ async function handleYoutubeDownload(job: Job): Promise<void> {
     });
 
     await markContentAnalysisPending(mediaId);
-    await enqueue("content.analyze", { mediaId }, { dedupeKey: `content.analyze:${mediaId}` });
+    // fast(자막만 빠른 추천)를 다운로드 잡에서 이어받아 content.analyze로 전달 — 대량 배치용.
+    const fast = Boolean(job.payload.fast);
+    await enqueue("content.analyze", { mediaId, ...(fast ? { fast: true } : {}) }, { dedupeKey: `content.analyze:${mediaId}` });
     await setEpisodeNote("AI 장면 분석 대기 중…", "progress", 30);
     console.log(`[worker] youtube.download ${mediaId}: ${size} bytes → ${storedPath}`);
 
