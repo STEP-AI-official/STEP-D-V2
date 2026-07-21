@@ -369,6 +369,7 @@ def analyze(
         _progress("recommend", 85, "쇼츠 추천 중")
         rec = recommend(
             scenes, n=shorts_n, genre=genre, profile=profile, channels=channels,
+            transcript=refined,
             on_progress=lambda done, total: _progress("recommend", 85 + 10 * done / max(1, total), f"후보 추출 {done}/{total} 구간"),
         )
         _save_json(out_dir / "shorts.json", rec)

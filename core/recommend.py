@@ -485,9 +485,57 @@ def _extend_to_min(start: float, end: float, scenes: list[dict] | None,
     return max(0.0, start), end
 
 
+# 발화 경계 스냅 — 클립이 대사 중간에서 시작하거나 문장을 뚝 끊는 걸 막는다.
+# 장면 경계(시각적 컷)는 침묵이 아니라 말하는 도중일 수 있어, 그대로 자르면 "갑자기 대사 시작"·
+# "말 끊김"이 난다. STT 발화(utterance) 타임스탬프로 경계를 자연스러운 지점으로 옮긴다.
+SPEECH_SNAP_WINDOW = 2.5  # 이 범위 안에서만 스냅 — 넘으면 클립을 왜곡하므로 손대지 않는다.
+
+
+def _snap_to_speech(start: float, end: float, utterances: list[dict] | None,
+                    window: float = SPEECH_SNAP_WINDOW) -> tuple[float, float]:
+    """클립 경계가 발화 도중이면 자연스러운 지점으로 옮긴다.
+
+    시작: 발화 도중이면 그 발화 처음으로 당겨 문장 앞부터 시작. 발화 시작이 window보다 멀면
+          그 발화를 건너뛰고 다음 대사 시작으로 밀어 깔끔히 연다.
+    끝:   발화 도중이면 그 발화 끝까지 늘려 문장을 완결. 발화 끝이 window보다 멀면 그 발화
+          앞으로 당겨 직전 대사에서 끝낸다.
+    어느 경계든 window(기본 2.5s) 밖이면 손대지 않는다 — 침묵 구간의 장면 컷은 이미 깔끔하다."""
+    utts = sorted(
+        (float(u["start"]), float(u["end"])) for u in (utterances or [])
+        if isinstance(u.get("start"), (int, float)) and isinstance(u.get("end"), (int, float))
+        and float(u["end"]) > float(u["start"])
+    )
+    if not utts:
+        return start, end
+    ns, ne = start, end
+    for us, ue in utts:
+        if us >= start:
+            break
+        if us < start < ue:                        # 발화 도중에서 시작
+            if start - us <= window:
+                ns = us                            # 문장 처음부터 (앞으로 당김)
+            elif ue - start <= window:
+                ns = ue                            # 이 대사 건너뛰고 다음부터 (뒤로 밀기)
+            break
+    for us, ue in utts:
+        if us >= end:
+            break
+        if us < end < ue:                          # 발화 도중에서 끝
+            if ue - end <= window:
+                ne = ue                            # 문장 끝까지 (뒤로 늘림)
+            elif end - us <= window:
+                ne = us                            # 직전 대사에서 끝 (앞으로 당김)
+            break
+    # 스냅이 구간을 뒤집거나 절반 넘게 깎으면 원복(안전장치)
+    if ne - ns >= max(float(MIN_SHORT_SEC), (end - start) * 0.5):
+        return round(ns, 1), round(ne, 1)
+    return start, end
+
+
 def validate_shorts(shorts: list[dict], duration: float, n: int,
                     candidates: list[dict] | None = None,
-                    scenes: list[dict] | None = None) -> list[dict]:
+                    scenes: list[dict] | None = None,
+                    transcript: list[dict] | None = None) -> list[dict]:
     """Clamp/normalize the model output; drop degenerate spans instead of 'fixing' them.
     candidates가 있으면 모델이 돌려준 구간을 1단계 후보에 대조한다: start가 어떤 후보의
     start와 ±3s면 그 후보의 정확한 값으로 스냅(모델의 분:초 환산 오차 제거), 모든 후보와
@@ -538,6 +586,12 @@ def validate_shorts(shorts: list[dict], duration: float, n: int,
             if duration > 0:
                 end = min(end, duration)
             print(f"   (짧은 구간 확장 {length:.0f}s → {end - start:.0f}s: {s.get('title', '')[:30]})")
+        # 최종 다듬기: 발화 경계로 스냅해 대사 중간 시작/끊김 방지 (길이 재조정은 하지 않는다).
+        if transcript:
+            snapped = _snap_to_speech(start, end, transcript)
+            if snapped != (round(start, 1), round(end, 1)) and snapped != (start, end):
+                print(f"   (발화 스냅 {start:.1f}~{end:.1f} → {snapped[0]:.1f}~{snapped[1]:.1f}: {str(s.get('title', ''))[:24]})")
+            start, end = snapped
         appeal = s.get("appeal")
         try:
             appeal = max(1, min(5, int(appeal)))
@@ -692,6 +746,7 @@ def recommend(
     on_progress: Optional[Callable[[int, int], None]] = None,
     profile: dict | None = None,
     channels: list[str] | None = None,
+    transcript: list[dict] | None = None,
 ) -> dict:
     """Two-phase shorts pick. Returns {"genre": resolved, "shorts": [...]}.
     A program `profile` (optional) steers the prompts and re-ranks by program-fit
@@ -775,14 +830,14 @@ def recommend(
         shorts = apply_profile_fit(shorts, profile, duration)
         if profile and before != len(shorts):
             print(f"   프로파일 적합 적용: {before} → {len(shorts)} (금기 제외)")
-        shorts = validate_shorts(shorts, duration, n, candidates=candidates, scenes=scenes)
+        shorts = validate_shorts(shorts, duration, n, candidates=candidates, scenes=scenes, transcript=transcript)
 
     # GUARANTEE — the board is never empty. If the AI path produced nothing shippable
     # (found nothing, synthesis flaked, or validation trimmed everything away), cut shorts
     # mechanically from the scene signals. Always yields >=1 when scenes exist.
     if not shorts:
         floor = heuristic_shorts(scenes, n, duration, genre)
-        shorts = validate_shorts(floor, duration, n) or floor
+        shorts = validate_shorts(floor, duration, n, transcript=transcript) or floor
         print(f"   휴리스틱 폴백 — 쇼츠 {len(shorts)}개 생성 (편집자식 30~60초 컷)")
 
     # Channel(배포처) fit — 최종 = 융합 × 채널적합 × 프로그램적합, evaluated PER destination.
