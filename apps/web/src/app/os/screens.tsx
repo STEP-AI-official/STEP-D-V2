@@ -41,10 +41,10 @@ const PROGDATA = [
   { id: "p4", title: "트롯 대잔치", section: "뮤직", age: 0, cast: ["현숙", "영탁"], eps: 12, shorts: 120, smrReady: true, missing: [] },
 ];
 const ageLabel = (a: number) => (a === 0 ? "전체" : `${a}세`);
-export function Programs({ flash, onOpenProgram }: { flash: (m: string) => void; onOpenProgram: (t: string) => void }) {
+export function Programs({ onOpenProgram, onNewProgram, onUpload }: { onOpenProgram: (t: string) => void; onNewProgram: () => void; onUpload: (t: string) => void }) {
   return (
     <div className="max-w-[1080px] px-[30px] py-[26px]">
-      <Eyebrow kicker="프로그램 → 회차" title="프로그램" desc="프로그램을 먼저 등록한 뒤 원본을 업로드하면 회차·추천이 생성돼요." action={<PrimaryBtn onClick={() => flash("새 프로그램 (데모)")}>{Plus}새 프로그램</PrimaryBtn>} />
+      <Eyebrow kicker="프로그램 → 회차" title="프로그램" desc="프로그램을 먼저 등록한 뒤 원본을 업로드하면 회차·추천이 생성돼요." action={<PrimaryBtn onClick={onNewProgram}>{Plus}새 프로그램</PrimaryBtn>} />
       <div className="flex flex-col gap-3">
         {PROGDATA.map((p) => {
           const cast = p.cast.length ? `출연 ${p.cast.slice(0, 3).join(", ")}${p.cast.length > 3 ? " 외" : ""}` : "출연 미등록";
@@ -58,7 +58,7 @@ export function Programs({ flash, onOpenProgram }: { flash: (m: string) => void;
               </div>
               <div className="flex flex-none gap-2">
                 <button onClick={() => onOpenProgram(p.title)} className="rounded-[9px] border border-[#2b2b2b] bg-[#1e1e1e] px-[15px] py-[9px] text-[12.5px] font-semibold text-[#cfcfcf] hover:border-[#3a3a3a] hover:text-[#e5e5e5]">회차 보기</button>
-                <PrimaryBtn onClick={() => flash(`${p.title} 업로드 (데모)`)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}><path d="M12 3v12M8 11l4-4 4 4M4 19h16" /></svg>업로드</PrimaryBtn>
+                <PrimaryBtn onClick={() => onUpload(p.title)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}><path d="M12 3v12M8 11l4-4 4 4M4 19h16" /></svg>업로드</PrimaryBtn>
               </div>
             </div>
           );
@@ -86,7 +86,7 @@ const CLIPST: Record<string, { l: string; c: string; bg: string; ln: string }> =
 };
 const CLIP_FILTERS = ["전체", "초안", "확정", "게시됨"];
 const CF_MAP: Record<string, string> = { 초안: "draft", 확정: "confirmed", 게시됨: "published" };
-export function GlobalClips({ flash }: { flash: (m: string) => void }) {
+export function GlobalClips({ flash, onDistribute }: { flash: (m: string) => void; onDistribute: (t: string) => void }) {
   const [f, setF] = useState("전체");
   const list = CLIPS.filter((c) => f === "전체" || c.state === CF_MAP[f]);
   return (
@@ -111,7 +111,7 @@ export function GlobalClips({ flash }: { flash: (m: string) => void }) {
                 <div className="mt-[5px] text-[11px] text-[#707070]">{c.prog} · <span className="mono">{c.range}</span></div>
                 <div className="mt-3 flex gap-[7px]">
                   <button onClick={() => flash("편집기 v2 (데모 범위 밖)")} className="flex-1 rounded-[8px] border border-[#2b2b2b] bg-[#1e1e1e] py-2 text-[12px] font-semibold text-[#cfcfcf] hover:border-[#3a3a3a] hover:text-[#eceef2]">편집</button>
-                  <button onClick={() => flash(`${c.title} 배포 (데모)`)} className="flex-1 rounded-[8px] bg-[#6b74f0] py-2 text-[12px] font-semibold text-white hover:bg-[#5a63e6]">배포</button>
+                  <button onClick={() => onDistribute(c.title)} className="flex-1 rounded-[8px] bg-[#6b74f0] py-2 text-[12px] font-semibold text-white hover:bg-[#5a63e6]">배포</button>
                 </div>
               </div>
             </div>
@@ -318,8 +318,8 @@ export function Trends() {
 }
 
 /* ─────────── PUBLISH CHANNELS ─────────── */
-const PLATFORMS = [{ key: "smr", name: "네이버 SMR", c: "#34d399", metric: "배급 채널" }, { key: "youtube", name: "YouTube", c: "#ff6b78", metric: "구독" }, { key: "meta", name: "Meta Reels", c: "#5e9bff", metric: "팔로워" }];
-const CHANNELS = [
+export const PLATFORMS = [{ key: "smr", name: "네이버 SMR", c: "#34d399", metric: "배급 채널", desc: "제휴 배급 (드라마·예능)" }, { key: "youtube", name: "YouTube", c: "#ff6b78", metric: "구독", desc: "쇼츠·롱폼 채널" }, { key: "meta", name: "Meta Reels", c: "#5e9bff", metric: "팔로워", desc: "인스타·페이스북 릴스" }];
+export const CHANNELS = [
   { plat: "smr", handle: "솔로천국 시즌4", count: "제휴", progs: ["솔로천국 시즌4"], ok: true },
   { plat: "smr", handle: "트롯 대잔치", count: "제휴", progs: ["트롯 대잔치"], ok: true },
   { plat: "smr", handle: "환승로그", count: "제휴", progs: ["환승로그"], ok: true },
@@ -335,10 +335,10 @@ const EXPORT_PRESETS = [
   { name: "Meta Reels", spec: "9:16 레터박스 · H.264 · 자막 번인 · 1080p" },
   { name: "네이버 SMR 납품", spec: "16:9 · H.264 · 무자막 · 1080p" },
 ];
-export function Channels({ flash }: { flash: (m: string) => void }) {
+export function Channels({ flash, onRegister }: { flash: (m: string) => void; onRegister: () => void }) {
   return (
     <div className="max-w-[1160px] px-[30px] py-[26px]">
-      <Eyebrow kicker={`연동 채널 관리 · ${CHANNELS.length}개 연결`} title="배포채널" desc="플랫폼별로 여러 계정을 등록하고, 각 채널에 프로그램을 매핑해 배포처를 관리해요." action={<PrimaryBtn onClick={() => flash("채널 등록 (데모)")}>{Plus}채널 등록</PrimaryBtn>} />
+      <Eyebrow kicker={`연동 채널 관리 · ${CHANNELS.length}개 연결`} title="배포채널" desc="플랫폼별로 여러 계정을 등록하고, 각 채널에 프로그램을 매핑해 배포처를 관리해요." action={<PrimaryBtn onClick={onRegister}>{Plus}채널 등록</PrimaryBtn>} />
       <div className="mb-[26px] flex flex-col gap-5">
         {PLATFORMS.map((p) => {
           const list = CHANNELS.filter((c) => c.plat === p.key);

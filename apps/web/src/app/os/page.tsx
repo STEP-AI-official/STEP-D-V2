@@ -14,6 +14,7 @@
  */
 import { useState, useRef, useCallback } from "react";
 import { Programs, GlobalClips, Distribution, Analytics, Trends, Channels, Ops } from "./screens";
+import { UploadModal, NewProgramModal, DistributeModal, RegisterModal } from "./modals";
 
 /* ─────────────────────────── data ─────────────────────────── */
 type Screen =
@@ -135,6 +136,11 @@ export default function ReviewOsPage() {
   const [resolved, setResolved] = useState<Flags>({});
   const [pplOut, setPplOut] = useState<Flags>({});
   const [clipRender, setClipRender] = useState<Record<string, string>>({});
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadProg, setUploadProg] = useState<string | undefined>(undefined);
+  const [newProgOpen, setNewProgOpen] = useState(false);
+  const [distClip, setDistClip] = useState<string | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const tRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -196,7 +202,7 @@ export default function ReviewOsPage() {
           </div>
           <div className="flex-1" />
           <div className="flex items-center gap-2 rounded-full border border-[#232323] bg-[#161616] px-3 py-1.5 text-[12px] text-[#9a9a9a]"><span className="size-[7px] rounded-full bg-[#34d399]" />분석 워커 4대 · 큐 2</div>
-          <button onClick={() => flash("원본 업로드 (데모)")} className="flex items-center gap-[7px] rounded-[9px] bg-[#6b74f0] px-[15px] py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#5a63e6]">
+          <button onClick={() => { setUploadProg(undefined); setUploadOpen(true); }} className="flex items-center gap-[7px] rounded-[9px] bg-[#6b74f0] px-[15px] py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#5a63e6]">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4}><path d="M12 5v14M5 12h14" /></svg>원본 업로드
           </button>
         </header>
@@ -214,15 +220,20 @@ export default function ReviewOsPage() {
               clipRender={clipRender} setClipRender={setClipRender} flash={flash} back={() => setScreen("library")}
             />
           )}
-          {screen === "programs" && <Programs flash={flash} onOpenProgram={(t) => { setLib(t); setScreen("library"); }} />}
-          {screen === "clips" && <GlobalClips flash={flash} />}
+          {screen === "programs" && <Programs onOpenProgram={(t) => { setLib(t); setScreen("library"); }} onNewProgram={() => setNewProgOpen(true)} onUpload={(t) => { setUploadProg(t); setUploadOpen(true); }} />}
+          {screen === "clips" && <GlobalClips flash={flash} onDistribute={(t) => setDistClip(t)} />}
           {screen === "dist" && <Distribution flash={flash} />}
           {screen === "analytics" && <Analytics />}
           {screen === "trends" && <Trends />}
-          {screen === "channels" && <Channels flash={flash} />}
+          {screen === "channels" && <Channels flash={flash} onRegister={() => setRegisterOpen(true)} />}
           {screen === "ops" && <Ops />}
         </div>
       </main>
+
+      {uploadOpen && <UploadModal onClose={() => setUploadOpen(false)} flash={flash} defaultProg={uploadProg} />}
+      {newProgOpen && <NewProgramModal onClose={() => setNewProgOpen(false)} flash={flash} />}
+      {distClip && <DistributeModal clip={distClip} onClose={() => setDistClip(null)} flash={flash} />}
+      {registerOpen && <RegisterModal onClose={() => setRegisterOpen(false)} flash={flash} />}
 
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-[9px] rounded-[10px] border border-[#333333] bg-[#1a1e26] px-[18px] py-[11px] text-[13px] font-semibold text-[#eceef2] shadow-[0_12px_30px_rgba(0,0,0,.35)]">
