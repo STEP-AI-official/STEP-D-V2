@@ -288,7 +288,7 @@ export default function ReviewOsPage() {
         </div>
       </main>
 
-      {derivEp && <DerivationModal ep={derivEp} recs={app.recsForEpisode(derivEp.id).length} clips={app.clipsForEpisode(derivEp.id).length} onClose={() => setDerivEp(null)} onEnter={() => { const id = derivEp.id; setDerivEp(null); router.push(`/episodes/${id}`); }} />}
+      {derivEp && <DerivationModal ep={derivEp} onClose={() => setDerivEp(null)} onEnter={() => { const id = derivEp.id; setDerivEp(null); router.push(`/episodes/${id}`); }} />}
       {uploadOpen && (
         <UploadModal
           onClose={() => setUploadOpen(false)} flash={flash} defaultProg={uploadProg}
@@ -763,9 +763,48 @@ function PerfTab() {
 }
 
 /* ─────────────────────────── DERIVATION MODAL (원본 → 파생) ─────────────────────────── */
-function DerivationModal({ ep, recs, clips, onClose, onEnter }: {
-  ep: Episode; recs: number; clips: number; onClose: () => void; onEnter: () => void;
+const CLIP_STATUS_LABEL: Record<Clip["status"], string> = {
+  editing: "초안", encoding: "인코딩", ready: "확정", published: "게시",
+};
+function DerivationModal({ ep, onClose, onEnter }: {
+  ep: Episode; onClose: () => void; onEnter: () => void;
 }) {
+  const app = useAppData();
+  const router = useRouter();
+  const master = app.mediaForEpisode(ep.id, "master");
+  const abs = (u?: string | null) => (u ? (u.startsWith("http") ? u : app.apiBase + u) : undefined);
+  const masterThumb = abs(master?.thumbUrl);
+  const clipList = app.clipsForEpisode(ep.id);
+  const recList = [...app.recsForEpisode(ep.id)].sort((a, b) => b.appeal - a.appeal);
+  const recs = recList.length;
+  const clips = clipList.length;
+
+  // Shorts previews — prefer adopted clips (→ 편집기), else AI candidates (→ 검수 워크스페이스).
+  // No per-segment frames exist server-side, so the master thumbnail stands in as the preview
+  // image (falls back to a gradient when the master has none yet).
+  const go = (path: string) => { onClose(); router.push(path); };
+  const previews = clips > 0
+    ? clipList.map((c, i) => ({
+        key: c.id,
+        title: c.title,
+        range: c.startTime != null && c.endTime != null
+          ? `${formatTimecode(c.startTime)}–${formatTimecode(c.endTime)}`
+          : formatTimecode(c.durationSec),
+        badge: CLIP_STATUS_LABEL[c.status],
+        thumb: abs(c.thumbnailUrl) ?? masterThumb,
+        grad: THUMBS[i % THUMBS.length],
+        onClick: () => go(`/editor/${c.id}`),
+      }))
+    : recList.map((r, i) => ({
+        key: r.id,
+        title: r.title,
+        range: `${formatTimecode(r.startTime)}–${formatTimecode(r.endTime)}`,
+        badge: `#${i + 1}`,
+        thumb: masterThumb,
+        grad: THUMBS[i % THUMBS.length],
+        onClick: onEnter,
+      }));
+
   const rgba = (h: string, a: number) => { const n = parseInt(h.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
   const cats = [
     { key: "shorts", label: "쇼츠 클립", color: "#8b7cf6", count: `${recs}개`, sub: "세로 9:16 후보" },
@@ -789,10 +828,20 @@ function DerivationModal({ ep, recs, clips, onClose, onEnter }: {
           <div className="mb-4 text-[12px] text-[#9a9a9a]">하나의 원본이 AI를 거쳐 <b className="text-[#eceef2]">파생물</b>로 구조화돼요. 카드를 눌러 각 파생 결과를 확인하세요.</div>
           <div className="mb-5 flex items-stretch gap-0">
             <div className="flex w-[216px] flex-none flex-col justify-center">
-              <div className="relative aspect-video overflow-hidden rounded-[12px] border border-[#333333]" style={{ background: grad }}>
+              <button
+                onClick={onEnter}
+                title="검수 워크스페이스 열기"
+                className="group relative aspect-video overflow-hidden rounded-[12px] border border-[#333333] bg-cover bg-center transition-colors hover:border-[#4a4a4a]"
+                style={masterThumb ? { backgroundImage: `url(${masterThumb})` } : { background: grad }}
+              >
                 <span className="absolute left-2 top-2 rounded-[6px] bg-black/50 px-2 py-[3px] text-[10px] font-bold text-white">원본 영상</span>
-                <div className="absolute left-1/2 top-1/2 flex size-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/[.28] bg-[rgba(10,11,15,.5)]"><svg width="15" height="15" viewBox="0 0 24 24" fill="#fff" style={{ marginLeft: 2 }}><path d="M8 5v14l11-7z" /></svg></div>
-              </div>
+                <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/25">
+                  <span className="flex size-10 items-center justify-center rounded-full border border-white/[.28] bg-[rgba(10,11,15,.5)]"><svg width="15" height="15" viewBox="0 0 24 24" fill="#fff" style={{ marginLeft: 2 }}><path d="M8 5v14l11-7z" /></svg></span>
+                </span>
+                {master && (
+                  <span className="mono absolute bottom-2 right-2 rounded-[6px] bg-black/55 px-1.5 py-[2px] text-[10px] font-semibold tabular-nums text-white">{formatTimecode(master.durationSec)}</span>
+                )}
+              </button>
             </div>
             <div className="w-[54px] flex-none">
               <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none" className="block">
@@ -816,12 +865,54 @@ function DerivationModal({ ep, recs, clips, onClose, onEnter }: {
             </div>
           </div>
           <div className="border-t border-[#232323] pt-[18px]">
-            <div className="mb-3.5 flex items-center gap-2"><span className="size-2.5 rounded-[3px]" style={{ background: sel.color }} /><span className="text-[14px] font-bold">{sel.label}</span></div>
-            <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
-              {cat === "shorts" ? <>이 원본에서 <b className="text-[#eceef2]">쇼츠 추천 {recs}개</b>{clips > 0 ? <> · 채택 클립 {clips}개</> : null}가 생성됐어요. <b className="text-[#8b93ff]">검수 워크스페이스</b>에서 타임라인·인스펙터로 채택/편집하세요.</>
-                : cat === "ppl" ? <>PPL·브랜드 노출 집계는 파이프라인 연동 후 채워집니다.</>
-                : <>STT·장면 분할·비전 채점 등 <b className="text-[#eceef2]">AI 구조화 리포트</b>는 검수 워크스페이스의 <b className="text-[#8b93ff]">분석</b> 탭에서 볼 수 있어요.</>}
+            <div className="mb-3.5 flex items-center gap-2">
+              <span className="size-2.5 rounded-[3px]" style={{ background: sel.color }} />
+              <span className="text-[14px] font-bold">{sel.label}</span>
+              {cat === "shorts" && previews.length > 0 && (
+                <span className="text-[11px] text-[#707070]">· {clips > 0 ? `채택 클립 ${clips}개` : `쇼츠 추천 ${recs}개`}</span>
+              )}
             </div>
+            {cat === "shorts" ? (
+              previews.length > 0 ? (
+                <>
+                  <div className="mb-3 text-[12px] text-[#9a9a9a]">
+                    {clips > 0
+                      ? <>채택된 쇼츠 클립이에요. 카드를 누르면 <b className="text-[#8b93ff]">편집기</b>로 이동해요.</>
+                      : <>AI가 추천한 쇼츠 후보예요. 카드를 누르면 <b className="text-[#8b93ff]">검수 워크스페이스</b>에서 타임라인·인스펙터로 채택/편집할 수 있어요.</>}
+                  </div>
+                  <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(112px,1fr))]">
+                    {previews.map((p) => (
+                      <button
+                        key={p.key}
+                        onClick={p.onClick}
+                        className="group flex flex-col overflow-hidden rounded-[10px] border border-[#262626] bg-[#161616] text-left transition-colors hover:border-[#3a3a3a]"
+                      >
+                        <div className="relative aspect-[9/16] bg-cover bg-center" style={p.thumb ? { backgroundImage: `url(${p.thumb})` } : { background: p.grad }}>
+                          <span className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent" />
+                          <span className="absolute left-1.5 top-1.5 rounded-[5px] bg-black/55 px-1.5 py-[2px] text-[9.5px] font-bold text-white">{p.badge}</span>
+                          <span className="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100">
+                            <span className="flex size-8 items-center justify-center rounded-full border border-white/30 bg-[rgba(10,11,15,.55)]"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fff" style={{ marginLeft: 2 }}><path d="M8 5v14l11-7z" /></svg></span>
+                          </span>
+                          <span className="absolute inset-x-1.5 bottom-1.5">
+                            <span className="mono block text-[9px] tabular-nums text-[#d7dae2]">{p.range}</span>
+                            <span className="mt-px block truncate text-[10.5px] font-semibold leading-tight text-white">{p.title}</span>
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
+                  아직 생성된 쇼츠가 없어요. 분석이 끝나면 후보가 채워집니다.
+                </div>
+              )
+            ) : (
+              <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
+                {cat === "ppl" ? <>PPL·브랜드 노출 집계는 파이프라인 연동 후 채워집니다.</>
+                  : <>STT·장면 분할·비전 채점 등 <b className="text-[#eceef2]">AI 구조화 리포트</b>는 검수 워크스페이스의 <b className="text-[#8b93ff]">분석</b> 탭에서 볼 수 있어요.</>}
+              </div>
+            )}
           </div>
         </div>
       </div>
