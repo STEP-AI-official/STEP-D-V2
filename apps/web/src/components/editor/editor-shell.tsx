@@ -97,6 +97,19 @@ export function EditorShell({ clipId }: { clipId: string }) {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportElapsed, setExportElapsed] = useState(0);
+  useEffect(() => {
+    if (!exporting) { setExportElapsed(0); return; }
+    const t0 = Date.now();
+    const id = window.setInterval(() => setExportElapsed(Math.floor((Date.now() - t0) / 1000)), 500);
+    return () => window.clearInterval(id);
+  }, [exporting]);
+  // 서버는 동기 렌더라 실제 진척 미측정. 경과 시간 기반으로 예상 단계 안내(사용자 안심용).
+  // 실측(하하 15~40초 클립): 자막 번인 ~3s · 리프레이밍 ~4s · 인코딩 ~8-15s.
+  const exportStage =
+    exportElapsed < 3 ? "자막 번인 준비"
+    : exportElapsed < 8 ? "리프레이밍(9:16 등)"
+    : "인코딩(H.264)";
   const rendered = clip?.status === "ready" || clip?.status === "published";
 
   // ── F3: which destination this export renders for ───────────────────────────
@@ -469,7 +482,9 @@ export function EditorShell({ clipId }: { clipId: string }) {
             className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
           >
             {rendered ? <Check className="size-4 text-emerald-400" /> : <Film className="size-4" />}
-            {exporting ? "렌더 중…" : rendered ? "확정됨" : "확정(렌더)"}
+            {exporting
+              ? <span className="tabular-nums">{exportStage} · {exportElapsed}s</span>
+              : rendered ? "확정됨" : "확정(렌더)"}
           </button>
           <Link
             href="/distribution"
