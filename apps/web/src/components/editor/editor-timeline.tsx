@@ -71,6 +71,8 @@ export function EditorTimeline({
   videoUrl,
   tracks,
   onTogglePlay,
+  kfSel,
+  onKfSelect,
 }: {
   state: EditorState;
   update: Update;
@@ -616,6 +618,12 @@ export function EditorTimeline({
                 {overlayItems.map((o) => {
                   const os = o.item.startSec ?? 0;
                   const oe = o.item.endSec ?? duration;
+                  // 키프레임 다이아몬드 마커 (CapCut 벤치마크·감사 §3 결여 해소).
+                  // titleLines/elements의 keyframes는 오버레이 시작(startSec) 기준 상대 시간 → 절대 초 = os+kf.time.
+                  const kfsRaw =
+                    o.target === "title"
+                      ? (state.titleLines.find((l) => l.id === o.id)?.keyframes ?? [])
+                      : (state.elements.find((el) => el.id === o.id)?.keyframes ?? []);
                   return (
                     <div key={`${o.target}-${o.id}`} className="relative h-5 rounded bg-zinc-800/50">
                       <div
@@ -627,6 +635,26 @@ export function EditorTimeline({
                       >
                         <span className="truncate">{o.label}</span>
                       </div>
+                      {/* 키프레임 다이아몬드 — 클릭하면 속성 패널로 선택 이동 */}
+                      {kfsRaw.map((kf, idx) => {
+                        const absT = Math.max(0, Math.min(duration, os + (kf.time ?? 0)));
+                        const isSel = kfSel && kfSel.target === o.id && kfSel.index === idx;
+                        return (
+                          <button
+                            key={`kf-${idx}`}
+                            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onClick={(e) => { e.stopPropagation(); onKfSelect?.({ target: o.id, index: idx }); }}
+                            className={cn(
+                              "absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[1px] border transition-colors",
+                              isSel
+                                ? "border-white bg-white shadow-[0_0_0_1px_rgba(0,0,0,.6)]"
+                                : "border-amber-300 bg-amber-400/90 hover:bg-amber-300",
+                            )}
+                            style={{ left: pct(absT) }}
+                            title={`키프레임 ${idx + 1} @ ${(kf.time ?? 0).toFixed(2)}s`}
+                          />
+                        );
+                      })}
                       <div
                         onMouseDown={(e) => {
                           e.preventDefault();

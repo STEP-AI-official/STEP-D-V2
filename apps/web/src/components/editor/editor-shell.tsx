@@ -14,6 +14,7 @@ import {
   pickKeywordIdx,
   type EditorState,
   type EditorTrack,
+  type KfSelection,
 } from "@/lib/editor/presets";
 import { useEditorHistory } from "@/lib/editor/useEditorHistory";
 import { formatDuration } from "@/lib/utils";
@@ -98,6 +99,8 @@ export function EditorShell({ clipId }: { clipId: string }) {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportElapsed, setExportElapsed] = useState(0);
+  // 키프레임 선택 상태 (타임라인 다이아몬드 ↔ 속성 패널 공유, C1).
+  const [kfSel, setKfSel] = useState<KfSelection>(null);
   useEffect(() => {
     if (!exporting) { setExportElapsed(0); return; }
     const t0 = Date.now();
@@ -535,7 +538,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
         </div>
 
         <aside className="hidden w-72 shrink-0 border-l border-zinc-800 md:block xl:w-80">
-          <EditorPanel state={state} update={panelUpdate} applyTpl={applyTpl} />
+          <EditorPanel state={state} update={panelUpdate} applyTpl={applyTpl} kfSel={kfSel} setKfSel={setKfSel} />
         </aside>
       </div>
 
@@ -552,6 +555,8 @@ export function EditorShell({ clipId }: { clipId: string }) {
           videoUrl={previewingMaster ? undefined : videoUrl}
           tracks={state.tracks}
           onTogglePlay={togglePlay}
+          kfSel={kfSel}
+          onKfSelect={setKfSel}
         />
         <button
           onClick={addTrack}
