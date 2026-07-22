@@ -43,6 +43,7 @@
 | [pipeline-plan.md](plans/pipeline-plan.md) | AI 파이프라인 청사진 (발명신고서 구성 A~J) |
 | [shorts-engine-성과보고-2026-07-21.md](plans/shorts-engine-성과보고-2026-07-21.md) | **쇼츠 엔진 성과보고 (읽기용 요약·진입점)** — A/B 결과·빠른모드(61분→96초)·데이터셋 3층·다음 단계 |
 | [shorts-engine-experiments-2026-07-21.md](plans/shorts-engine-experiments-2026-07-21.md) | 쇼츠 엔진 실증 실험 **상세 로그** — 인프라·측정 방법론·다중 홀드아웃 A/B·폐기 실험·로드맵 (성과보고의 근거) |
+| [shorts-engine-experiment-log.md](plans/shorts-engine-experiment-log.md) | 쇼츠 엔진 **실험 연대기(로그)** — 방법론 진화 시간순 기록(IoU→Topic 등). 새 실험은 여기 append (보고서용) |
 | [context-engine-plan.md](plans/context-engine-plan.md) | 인물·서사 컨텍스트 엔진(CX 트랙) 설계 |
 | [opencut-integration-plan.md](plans/opencut-integration-plan.md) | 검수 에디터 OpenCut 부품 이식 (Phase 1 완료) |
 | [publish-fields-ux-plan.md](plans/publish-fields-ux-plan.md) | 채널별 배포 필수 필드 분리 설계 근거 (프론트 구현 완료) |
