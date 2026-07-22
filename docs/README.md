@@ -45,10 +45,6 @@
 | [shorts-engine-experiments-2026-07-21.md](plans/shorts-engine-experiments-2026-07-21.md) | 쇼츠 엔진 실증 실험 **상세 로그** — 인프라·측정 방법론·다중 홀드아웃 A/B·폐기 실험·로드맵 (성과보고의 근거) |
 | [shorts-engine-experiment-log.md](plans/shorts-engine-experiment-log.md) | 쇼츠 엔진 **실험 연대기(로그)** — 방법론 진화 시간순 기록(IoU→Topic 등). 새 실험은 여기 append (보고서용) |
 | [context-engine-plan.md](plans/context-engine-plan.md) | 인물·서사 컨텍스트 엔진(CX 트랙) 설계 |
-| [opencut-integration-plan.md](plans/opencut-integration-plan.md) | 검수 에디터 OpenCut 부품 이식 (Phase 1 완료) |
-| [publish-fields-ux-plan.md](plans/publish-fields-ux-plan.md) | 채널별 배포 필수 필드 분리 설계 근거 (프론트 구현 완료) |
-| [editor-gap-analysis-vs-capcut.md](plans/editor-gap-analysis-vs-capcut.md) | 편집기 문제점 진단 — CapCut 벤치마킹 대비 갭 + 개선 계획 |
-| [investment-analysis-2026-07-17.md](plans/investment-analysis-2026-07-17.md) | 투자 관점 레포 분석 보고서 — 기술차별성·시장적합도·확장성 진단 |
 | [ui-source-dependency-visualization.md](plans/ui-source-dependency-visualization.md) | UI 기획 — 원본→쇼츠 의존성 시각화 (원본→분석→추천→쇼츠→배포 추적) |
 
 ## reference/ — 레퍼런스
@@ -71,5 +67,5 @@
 
 - **현황 문서(ops/·reference/)는 코드가 바뀌면 같이 바꾼다** — 특히 라우트 추가 시 api-reference.md, 테이블 추가 시 data-model.md.
 - 계획 문서(plans/)는 구현이 계획과 달라지면 지우지 말고 **'계획 vs 실제' 표에 기록**한다.
-- 완전히 낡은 문서는 archive/로 옮기지 말고 **삭제**한다 (git 히스토리가 보존; 2026-07-16에 backend-notes·integration-map·step-d-ux-plan·deploy/INFRA·deploy/runbook 삭제 · 2026-07-21에 실현 완료된 쇼츠 계획문서 3편 삭제: channel-domain-adaptation·analysis-pipeline-next·shorts-quality-eval → shorts-engine-성과보고/experiments로 통합).
+- 완전히 낡은 문서는 archive/로 옮기지 말고 **삭제**한다 (git 히스토리가 보존; 2026-07-16에 backend-notes·integration-map·step-d-ux-plan·deploy/INFRA·deploy/runbook 삭제 · 2026-07-21에 실현 완료된 쇼츠 계획문서 3편 삭제: channel-domain-adaptation·analysis-pipeline-next·shorts-quality-eval → shorts-engine-성과보고/experiments로 통합 · 2026-07-22에 실현·오래됨 4편 삭제: opencut-integration-plan(Phase 1 완료)·publish-fields-ux-plan(프론트 구현 완료)·editor-gap-analysis-vs-capcut(진단 종료)·investment-analysis-2026-07-17(스냅샷, 이후 대폭 진화)).
 - 검증 커맨드: `apps/server`는 `npx tsc --noEmit`, `apps/web`은 `npx next build`.
