@@ -158,28 +158,74 @@ def build_full_summary(client, refined: list[dict], cast: dict | None, timeline:
 
 # ── 2) segment analysis (블록별, 배치) ───────────────────────────────────────────
 
-_SEGMENT_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "block_index": {"type": "INTEGER"},
-            "title": {"type": "STRING"},
-            "summary": {"type": "STRING"},
-            "key_moments": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "characters": {"type": "ARRAY", "items": {"type": "STRING"}},
-        },
-        "required": ["block_index", "title", "summary", "key_moments", "characters"],
-    },
-}
-
 _SEGMENT_SYSTEM = """당신은 한국어 방송 콘텐츠 분석 전문가다. 시간대별 블록마다 자막 스크립트가 주어진다.
-블록별로 상세 분석을 생성하라:
+블록별로 상세 분석을 생성하라 (AENA Pass3 스펙):
 - title: 블록에서 벌어진 일을 드러내는 짧은 제목 (한국어)
 - summary: 실제로 벌어진 일 2~4문장. 자막에 근거한 내용만.
 - key_moments: 주요 순간 2~5개, 각각 "[분:초] 설명" 형식으로 타임스탬프를 붙여라.
-- characters: 이 블록에 등장/언급된 인물 이름 목록.
-- block_index는 입력한 블록 번호를 그대로 돌려준다."""
+- characters: 이 블록에 등장/언급된 인물 이름 목록 (자막 근거).
+- locations: 이 블록에서 언급/암시된 장소·공간(스튜디오·거리·집 등) 0~4개. 없으면 [].
+- brands: 이 블록에서 언급된 브랜드·제품·서비스명 0~4개. 자막에 나온 것만. 없으면 [].
+- emotional_tone: 블록 전반의 감정 톤 하나 (예: 웃음/설렘/긴장/충격/눈물/평온/분노 중 하나 또는 짧은 조합).
+- block_index는 입력한 블록 번호를 그대로 돌려준다.
+
+Return ONLY a valid JSON array (no prose, no markdown fences). Example:
+[{"block_index":0,"title":"...","summary":"...","key_moments":["[00:12] ..."],"characters":["영수"],"locations":["스튜디오"],"brands":[],"emotional_tone":"웃음"}]"""
+
+
+def _cast_block_narrative(cast_registry: list[dict] | None) -> str:
+    """narrative용 캐스트 블록 — 명단 밖 이름 만들지 않도록 프롬프트에 명시."""
+    if not cast_registry:
+        return ""
+    names: list[str] = []
+    for m in cast_registry:
+        if not isinstance(m, dict):
+            continue
+        n = (m.get("name") or "").strip()
+        if n:
+            names.append(n)
+    if not names:
+        return ""
+    return (
+        "\n\n등록된 출연진 명단 (characters 필드는 이 명단만 사용, STT 오인식은 정규화):\n"
+        f"{', '.join(names)}"
+    )
+
+
+def _parse_json_array_recover(raw: str) -> list[dict]:
+    """MAX_TOKENS 잘림 등에 강한 배열 파서. refine.py와 같은 원칙(response_schema 대신)."""
+    if not raw:
+        return []
+    s = raw.strip()
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl >= 0:
+            s = s[first_nl + 1:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3].rstrip()
+    lb = s.find("[")
+    if lb > 0:
+        s = s[lb:]
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, list) else []
+    except json.JSONDecodeError:
+        pass
+    last_close = s.rfind("}")
+    if last_close > 0:
+        try:
+            v = json.loads(s[: last_close + 1] + "]")
+            return v if isinstance(v, list) else []
+        except json.JSONDecodeError:
+            pass
+    last_bracket = s.rfind("]")
+    if last_bracket > 0:
+        try:
+            v = json.loads(s[: last_bracket + 1])
+            return v if isinstance(v, list) else []
+        except json.JSONDecodeError:
+            pass
+    return []
 
 
 def build_segment_analysis(
@@ -189,18 +235,23 @@ def build_segment_analysis(
     on_progress: Optional[Callable[[int, int], None]] = None,
     progress_offset: int = 0,
     progress_total: Optional[int] = None,
+    cast_registry: list[dict] | None = None,
 ) -> list[dict]:
-    """블록 5개씩 배칭해 Gemini로 상세 분석. 실패 배치는 기본값(label/summary)으로 남긴다."""
+    """블록 5개씩 배칭해 Gemini로 상세 분석. 실패 배치는 기본값(label/summary)으로 남긴다.
+    AENA Pass3 스펙 확장: locations · brands · emotional_tone 필드 추가.
+    response_schema 대신 프롬프트+partial JSON 복구 조합(잘림 시 배치 유실 방지)."""
     segments = [
         {"block_index": i, "start": float(b["start"]), "end": float(b["end"]),
          "title": str(b.get("label") or f"{_fmt(float(b['start']))}~{_fmt(float(b['end']))} 구간"),
          "summary": str(b.get("summary") or ""), "key_moments": [],
-         "characters": [str(n) for n in (b.get("on_screen_names") or [])]}
+         "characters": [str(n) for n in (b.get("on_screen_names") or [])],
+         "locations": [], "brands": [], "emotional_tone": ""}
         for i, b in enumerate(blocks)
     ]
     batches = [list(range(i, min(i + BLOCKS_PER_CALL, len(segments))))
                for i in range(0, len(segments), BLOCKS_PER_CALL)]
     total = progress_total if progress_total is not None else len(batches)
+    system_prompt = _SEGMENT_SYSTEM + _cast_block_narrative(cast_registry)
     for bi, idxs in enumerate(batches):
         lines = []
         for i in idxs:
@@ -214,14 +265,15 @@ def build_segment_analysis(
                 model=MODEL,
                 contents="다음 블록들을 분석하라.\n" + "\n".join(lines),
                 config=types.GenerateContentConfig(
-                    system_instruction=_SEGMENT_SYSTEM,
+                    system_instruction=system_prompt,
                     temperature=0,
                     response_mime_type="application/json",
-                    response_schema=_SEGMENT_SCHEMA,
+                    # response_schema 제거 — 잘림 시 배치 유실 방지 (프롬프트+복구 파서 조합)
                     max_output_tokens=8192,
                 ),
             ))
-            by_index = {int(r["block_index"]): r for r in json.loads(resp.text or "[]")
+            rows = _parse_json_array_recover(resp.text or "")
+            by_index = {int(r["block_index"]): r for r in rows
                         if isinstance(r, dict) and "block_index" in r}
             for i in idxs:
                 r = by_index.get(i)
@@ -236,6 +288,12 @@ def build_segment_analysis(
                 chars = [str(c).strip() for c in (r.get("characters") or []) if str(c).strip()]
                 if chars:
                     seg["characters"] = chars
+                # AENA Pass3 확장 필드 — 없으면 [] 유지
+                seg["locations"] = [str(x).strip() for x in (r.get("locations") or []) if str(x).strip()][:4]
+                seg["brands"] = [str(x).strip() for x in (r.get("brands") or []) if str(x).strip()][:4]
+                tone = (r.get("emotional_tone") or "").strip()
+                if tone:
+                    seg["emotional_tone"] = tone
         except Exception as e:
             print(f"   (구간 분석 배치 실패, 기본값 유지: {str(e)[:80]})")
         if on_progress:
@@ -365,6 +423,7 @@ def build_narrative(
     timeline: dict | None,
     *,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    cast_registry: list[dict] | None = None,
 ) -> dict:
     """전체 서사 요약 + 구간별/인물/갈등 분석. timeline이 없으면 refined로 블록을 합성한다.
     개별 파트 실패는 그 파트만 비우고 계속한다 (파이프라인 무중단)."""
@@ -389,6 +448,7 @@ def build_narrative(
     segments = build_segment_analysis(
         client, refined, blocks,
         on_progress=on_progress, progress_offset=1, progress_total=total,
+        cast_registry=cast_registry,
     ) if blocks else []
 
     try:

@@ -14,6 +14,7 @@ import { PIPELINE_STAGE_LABELS, targetAgeLabel } from "@/lib/constants";
 import { programSmrChecks } from "@/lib/publish/requirements";
 import { UploadVideoButton } from "@/components/upload-video-dialog";
 import { NewProgramButton } from "@/components/new-program-dialog";
+import { EditCastButton } from "@/components/edit-cast-dialog";
 import type { Program, Episode, Recommendation, Clip } from "@/lib/types";
 import { Sparkles, Clapperboard } from "lucide-react";
 
@@ -110,7 +111,8 @@ function ProgramCard({ program, eps, recs, clips }: { program: Program; eps: Epi
           </div>
         </div>
 
-        <div className="shrink-0">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <EditCastButton program={program} />
           <UploadVideoButton programId={program.id} />
         </div>
       </div>

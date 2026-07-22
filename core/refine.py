@@ -69,20 +69,62 @@ SYSTEM = """너는 한국어 예능/방송 자막 정제 전문가다.
 엄격한 규칙:
 - 번호(n)는 절대 바꾸지 마라. 입력한 모든 번호를 그대로 출력한다.
 - 없는 내용을 지어내거나 요약·의역하지 마라. 정제(cleanup)만 한다.
-- 원래 발화의 뜻을 바꾸지 마라."""
+- 원래 발화의 뜻을 바꾸지 마라.
 
-RESPONSE_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "n": {"type": "INTEGER"},
-            "text": {"type": "STRING"},
-            "speaker": {"type": "STRING"},
-        },
-        "required": ["n", "text"],
-    },
-}
+Return ONLY a valid JSON array. Do not add prose, markdown, or code fences. Example:
+[{"n":1,"text":"정제된 대사","speaker":"M1"},{"n":2,"text":"다음 대사","speaker":"F1"}]"""
+
+
+def _parse_json_array_recover(raw: str) -> list[dict]:
+    """느슨한 JSON 배열 파서. response_schema 없이 프롬프트만으로 형식 강제할 때 필요.
+
+    실패 케이스 대응:
+    (a) MAX_TOKENS로 마지막 객체가 잘림 → 마지막 완전 `}` 위치까지 잘라 `]`로 재구성
+    (b) 앞뒤 프로즈/코드펜스 → 첫 `[`부터 시도, 실패하면 마지막 `]`까지
+    (c) 완전 파싱 실패 → 빈 배열 (배치 통째 유실 방지, 원문 유지로 폴백)
+
+    ⚠️ AENA 레퍼런스 원칙: response_schema 쓰면 잘림 시 파싱 실패로 배치 통째 유실.
+    프롬프트+파서 조합이 실무적으로 더 안전.
+    """
+    if not raw:
+        return []
+    s = raw.strip()
+    # code fence 제거 (```json ... ``` 나올 때)
+    if s.startswith("```"):
+        # first newline 이후부터, closing ``` 앞까지
+        first_nl = s.find("\n")
+        if first_nl >= 0:
+            s = s[first_nl + 1:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3].rstrip()
+    # 첫 `[` 앞의 프로즈 제거
+    lb = s.find("[")
+    if lb > 0:
+        s = s[lb:]
+    # 시도1: 그대로
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, list) else []
+    except json.JSONDecodeError:
+        pass
+    # 시도2: 마지막 완전 `}` 뒤에서 잘라 배열 닫기 (MAX_TOKENS 잘림 복구)
+    last_close = s.rfind("}")
+    if last_close > 0:
+        candidate = s[: last_close + 1] + "]"
+        try:
+            v = json.loads(candidate)
+            return v if isinstance(v, list) else []
+        except json.JSONDecodeError:
+            pass
+    # 시도3: 마지막 `]` 위치 이전으로 컷 (뒤에 프로즈 붙은 경우)
+    last_bracket = s.rfind("]")
+    if last_bracket > 0:
+        try:
+            v = json.loads(s[: last_bracket + 1])
+            return v if isinstance(v, list) else []
+        except json.JSONDecodeError:
+            pass
+    return []
 
 
 def _client() -> "genai.Client":
@@ -190,10 +232,11 @@ def refine_segments(segments: list[dict], cast_registry: list[dict] | None = Non
                     system_instruction=system,
                     temperature=0.2,
                     response_mime_type="application/json",
-                    response_schema=RESPONSE_SCHEMA,
+                    # response_schema 제거 (2026-07-22 AENA 레퍼런스): 잘림 시 파싱 실패로
+                    # 배치 통째 유실을 막기 위해 프롬프트 예시 + partial JSON 복구 파서로 대체.
                 ),
             ))
-            rows = json.loads(resp.text or "[]")
+            rows = _parse_json_array_recover(resp.text or "")
             # Guard each row's `n` individually — one garbage/None value must not blow up the
             # whole comprehension and discard the entire batch's refinement.
             by_n: dict[int, dict] = {}

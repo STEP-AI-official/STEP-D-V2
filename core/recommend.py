@@ -155,7 +155,34 @@ def _profile_block(profile: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _base_system(genre: str, profile: dict | None = None) -> str:
+def _cast_block(cast_registry: list[dict] | None) -> str:
+    """출연진 명단 블록 — 등록 캐스트 이름을 제목·설명에 정확히 반영하도록. STT 오인식 정규화
+    지시 포함. cast 없으면 빈 문자열(no-op)."""
+    if not cast_registry:
+        return ""
+    names: list[str] = []
+    for m in cast_registry:
+        if not isinstance(m, dict):
+            continue
+        n = (m.get("name") or "").strip()
+        if n:
+            names.append(n)
+        for a in (m.get("aliases") or []):
+            a = (str(a) or "").strip()
+            if a:
+                names.append(a)
+    if not names:
+        return ""
+    return (
+        "\n\n등록된 출연진:\n"
+        f"- 이 명단만 실명으로 사용: {', '.join(names)}\n"
+        "- STT 오인식은 이 명단 기준으로 정규화 (예: 옥수→옥순, 정선→정순).\n"
+        "- 대사에서 서로 부르는 호칭(XX 님/OO아)이 명단에 있으면 실명으로.\n"
+        "- 명단에 없는 이름은 만들지 마라 — 잘 모르는 인물은 '한 출연자', '진행자' 같은 역할 지칭."
+    )
+
+
+def _base_system(genre: str, profile: dict | None = None, cast_registry: list[dict] | None = None) -> str:
     p = _pack(genre)
     return f"""너는 {p['label']} 콘텐츠의 숏폼(쇼츠) 편집 전문가다. 아래는 영상을 장면 단위로 분석한
 타임라인이다. 각 줄: [장면번호] 시작초~끝초 (시:분 표기, 길이) | 화면분석 | 대사 | 등장인물(화면자막) | 시각점수(0-100).
@@ -170,7 +197,7 @@ def _base_system(genre: str, profile: dict | None = None) -> str:
   결정타만 있으면 왜 웃긴지 몰라 넘긴다 — 실제 잘 나가는 쇼츠는 셋업→터짐→여운을 담는다.
 - **길이는 30~60초를 기본으로 하라.** 이보다 짧으면 대개 맥락이 잘려 약해진다. 20초 미만은
   정말 그 한 컷으로 완결될 때만. start/end는 장면·문장 경계에서 깔끔히 끊어라.
-- appeal은 바이럴 잠재력의 절대평가다: 5=확실히 터진다, 4=강함, 3=쓸만함, 2=약함, 1=비추천.{_profile_block(profile)}"""
+- appeal은 바이럴 잠재력의 절대평가다: 5=확실히 터진다, 4=강함, 3=쓸만함, 2=약함, 1=비추천.{_profile_block(profile)}{_cast_block(cast_registry)}"""
 
 
 def _parse_target_len(profile: dict | None) -> float | None:
@@ -373,8 +400,8 @@ _PHASE1_SCHEMA = {
 }
 
 
-def _extract_candidates(client, chunk: list[dict], genre: str, profile: dict | None = None) -> list[dict]:
-    system = _base_system(genre, profile) + f"""
+def _extract_candidates(client, chunk: list[dict], genre: str, profile: dict | None = None, cast_registry: list[dict] | None = None) -> list[dict]:
+    system = _base_system(genre, profile, cast_registry) + f"""
 
 지금 보는 타임라인은 전체 영상의 일부 구간이다. 이 구간 안에서만 후보를 골라라.
 - 최대 {PER_CHUNK}개. 확신 없는 구간은 넣지 마라 — 0개도 답이다.
@@ -418,7 +445,7 @@ _PHASE2_SCHEMA = {
 }
 
 
-def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: float, profile: dict | None = None) -> list[dict]:
+def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: float, profile: dict | None = None, cast_registry: list[dict] | None = None) -> list[dict]:
     lines = []
     for i, c in enumerate(sorted(candidates, key=lambda c: c.get("start", 0)), 1):
         tags = "/".join(c.get("tags", []))
@@ -429,7 +456,7 @@ def _synthesize(client, candidates: list[dict], n: int, genre: str, duration: fl
             f" | appeal:{c.get('appeal', '-')} | {c.get('title', '')} | {c.get('reason', '')}"
             f" | 장면:{c.get('scene_from', '-')}~{c.get('scene_to', '-')} | {tags or '-'}"
         )
-    system = _base_system(genre, profile) + f"""
+    system = _base_system(genre, profile, cast_registry) + f"""
 
 아래는 영상 전체({_mmss(duration)})를 구간별로 스캔해 뽑은 쇼츠 후보 목록이다.
 이 중에서 최종 {n}개를 골라 순위를 매겨라.
@@ -761,6 +788,7 @@ def recommend(
     profile: dict | None = None,
     channels: list[str] | None = None,
     transcript: list[dict] | None = None,
+    cast_registry: list[dict] | None = None,
 ) -> dict:
     """Two-phase shorts pick. Returns {"genre": resolved, "shorts": [...]}.
     A program `profile` (optional) steers the prompts and re-ranks by program-fit
@@ -790,7 +818,7 @@ def recommend(
 
     def scan(chunk: list[dict]) -> list[dict]:
         try:
-            cands = _extract_candidates(client, chunk, genre, profile)
+            cands = _extract_candidates(client, chunk, genre, profile, cast_registry)
         except Exception as e:
             failed[0] += 1
             # 워커 스레드 출력 — \n 포함 단일 write로 원자화 (@@PROGRESS 줄 섞임 방지)
@@ -827,7 +855,7 @@ def recommend(
     else:
         print(f"   2단계: 합성 — 최종 {n}개 선별…")
         try:
-            shorts = _synthesize(client, candidates, n, genre, duration, profile)
+            shorts = _synthesize(client, candidates, n, genre, duration, profile, cast_registry)
         except Exception as e:
             print(f"   (합성 실패: {str(e)[:80]})")
             shorts = []

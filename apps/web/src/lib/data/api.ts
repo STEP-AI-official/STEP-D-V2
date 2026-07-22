@@ -140,6 +140,21 @@ export function faceCropUrl(apiBase: string, mediaId: string, framePath: string)
   return `${apiBase}/media/${mediaId}/analysis/faces/${name}`;
 }
 
+/** 인물 매핑 저장 — {M1:"정숙", F2:"영자"}을 서버 faces.json에 병합 + refined.json speaker rename.
+ *  빈 문자열 value("")는 해당 라벨 매핑 제거 (원 라벨 복원). */
+export async function patchMediaFacesMapping(
+  mediaId: string,
+  mapping: Record<string, string>,
+): Promise<{ ok: boolean; mapping: Record<string, string>; refined_rewritten: number }> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/faces/mapping`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mapping }),
+  });
+  if (!res.ok) throw new Error(`mapping save failed (${res.status})`);
+  return res.json();
+}
+
 export interface EpisodeCastPerson {
   name: string;
   castId: string | null;
@@ -166,9 +181,14 @@ export async function fetchEpisodeCast(mediaId: string): Promise<EpisodeCastResp
   return res.json();
 }
 
-/** Re-run the AI content pipeline for a media (operator recovery from a failed analysis). */
-export async function reanalyzeMedia(mediaId: string): Promise<{ ok: boolean; queued: boolean }> {
-  const res = await fetch(`${API_BASE}/media/${mediaId}/analyze`, { method: "POST" });
+/** Re-run the AI content pipeline for a media (operator recovery from a failed analysis).
+ *  cast/profile 등이 바뀌면 fingerprint에서 걸러 필요한 스테이지만 재실행됨. fast=true면 정밀 스테이지 스킵. */
+export async function reanalyzeMedia(mediaId: string, fast = false): Promise<{ ok: boolean; queued: boolean }> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...(fast ? { fast: true } : {}) }),
+  });
   if (!res.ok) throw new Error(`재분석 요청 실패 (${res.status})`);
   return res.json();
 }

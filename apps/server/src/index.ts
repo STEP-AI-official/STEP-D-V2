@@ -592,10 +592,16 @@ app.get("/api/media/:id/analysis", async (c) => {
 // from checkpoints, so a re-run only pays for the stages that never finished.
 app.post("/api/media/:id/analyze", async (c) => {
   const mediaId = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const fast = body.fast === true;
   const media = await getMedia(mediaId);
   if (!media) return c.json({ error: "media not found" }, 404);
   await markContentAnalysisPending(mediaId);
-  const jobId = await enqueue("content.analyze", { mediaId }, { dedupeKey: `content.analyze:${mediaId}` });
+  const jobId = await enqueue(
+    "content.analyze",
+    { mediaId, ...(fast ? { fast: true } : {}) },
+    { dedupeKey: `content.analyze:${mediaId}` },
+  );
   if (media.episodeId) {
     const ep = await getEntity<Record<string, unknown>>("episode", media.episodeId);
     if (ep) {
@@ -650,10 +656,67 @@ app.get("/api/media/:id/faces", async (c) => {
   if (!/^[\w-]+$/.test(id)) return c.json({ error: "bad media id" }, 400);
   const objPath = `analysis/${id}/faces.json`;
   if (!(await fileExists(objPath))) return c.json({ clusters: {}, mapping: {}, labeled_segments: 0 });
+  // 로컬 스토리지는 STEPD_STORAGE_DIR 하위 · GCS 모드는 signed URL로 refetch. 여기선 로컬만.
   return new Response(createReadStream(objPath), {
     status: 200,
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
+});
+
+// 인물 매핑 저장 — {mapping: {"M1":"정숙","F2":"영자",...}}을 faces.json에 병합 저장하고
+// refined.json의 speaker 필드도 즉시 rename. 다음 조회부터 UI가 실명으로 표시.
+// (GCS 모드는 별도 처리 필요 — 지금은 로컬만.)
+app.patch("/api/media/:id/faces/mapping", async (c) => {
+  const id = c.req.param("id");
+  if (!/^[\w-]+$/.test(id)) return c.json({ error: "bad media id" }, 400);
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const patchMap = body.mapping;
+  if (!patchMap || typeof patchMap !== "object" || Array.isArray(patchMap)) {
+    return c.json({ error: "mapping (object) required" }, 400);
+  }
+  const useGCS = !!process.env.GCS_BUCKET;
+  if (useGCS) return c.json({ error: "GCS mode PATCH 미구현 — 로컬에서 사용" }, 501);
+  const storageBase = process.env.STEPD_STORAGE_DIR
+    ? path.resolve(process.env.STEPD_STORAGE_DIR)
+    : path.resolve(process.cwd(), "storage");
+  const facesPath = path.join(storageBase, "analysis", id, "faces.json");
+  const refinedPath = path.join(storageBase, "analysis", id, "refined.json");
+  if (!fs.existsSync(facesPath)) return c.json({ error: "faces.json not found" }, 404);
+
+  // faces.json mapping 병합 (빈 문자열 값은 매핑 제거)
+  const faces = JSON.parse(fs.readFileSync(facesPath, "utf-8")) as {
+    mapping?: Record<string, string>;
+    clusters?: Record<string, unknown>;
+    labeled_segments?: number;
+  };
+  const prev = faces.mapping ?? {};
+  const next: Record<string, string> = { ...prev };
+  for (const [k, v] of Object.entries(patchMap as Record<string, unknown>)) {
+    if (typeof v !== "string") continue;
+    const val = v.trim();
+    if (val) next[k] = val;
+    else delete next[k];
+  }
+  faces.mapping = next;
+  fs.writeFileSync(facesPath, JSON.stringify(faces, null, 2), "utf-8");
+
+  // refined.json의 speaker rename — 매핑 있으면 실명으로. 없어진 매핑은 원 라벨 복원 못하지만
+  // 이번엔 최소 요구(적용된 매핑만 반영). 원 라벨 보존이 필요하면 speaker_raw 필드 도입할 것.
+  let rewritten = 0;
+  if (fs.existsSync(refinedPath) && Object.keys(next).length > 0) {
+    const refined = JSON.parse(fs.readFileSync(refinedPath, "utf-8")) as Array<Record<string, unknown>>;
+    for (const seg of refined) {
+      const sp = typeof seg.speaker === "string" ? (seg.speaker as string) : "";
+      const mapped = next[sp];
+      if (mapped && seg.speaker !== mapped) {
+        seg.speaker = mapped;
+        rewritten++;
+      }
+    }
+    fs.writeFileSync(refinedPath, JSON.stringify(refined, null, 2), "utf-8");
+  }
+
+  return c.json({ ok: true, mapping: next, refined_rewritten: rewritten });
 });
 
 /**

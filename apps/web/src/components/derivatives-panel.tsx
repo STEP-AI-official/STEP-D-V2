@@ -27,7 +27,10 @@ import { useAppData } from "@/lib/data/store";
 import {
   type AnalysisScene,
   type EpisodeCastResponse,
+  type MediaFaces,
   fetchEpisodeCast,
+  getMediaFaces,
+  patchMediaFacesMapping,
   reanalyzeMedia,
 } from "@/lib/data/api";
 import { useMediaAnalysisPoll } from "@/lib/data/use-media-analysis";
@@ -242,34 +245,47 @@ function scoreColorClass(v: number): string {
 type AnalyzeView = "shorts" | "scenes" | "script" | "narrative" | "cast";
 
 function AnalyzeTab({ episodeId }: { episodeId: string }) {
-  const { mediaForEpisode } = useAppData();
+  const app = useAppData();
+  const { mediaForEpisode, episodes, programs } = app;
   const { toast } = useToast();
   const master = mediaForEpisode(episodeId, "master");
   const { analysis, loading } = useMediaAnalysisPoll(master?.id);
   const [view, setView] = useState<AnalyzeView>("shorts");
-  const [retrying, setRetrying] = useState(false);
+  const [retrying, setRetrying] = useState<false | "fast" | "full">(false);
   const [castData, setCastData] = useState<EpisodeCastResponse | null>(null);
+  const [faces, setFaces] = useState<MediaFaces | null>(null);
+  const [pendingMap, setPendingMap] = useState<Record<string, string>>({});
+  const [savingMap, setSavingMap] = useState(false);
 
   const masterId = master?.id;
   useEffect(() => {
     if (!masterId) return;
     let cancelled = false;
-    fetchEpisodeCast(masterId)
-      .then((d) => {
-        if (!cancelled) setCastData(d);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    fetchEpisodeCast(masterId).then((d) => { if (!cancelled) setCastData(d); }).catch(() => {});
+    return () => { cancelled = true; };
   }, [masterId]);
 
-  async function retryAnalysis() {
-    if (!master) return;
-    setRetrying(true);
+  // faces.json 20초 폴링 — 분석 진행 중에도 완성되는 대로 나타남
+  useEffect(() => {
+    if (!masterId) return;
+    let alive = true;
+    const load = () => { getMediaFaces(masterId).then((f) => { if (alive) setFaces(f); }).catch(() => {}); };
+    load();
+    const t = window.setInterval(load, 20000);
+    return () => { alive = false; clearInterval(t); };
+  }, [masterId]);
+
+  // 프로그램 cast — 매핑 dropdown 옵션 소스
+  const episode = episodes.find((e) => e.id === episodeId);
+  const program = episode ? programs.find((p) => p.id === episode.programId) : null;
+  const programCast = program?.cast ?? [];
+
+  async function retryAnalysis(fast: boolean) {
+    if (!master || retrying) return;
+    setRetrying(fast ? "fast" : "full");
     try {
-      await reanalyzeMedia(master.id);
-      toast({ title: "재분석 시작", description: "AI 분석을 다시 큐에 넣었습니다. 진행률은 위 파이프라인에서 확인하세요.", tone: "progress" });
+      await reanalyzeMedia(master.id, fast);
+      toast({ title: `${fast ? "빠른" : "정밀"} 재분석 시작`, description: "AI 분석을 다시 큐에 넣었습니다. 진행률은 위 파이프라인에서 확인하세요.", tone: "progress" });
     } catch (e) {
       toast({ title: "재분석 요청 실패", description: e instanceof Error ? e.message : "다시 시도해 주세요.", tone: "error" });
     } finally {
@@ -291,9 +307,14 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
         title="분석 실패"
         description={analysis.error ?? "재시도 필요"}
         action={
-          <Button size="sm" variant="outline" onClick={retryAnalysis} disabled={retrying}>
-            {retrying ? "요청 중…" : "분석 재시도"}
-          </Button>
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => retryAnalysis(true)} disabled={!!retrying}>
+              {retrying === "fast" ? "요청 중…" : "빠른 재분석"}
+            </Button>
+            <Button size="sm" onClick={() => retryAnalysis(false)} disabled={!!retrying}>
+              {retrying === "full" ? "요청 중…" : "정밀 재분석"}
+            </Button>
+          </div>
         }
       />
     );
@@ -316,16 +337,28 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
     );
   }
 
+  const faceClusters = faces?.clusters ?? {};
+  const faceCount = Object.keys(faceClusters).length;
   const subTabs: { key: AnalyzeView; label: string; icon: typeof Flame; count: number }[] = [
     { key: "shorts", label: "쇼츠 추천", icon: Flame, count: shorts.length },
     { key: "scenes", label: "장면", icon: Layers, count: scenes.length },
     { key: "script", label: "자막", icon: FileText, count: transcript.length },
     { key: "narrative", label: "서사", icon: BookOpen, count: narrative?.segments?.length ?? 0 },
-    { key: "cast", label: "인물", icon: Users, count: castData?.people?.length ?? 0 },
+    { key: "cast", label: "인물", icon: Users, count: faceCount || (castData?.people?.length ?? 0) },
   ];
 
   return (
     <div className="space-y-2">
+      {/* 재분석 바 — cast 바꾼 뒤 트리거하면 지문 바뀐 스테이지만 재실행 */}
+      <div className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-2.5 py-1.5">
+        <span className="flex-1 text-[11px] text-muted-foreground">파이프라인 재실행 · cast·프로파일 바꾼 뒤 트리거</span>
+        <Button size="xs" variant="outline" onClick={() => retryAnalysis(true)} disabled={!!retrying}>
+          {retrying === "fast" ? "요청 중…" : "빠른 재분석"}
+        </Button>
+        <Button size="xs" onClick={() => retryAnalysis(false)} disabled={!!retrying}>
+          {retrying === "full" ? "요청 중…" : "정밀 재분석"}
+        </Button>
+      </div>
       <div className="flex rounded-lg border border-border p-0.5">
         {subTabs.map((t) => {
           const Icon = t.icon;
@@ -376,7 +409,36 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
 
       {view === "narrative" && <NarrativeView narrative={narrative} />}
 
-      {view === "cast" && <CastView mediaId={master?.id} />}
+      {view === "cast" && (
+        faceCount === 0 ? (
+          <CastView mediaId={master?.id} />
+        ) : (
+          <FaceClustersView
+            mediaId={master.id}
+            apiBase={app.apiBase}
+            faces={faces!}
+            programCast={programCast}
+            pendingMap={pendingMap}
+            setPendingMap={setPendingMap}
+            savingMap={savingMap}
+            onSave={async () => {
+              if (!master || savingMap || Object.keys(pendingMap).length === 0) return;
+              setSavingMap(true);
+              try {
+                await patchMediaFacesMapping(master.id, pendingMap);
+                setPendingMap({});
+                const fresh = await getMediaFaces(master.id);
+                setFaces(fresh);
+                toast({ title: "매핑 저장됨", description: "refined.speaker 필드도 rename 됐어요.", tone: "done" });
+              } catch (e) {
+                toast({ title: "매핑 저장 실패", description: e instanceof Error ? e.message : "다시 시도해 주세요.", tone: "error" });
+              } finally {
+                setSavingMap(false);
+              }
+            }}
+          />
+        )
+      )}
 
       {view === "script" && (
         <Card className="max-h-[50vh] overflow-y-auto">
@@ -494,6 +556,88 @@ function DistributeTab({
           </div>
         </Card>
       ))}
+    </div>
+  );
+}
+
+function FaceClustersView({
+  mediaId,
+  apiBase,
+  faces,
+  programCast,
+  pendingMap,
+  setPendingMap,
+  savingMap,
+  onSave,
+}: {
+  mediaId: string;
+  apiBase: string;
+  faces: MediaFaces;
+  programCast: string[];
+  pendingMap: Record<string, string>;
+  setPendingMap: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  savingMap: boolean;
+  onSave: () => Promise<void>;
+}) {
+  const clusters = faces.clusters ?? {};
+  const savedMap = faces.mapping ?? {};
+  const effectiveMap: Record<string, string> = { ...savedMap, ...pendingMap };
+  const pendingCount = Object.keys(pendingMap).length;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-brand/25 bg-brand/5 px-2.5 py-2 text-[11px] text-brand">
+        <span className="flex-1">
+          {Object.keys(clusters).length}개 인물 그룹 · {faces.labeled_segments ?? 0} 세그먼트 라벨링. 매핑 저장 시 refined.speaker 전체 rename.
+          {programCast.length === 0 && <span className="mt-1 block text-status-warn">⚠ 프로그램에 등록된 cast가 없어요 — 프로그램 편집에서 출연자부터 넣어주세요.</span>}
+        </span>
+        <Button size="xs" onClick={onSave} disabled={pendingCount === 0 || savingMap}>
+          {savingMap ? "저장 중…" : pendingCount > 0 ? `${pendingCount}개 매핑 저장` : "저장할 매핑 없음"}
+        </Button>
+      </div>
+      <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+        {Object.entries(clusters)
+          .sort((a, b) => b[1].count - a[1].count)
+          .map(([label, meta]) => {
+            const currentValue = effectiveMap[label] ?? "";
+            const isPending = pendingMap[label] != null;
+            return (
+              <Card key={label} className="p-2.5" style={isPending ? { borderColor: "var(--color-brand)" } : undefined}>
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <span className="rounded-md px-1.5 py-0.5 text-[11px] font-bold" style={{ background: meta.gender_hint === "M" ? "rgba(94,155,255,.15)" : "rgba(245,165,36,.15)", color: meta.gender_hint === "M" ? "#5e9bff" : "#f5a524" }}>{label}</span>
+                  <span className="text-[10.5px] text-muted-foreground">{meta.count}회</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground/70">{meta.gender_hint === "M" ? "남" : "여"}</span>
+                </div>
+                <div className="mb-1.5 grid grid-cols-3 gap-1">
+                  {meta.representative_frames.map((fp) => {
+                    const name = fp.split("/").pop() ?? fp;
+                    const url = `${apiBase}/media/${mediaId}/analysis/faces/${name}`;
+                    return (
+                      <div key={fp} className="relative aspect-square overflow-hidden rounded border border-border bg-muted">
+                        <img src={url} alt={label} loading="lazy" className="absolute inset-0 size-full object-cover" />
+                      </div>
+                    );
+                  })}
+                </div>
+                <select
+                  value={currentValue}
+                  onChange={(e) => setPendingMap((prev) => ({ ...prev, [label]: e.target.value }))}
+                  className="w-full rounded border border-input bg-background px-2 py-1 text-[11.5px]"
+                >
+                  <option value="">— 선택 안 함 —</option>
+                  {programCast.map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+                {savedMap[label] && !isPending && (
+                  <div className="mt-1 text-[10.5px] text-status-done">✓ 저장됨 · {savedMap[label]}</div>
+                )}
+                {isPending && (
+                  <div className="mt-1 text-[10.5px] text-brand">● 저장 대기 · {pendingMap[label] || "(삭제)"}</div>
+                )}
+              </Card>
+            );
+          })}
+      </div>
     </div>
   );
 }

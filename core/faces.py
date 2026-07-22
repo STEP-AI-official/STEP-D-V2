@@ -37,14 +37,31 @@ _APP = None
 
 
 def _get_app():
-    """FaceAnalysis 싱글턴. 첫 호출 시 모델 로드 + (없으면) 다운로드."""
+    """FaceAnalysis 싱글턴. 첫 호출 시 모델 로드 + (없으면) 다운로드.
+
+    GPU(CUDA) 사용 가능하면 우선 · 없으면 CPU 폴백. RTX급 GPU에서 프레임당 ~5-10ms로
+    CPU 대비 100배 빠름. onnxruntime-gpu가 없거나 CUDA 초기화 실패하면 자동 CPU."""
     global _APP
     if _APP is not None:
         return _APP
+    import onnxruntime as ort
     from insightface.app import FaceAnalysis
-    app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-    # ctx_id=-1 → CPU, det_size는 감지 정확도 vs 속도 tradeoff. 640x640이 안정적.
-    app.prepare(ctx_id=-1, det_size=(640, 640))
+    available = set(ort.get_available_providers())
+    # 우선순위: DirectML(Windows GPU · CUDA 툴킷 불필요) > CUDA(리눅스/CUDA 설치돼있으면) > CPU.
+    # 첫 실행 로그에 실제 사용 provider 남겨서 GPU 붙었는지 눈으로 확인.
+    providers = []
+    ctx_id = -1
+    if "DmlExecutionProvider" in available:
+        providers.append("DmlExecutionProvider")
+        ctx_id = 0
+    elif "CUDAExecutionProvider" in available:
+        providers.append("CUDAExecutionProvider")
+        ctx_id = 0
+    providers.append("CPUExecutionProvider")
+    app = FaceAnalysis(name="buffalo_l", providers=providers)
+    # det_size는 감지 정확도 vs 속도 tradeoff. 640x640이 안정적. GPU면 320도 고려 가능.
+    app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+    print(f"[faces] providers={providers} ctx_id={ctx_id}")
     _APP = app
     return app
 

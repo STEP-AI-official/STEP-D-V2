@@ -97,12 +97,12 @@ def _prepare_checkpoints(
         video_size = None  # unknown — do NOT treat as a mismatch
     video_name = Path(video_path).name
     # Per-stage param fingerprints. STT는 영상만 의존, scenes(5분 청크)도 refined 의존.
-    # refine은 cast_registry를 프롬프트에 넣으므로(speaker 라벨링) cast 바뀌면 무효화 필요.
+    # refine·recommend는 cast_registry를 프롬프트에 넣으므로 cast 바뀌면 재실행.
     params = {
         "refined.json": _fingerprint(cast_registry),
         "cast.json": _fingerprint(cast_registry),
         "narrative.json": _fingerprint(cast_registry),
-        "shorts.json": _fingerprint(genre, shorts_n, profile, channels),
+        "shorts.json": _fingerprint(genre, shorts_n, profile, channels, cast_registry),
         "analysis.json": _fingerprint(genre, shorts_n, profile, channels, cast_registry),
     }
     manifest = {"video_name": video_name, "video_size": video_size, "params": params}
@@ -205,7 +205,7 @@ def analyze(
         ts = time.time()
         rec = recommend(
             scenes, n=shorts_n, genre=genre, profile=profile, channels=channels,
-            transcript=segments,
+            transcript=segments, cast_registry=cast_registry,
             on_progress=lambda done, total: _progress("recommend", 50 + 45 * done / max(1, total), f"후보 추출 {done}/{total} 구간"),
         )
         timed("recommend", ts)
@@ -365,6 +365,7 @@ def analyze(
             narrative = build_narrative(
                 refined, scenes, cast, timeline,
                 on_progress=lambda done, total: _progress("narrative", 82 + 3 * done / max(1, total), f"서사 요약 {done}/{total} 배치"),
+                cast_registry=cast_registry,
             )
             _save_json(out_dir / "narrative.json", narrative)
             step(f"서사 요약 — {len(narrative.get('segments', []))} 구간 · 갈등 {len(narrative.get('key_conflicts', []))}건")
@@ -387,7 +388,7 @@ def analyze(
         _progress("recommend", 85, "쇼츠 추천 중")
         rec = recommend(
             scenes, n=shorts_n, genre=genre, profile=profile, channels=channels,
-            transcript=refined,
+            transcript=refined, cast_registry=cast_registry,
             on_progress=lambda done, total: _progress("recommend", 85 + 10 * done / max(1, total), f"후보 추출 {done}/{total} 구간"),
         )
         _save_json(out_dir / "shorts.json", rec)
