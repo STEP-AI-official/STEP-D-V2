@@ -38,3 +38,8 @@ package-lock.json
 .vercel
 .env*
 apps/web/src/vendor/opencut-src/
+
+# NCC 바우처 결과보고 (컴플라이언스: 리포와 물리 분리 유지)
+바우처_결과보고_*/
+STEP-D_일정표.xlsx
+.__wtest
