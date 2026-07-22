@@ -1,8 +1,16 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppDataProvider } from "@/lib/data/store";
+import { seedInitialData } from "@/lib/data/repository";
 import { SessionProvider } from "@/lib/auth";
 import { ToastProvider } from "@/components/ui/toast";
+
+// 로컬 dev 전용 더미데이터. UI/흐름 작업 편의를 위해 항상 화면이 채워지도록 한다.
+// process.env.NODE_ENV는 Next/webpack이 빌드시 인라인 치환 → production 번들에서는
+// 아래 분기가 통째로 제거되고 mock 시드가 클라이언트 번들에 실려나가지 않는다.
+// STEPD_LOCAL_DUMMY=0 으로 로컬에서도 명시적 off 가능.
+const LOCAL_DUMMY =
+  process.env.NODE_ENV !== "production" && process.env.STEPD_LOCAL_DUMMY !== "0";
 
 export const metadata: Metadata = {
   title: "STEP D — 스튜디오",
@@ -29,7 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <SessionProvider>
-          <AppDataProvider>
+          <AppDataProvider initial={LOCAL_DUMMY ? seedInitialData() : undefined}>
             <ToastProvider>{children}</ToastProvider>
           </AppDataProvider>
         </SessionProvider>

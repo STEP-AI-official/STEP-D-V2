@@ -45,9 +45,10 @@ const Plus = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke=
 /* ─────────── PROGRAMS ─────────── */
 const SECTION_EMOJI: Record<string, string> = { 예능: "🎬", "드라마/영화": "🎭", 뮤직: "🎵", 시사: "📰", 교양: "📚", 라이프: "🌿", 스포츠: "⚽", 게임: "🎮", 어린이: "🧸", 뉴스: "📡", 애니: "✨" };
 const ageLabel = (a: number) => (a === 0 ? "전체" : `${a}세`);
-export function Programs({ programs, episodes, loading, onOpenProgram, onNewProgram, onUpload }: {
+export function Programs({ programs, episodes, loading, onOpenProgram, onNewProgram, onUpload, onEditCast }: {
   programs: Program[]; episodes: Episode[]; loading: boolean;
   onOpenProgram: (t: string) => void; onNewProgram: () => void; onUpload: (id: string) => void;
+  onEditCast: (id: string) => void;
 }) {
   return (
     <div className="max-w-[1080px] px-[30px] py-[26px]">
@@ -74,6 +75,14 @@ export function Programs({ programs, episodes, loading, onOpenProgram, onNewProg
                   <div className="mt-[9px]"><span className="inline-flex items-center gap-[5px] rounded-full px-2.5 py-[3px] text-[11px] font-bold" style={smrReady ? { color: "#34d399", background: "rgba(52,211,153,.12)" } : { color: "#fbbf24", background: "rgba(251,191,36,.12)" }}>{smrReady ? "SMR 피드 준비 완료" : "SMR 피드 미충족"}</span></div>
                 </div>
                 <div className="flex flex-none gap-2">
+                  <button
+                    onClick={() => onEditCast(p.id)}
+                    title="이 프로그램의 출연자 명단 편집 — refine이 이 이름들로 speaker 라벨링"
+                    className="rounded-[9px] border border-[#2b2b2b] bg-[#1e1e1e] px-[13px] py-[9px] text-[12.5px] font-semibold hover:border-[#3a3a3a]"
+                    style={p.cast?.length ? { color: "#cfcfcf" } : { color: "#fbbf24", borderColor: "rgba(251,191,36,.3)" }}
+                  >
+                    출연자 <span className="mono">{p.cast?.length ?? 0}</span>
+                  </button>
                   <button onClick={() => onOpenProgram(p.title)} className="rounded-[9px] border border-[#2b2b2b] bg-[#1e1e1e] px-[15px] py-[9px] text-[12.5px] font-semibold text-[#cfcfcf] hover:border-[#3a3a3a] hover:text-[#e5e5e5]">회차 보기</button>
                   <PrimaryBtn onClick={() => onUpload(p.id)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}><path d="M12 3v12M8 11l4-4 4 4M4 19h16" /></svg>업로드</PrimaryBtn>
                 </div>

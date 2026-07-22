@@ -1,27 +1,18 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { ChevronLeft, FileVideo, Loader2 } from "lucide-react";
-import { PageHeader } from "@/components/ui/page-header";
-import { Card } from "@/components/ui/card";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PipelineStrip } from "@/components/pipeline-strip";
 import { SourcePanel } from "@/components/source-panel";
 import { DerivativesPanel } from "@/components/derivatives-panel";
 import { useAppData } from "@/lib/data/store";
-import { PIPELINE_STAGE_LABELS, targetAgeLabel } from "@/lib/constants";
+import { targetAgeLabel } from "@/lib/constants";
 
 /**
- * Episode detail page — Opus Clip-style source-centric layout.
- * 
- * Left (60%): SourcePanel — video player + AI timeline markers + quick stats
- * Right (40%): DerivativesPanel — tabbed view (추천·클립·분석·배포)
- * 
- * This replaces the old flat tab system where source video and its derivatives
- * were on separate tabs. Now the source video stays visible while you scroll
- * through recommendations and clips, just like Opus Clip.
+ * Episode detail — 상하 스택 레이아웃.
+ * 헤더 우측에 파이프라인 스트립을 붙여 상태배지·별도 파이프라인 카드의 중복을 걷어냈고,
+ * 소스 영상은 상단 전폭, 파생 콘텐츠는 하단 탭바로 (파생 카드 껍질 제거).
  */
 export function EpisodeDetail({
   episodeId,
@@ -62,6 +53,12 @@ export function EpisodeDetail({
     );
   }
 
+  const title =
+    episode.episodeNumber != null
+      ? `${episode.programTitle} · ${episode.episodeNumber}화`
+      : episode.programTitle;
+  const meta = `방송 ${episode.broadDate} · ${targetAgeLabel(episode.targetAge)}`;
+
   return (
     <>
       <Link
@@ -71,48 +68,32 @@ export function EpisodeDetail({
         <ChevronLeft className="size-3.5" /> 콘텐츠
       </Link>
 
-      <PageHeader
-        title={
-          episode.episodeNumber != null
-            ? `${episode.programTitle} · ${episode.episodeNumber}화`
-            : episode.programTitle
-        }
-        description={`방송 ${episode.broadDate} · ${targetAgeLabel(episode.targetAge)}`}
-        actions={
-          <StatusBadge tone={episode.pipeline.stageStatus}>
-            {episode.pipeline.blockedReason ?? PIPELINE_STAGE_LABELS[episode.pipeline.stage]}
-          </StatusBadge>
-        }
-      />
-
-      {/* pipeline hub strip */}
-      <Card className="mb-5 p-4">
-        <div className="mb-2 text-xs font-semibold text-muted-foreground">파이프라인 진행</div>
-        <PipelineStrip pipeline={episode.pipeline} />
-        {episode.pipeline.note && (
-          <div className="mt-2 text-xs text-muted-foreground">{episode.pipeline.note}</div>
-        )}
-        {episode.pipeline.blockedReason && (
-          <div className="mt-2 text-xs text-status-error">⚠ {episode.pipeline.blockedReason}</div>
-        )}
-      </Card>
-
-      {/* Opus Clip-style split: source always visible + derivatives */}
-      <div className="grid gap-5 lg:grid-cols-5">
-        {/* LEFT: Source video player + timeline markers */}
-        <div className="lg:col-span-3">
-          <SourcePanel episodeId={episodeId} />
+      {/* 헤더 + 파이프라인 스트립 한 줄. 폭이 좁아지면 자연스럽게 아래로 wrap. */}
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
+        <div className="min-w-0">
+          <h1 className="text-page-title">{title}</h1>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+            {meta}
+            {episode.pipeline.note && (
+              <span className="text-muted-foreground/70"> · {episode.pipeline.note}</span>
+            )}
+          </p>
         </div>
-
-        {/* RIGHT: Tabbed derivatives panel */}
-        <div className="lg:col-span-2">
-          <Card className="p-4">
-            <div className="mb-3 text-xs font-semibold text-muted-foreground">
-              📦 이 원본의 파생 콘텐츠
-            </div>
-            <DerivativesPanel episodeId={episodeId} initialTab={initialTab} />
-          </Card>
+        <div className="shrink-0">
+          <PipelineStrip pipeline={episode.pipeline} />
         </div>
+      </div>
+
+      {episode.pipeline.blockedReason && (
+        <div className="mb-4 rounded-md border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+          ⚠ {episode.pipeline.blockedReason}
+        </div>
+      )}
+
+      {/* 상단: 소스 영상 전폭. 하단: 파생 탭바 (카드 껍질 제거 — 탭바가 곧 섹션 헤더). */}
+      <div className="space-y-6">
+        <SourcePanel episodeId={episodeId} />
+        <DerivativesPanel episodeId={episodeId} initialTab={initialTab} />
       </div>
     </>
   );

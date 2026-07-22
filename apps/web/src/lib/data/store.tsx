@@ -40,6 +40,8 @@ import {
   uploadVideo as apiUploadVideo,
   importYoutubeVideo as apiImportYoutubeVideo,
   createProgram as apiCreateProgram,
+  updateProgram as apiUpdateProgram,
+  type UpdateProgramInput,
   adoptRec,
   exportClip as exportClipApi,
   rejectRec,
@@ -149,10 +151,11 @@ interface AppData extends AppState {
   /** Publish selected clips to a SINGLE channel independently (Readiness model). */
   publishToChannel: (clipIds: string[], channel: DistributionChannel, opts?: PublishOpts) => void;
   retryDistribution: (clipId: string, channel: DistributionChannel) => void;
-  /** Upload a real video → creates an episode + recommendations. Returns episodeId. */
-  uploadVideo: (file: File, programId: string, title?: string, onProgress?: (pct: number) => void) => Promise<string>;
+  /** Upload a real video → creates an episode + recommendations. Returns episodeId.
+   *  `fast=true` → 자막만 · 시각 분석 스킵 (빠른 분석 모드). 기본 false = 정밀 분석. */
+  uploadVideo: (file: File, programId: string, title?: string, onProgress?: (pct: number) => void, fast?: boolean) => Promise<string>;
   /** Queue a YouTube URL import — the worker downloads then analyzes. Returns episodeId. */
-  importYoutube: (url: string, programId: string, title?: string) => Promise<string>;
+  importYoutube: (url: string, programId: string, title?: string, fast?: boolean) => Promise<string>;
   /** Create a program (content root). Returns the new programId. */
   createProgram: (input: {
     title: string;
@@ -163,6 +166,8 @@ interface AppData extends AppState {
     category?: string;
     weekdays?: number[];
   }) => Promise<string>;
+  /** Update a program in place. cast 갱신이 주 용도 — 다음 재분석부터 refine 프롬프트에 반영. */
+  updateProgram: (id: string, patch: UpdateProgramInput) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -617,9 +622,9 @@ export function AppDataProvider({
   }, []);
 
   const uploadVideo = useCallback(
-    async (file: File, programId: string, title?: string, onProgress?: (pct: number) => void): Promise<string> => {
+    async (file: File, programId: string, title?: string, onProgress?: (pct: number) => void, fast?: boolean): Promise<string> => {
       if (!connectedRef.current) throw new Error("영상 업로드는 백엔드 서버가 필요합니다 (pnpm dev:server).");
-      const res = await apiUploadVideo(file, programId, title, onProgress);
+      const res = await apiUploadVideo(file, programId, title, onProgress, fast);
       await refresh();
       return res.episode.id;
     },
@@ -627,9 +632,9 @@ export function AppDataProvider({
   );
 
   const importYoutube = useCallback(
-    async (url: string, programId: string, title?: string): Promise<string> => {
+    async (url: string, programId: string, title?: string, fast?: boolean): Promise<string> => {
       if (!connectedRef.current) throw new Error("YouTube 가져오기는 백엔드 서버가 필요합니다 (pnpm dev:server).");
-      const res = await apiImportYoutubeVideo(url, programId, title);
+      const res = await apiImportYoutubeVideo(url, programId, title, fast);
       await refresh();
       return res.episodeId;
     },
@@ -669,6 +674,36 @@ export function AppDataProvider({
       };
       setState((prev) => ({ ...prev, programs: [program, ...prev.programs] }));
       return id;
+    },
+    [refresh],
+  );
+
+  const updateProgram = useCallback(
+    async (id: string, patch: UpdateProgramInput): Promise<void> => {
+      if (!connectedRef.current) {
+        // Mock mode: patch local state directly.
+        mutationEpochRef.current++;
+        setState((prev) => ({
+          ...prev,
+          programs: prev.programs.map((p) => {
+            if (p.id !== id) return p;
+            const merged: Program = { ...p };
+            if (patch.title != null) merged.title = patch.title;
+            if (patch.section != null) merged.section = patch.section;
+            if (patch.targetAge != null) merged.targetAge = patch.targetAge as Program["targetAge"];
+            if (patch.cast != null) merged.cast = patch.cast;
+            const smr = { ...(p.smr ?? {}) };
+            if (patch.programCode != null) smr.programCode = patch.programCode.trim().toLowerCase() || undefined;
+            if (patch.category != null) smr.category = patch.category.trim() || undefined;
+            if (patch.weekdays != null) smr.weekdays = patch.weekdays;
+            merged.smr = Object.keys(smr).length ? smr : undefined;
+            return merged;
+          }),
+        }));
+        return;
+      }
+      await apiUpdateProgram(id, patch);
+      await refresh();
     },
     [refresh],
   );
@@ -714,6 +749,7 @@ export function AppDataProvider({
       uploadVideo,
       importYoutube,
       createProgram,
+      updateProgram,
       refresh,
     };
   }, [
@@ -733,6 +769,7 @@ export function AppDataProvider({
     uploadVideo,
     importYoutube,
     createProgram,
+    updateProgram,
     refresh,
   ]);
 

@@ -159,7 +159,7 @@ function RecommendTab({
           <div className="mb-2 text-[11px] font-semibold text-muted-foreground">
             🔥 신규 추천 ({pendingRecs.length})
           </div>
-          <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {pendingRecs.map((rec) => (
               <RecommendationCard key={rec.id} rec={rec} />
             ))}
@@ -171,7 +171,7 @@ function RecommendTab({
           <div className="mb-2 text-[11px] font-semibold text-muted-foreground">
             처리 완료
           </div>
-          <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {recs
               .filter((r) => r.status !== "pending")
               .map((rec) => (

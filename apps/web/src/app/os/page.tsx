@@ -12,14 +12,16 @@
  * (타임라인 레인 + 인스펙터 · 클립 · PPL · 성과). Remaining screens/modals/editor
  * render a "포팅 중" placeholder.
  */
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAppData } from "@/lib/data/store";
 import { getYouTubeAuthUrl } from "@/lib/data/api";
+import { useMediaAnalysisPoll } from "@/lib/data/use-media-analysis";
 import { formatTimecode } from "@/lib/utils";
 import type { Episode, Clip, Program, InboxItem } from "@/lib/types";
 import { Programs, GlobalClips, Distribution, Analytics, Trends, Channels, Ops } from "./screens";
-import { UploadModal, NewProgramModal, DistributeModal, RegisterModal } from "./modals";
+import { UploadModal, NewProgramModal, DistributeModal, RegisterModal, EditCastModal } from "./modals";
+import { EditorOverlay, type EditorOverlayClip } from "./editor-overlay";
 
 /** Mapped shape the library card renders — from a real Episode + its master media. */
 export type LibVideo = {
@@ -62,6 +64,8 @@ type Video = {
   id: string; prog: string; ep: string; dur: string; uploaded: string; thumb: number;
   ok: boolean; shorts?: number; ppl?: number; issues?: number; analyzing?: boolean;
   pct?: number; failed?: boolean; status: { l: string; c: string; bg: string };
+  /** 실 백엔드 media id — 있으면 영상 분석 탭이 /api/media/:id/analysis 로 데이터 로드. */
+  mediaId?: string;
 };
 const VIDEOS: Video[] = [
   { id: "v1", prog: "솔로천국 시즌4", ep: "8화", dur: "72:30", uploaded: "2시간 전", thumb: 1, ok: true, shorts: 8, ppl: 4, issues: 4, status: { l: "추천 검토 대기", c: "#8b93ff", bg: "rgba(139,147,255,.15)" } },
@@ -144,6 +148,7 @@ const PSTAGES: [string, string, "done" | "current" | "idle"][] = [
 ];
 const TABS: { key: string; label: string }[] = [
   { key: "timeline", label: "타임라인" }, { key: "clips", label: "클립" },
+  { key: "analyze", label: "영상 분석" },
   { key: "ppl", label: "PPL 리포트" }, { key: "perf", label: "성과" },
 ];
 
@@ -158,28 +163,64 @@ export default function ReviewOsPage() {
   const [sel, setSel] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(612);
   const [lanesOff, setLanesOff] = useState<Flags>({});
-  const [adopted, setAdopted] = useState<Flags>({});
-  const [cut, setCut] = useState<Flags>({});
-  const [resolved, setResolved] = useState<Flags>({});
+  // 로컬 dev — 검수 워크스페이스 초기 시연 데이터. 클립 탭이 비어보이지 않게 상위 랭크 3개를
+  // 미리 채택해두고, 그 중 2개는 이미 내보내기(MP4 렌더)까지 완료된 상태로 시작.
+  const [adopted, setAdopted] = useState<Flags>({ s2: true, s3: true, s1: true });
+  const [cut, setCut] = useState<Flags>({ sl2: true });
+  const [resolved, setResolved] = useState<Flags>({ i2: true });
   const [pplOut, setPplOut] = useState<Flags>({});
-  const [clipRender, setClipRender] = useState<Record<string, string>>({});
+  const [clipRender, setClipRender] = useState<Record<string, string>>({ s2: "rendered", s3: "rendered", s1: "draft" });
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadProg, setUploadProg] = useState<string | undefined>(undefined);
   const [newProgOpen, setNewProgOpen] = useState(false);
   const [distClip, setDistClip] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [derivEp, setDerivEp] = useState<Episode | null>(null);
+  const [editorClip, setEditorClip] = useState<EditorOverlayClip | null>(null);
+  const [editCastId, setEditCastId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const tRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const app = useAppData();
   const router = useRouter();
-  const [derivEp, setDerivEp] = useState<Episode | null>(null);
 
   const flash = useCallback((m: string) => {
     setToast(m);
     if (tRef.current) clearTimeout(tRef.current);
     tRef.current = setTimeout(() => setToast(null), 2200);
   }, []);
+
+  // 브라우저 back 버튼이 열린 모달을 먼저 닫도록. /os는 스크린·모달을 URL이 아니라
+  // useState로 굴리므로, back을 누르면 사이트를 나가버려서 "갑자기 다른 화면" 문제가 생김.
+  // 모달이 열릴 때 history entry 하나를 pushState로 심어두고, popstate 오면 그 entry가
+  // 소진되면서 모달을 닫음. 버튼으로 닫혔을 땐 우리가 심은 entry를 back()으로 되감아
+  // 진짜 back 시 이전 페이지로 정상 이동.
+  const anyModalOpen = !!(distClip || uploadOpen || newProgOpen || registerOpen || derivEp || editorClip || editCastId);
+  const modalMarkerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!anyModalOpen) return;
+    const marker = Date.now();
+    modalMarkerRef.current = marker;
+    window.history.pushState({ stepdOsModal: marker }, "");
+    const onPop = () => {
+      modalMarkerRef.current = null;
+      setDistClip(null);
+      setUploadOpen(false);
+      setNewProgOpen(false);
+      setRegisterOpen(false);
+      setDerivEp(null);
+      setEditorClip(null);
+      setEditCastId(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (modalMarkerRef.current === marker) {
+        modalMarkerRef.current = null;
+        window.history.back();
+      }
+    };
+  }, [anyModalOpen]);
 
   // Real data → library cards
   const programOpts = app.programs.map((p) => ({ id: p.id, title: p.title }));
@@ -201,6 +242,8 @@ export default function ReviewOsPage() {
     };
   });
 
+  // 라이브러리·대시보드에서 에피소드 클릭 → 파생 모달(원본→4파생물 브랜치 뷰)을 먼저 띄우고,
+  // 모달 안 "검수 워크스페이스 열기"에서 openReview로 넘어감. (프로토타입 디자인 원본 흐름)
   function openDeriv(id: string) {
     const ep = app.episodes.find((e) => e.id === id);
     if (!ep) return;
@@ -208,9 +251,31 @@ export default function ReviewOsPage() {
     if (ep.pipeline.stageStatus === "progress") { flash("분석 진행 중… 완료 후 열려요"); return; }
     setDerivEp(ep);
   }
-  function pickVideo(v: Video) {
-    if (!v.ok) { flash(v.failed ? "분석 실패 — 재업로드 필요" : "분석 진행 중… 완료 후 열려요"); return; }
-    setVideo(v); setScreen("review"); setTab("timeline"); setSel(null); setPlayhead(612);
+  // 파생 모달의 "검수 워크스페이스 열기" → 실제 /os 검수 화면 진입.
+  function openReview(id: string) {
+    const ep = app.episodes.find((e) => e.id === id);
+    if (!ep) return;
+    if (ep.pipeline.stageStatus === "error") { flash("분석 실패 — 재업로드 필요"); return; }
+    if (ep.pipeline.stageStatus === "progress") { flash("분석 진행 중… 완료 후 열려요"); return; }
+    const media = app.mediaForEpisode(ep.id, "master");
+    const s = epStatus(ep);
+    const v: Video = {
+      id: ep.id,
+      prog: ep.programTitle,
+      ep: ep.episodeNumber != null ? `${ep.episodeNumber}화` : "",
+      dur: media ? formatTimecode(media.durationSec) : "—",
+      uploaded: media ? relTime(media.createdAt) : "",
+      thumb: (ep.episodeNumber ?? 0) % THUMBS.length,
+      ok: true,
+      shorts: app.recsForEpisode(ep.id).length,
+      status: { l: s.l, c: s.c, bg: `${s.c}22` },
+      mediaId: media?.id,
+    };
+    setVideo(v);
+    setScreen("review");
+    setTab("timeline");
+    setSel(null);
+    setPlayhead(612);
   }
 
   const v = video ?? VIDEOS[0];
@@ -276,9 +341,18 @@ export default function ReviewOsPage() {
               adopted={adopted} setAdopted={setAdopted} cut={cut} setCut={setCut}
               resolved={resolved} setResolved={setResolved} pplOut={pplOut} setPplOut={setPplOut}
               clipRender={clipRender} setClipRender={setClipRender} flash={flash} back={() => setScreen("library")}
+              thumbIdx={v.thumb}
+              openEditor={(item) => setEditorClip({
+                title: item.title,
+                range: `${fmt(item.t0)}–${fmt(item.t1)}`,
+                thumb: THUMBS[v.thumb],
+                ratio: "9/16",
+                durSec: Math.max(1, item.t1 - item.t0),
+                realClipId: null, // /os review clips are mock ITEMS — 실 렌더 라우팅 없음
+              })}
             />
           )}
-          {screen === "programs" && <Programs programs={app.programs} episodes={app.episodes} loading={app.loading} onOpenProgram={(t) => { setLib(t); setScreen("library"); }} onNewProgram={() => setNewProgOpen(true)} onUpload={(id) => { setUploadProg(id); setUploadOpen(true); }} />}
+          {screen === "programs" && <Programs programs={app.programs} episodes={app.episodes} loading={app.loading} onOpenProgram={(t) => { setLib(t); setScreen("library"); }} onNewProgram={() => setNewProgOpen(true)} onUpload={(id) => { setUploadProg(id); setUploadOpen(true); }} onEditCast={(id) => setEditCastId(id)} />}
           {screen === "clips" && <GlobalClips clips={app.clips} loading={app.loading} onEdit={(id) => router.push(`/editor/${id}`)} onDistribute={(id) => setDistClip(id)} />}
           {screen === "dist" && <Distribution clips={app.clips} loading={app.loading} onRetry={app.retryDistribution} />}
           {screen === "analytics" && <Analytics />}
@@ -288,21 +362,90 @@ export default function ReviewOsPage() {
         </div>
       </main>
 
-      {derivEp && <DerivationModal ep={derivEp} onClose={() => setDerivEp(null)} onEnter={() => { const id = derivEp.id; setDerivEp(null); router.push(`/episodes/${id}`); }} />}
+      {derivEp && (
+        <DerivationModal
+          ep={derivEp}
+          onClose={() => setDerivEp(null)}
+          onEnter={() => {
+            const id = derivEp.id;
+            setDerivEp(null);
+            openReview(id);
+          }}
+        />
+      )}
+      {editorClip && (
+        <EditorOverlay
+          clip={editorClip}
+          onClose={() => setEditorClip(null)}
+          flash={flash}
+          onExport={async (realClipId) => {
+            if (!realClipId) {
+              flash("서버 렌더 1회 → 9:16 자막 번인 익스포트 (데모)");
+              return;
+            }
+            try {
+              const res = await app.exportClip(realClipId);
+              flash(res.capped ? `내보냄 · ${res.capped.maxSec}초로 컷됨` : "내보냄 · MP4 렌더 완료");
+            } catch (e) {
+              flash(e instanceof Error ? e.message : "내보내기 실패");
+            }
+          }}
+        />
+      )}
       {uploadOpen && (
         <UploadModal
           onClose={() => setUploadOpen(false)} flash={flash} defaultProg={uploadProg}
           programs={programOpts} serverConnected={app.serverConnected}
-          onUpload={async ({ file, url, programId, title }) => {
-            if (file) await app.uploadVideo(file, programId, title || undefined);
-            else if (url) await app.importYoutube(url, programId, title || undefined);
+          onUpload={async ({ file, url, programId, title, fast }) => {
+            if (file) await app.uploadVideo(file, programId, title || undefined, undefined, fast);
+            else if (url) await app.importYoutube(url, programId, title || undefined, fast);
             flash("업로드 시작 → AI 분석 대기열");
           }}
         />
       )}
       {newProgOpen && <NewProgramModal onClose={() => setNewProgOpen(false)} flash={flash} onCreate={async (input) => { await app.createProgram(input); flash("프로그램 생성됨"); }} />}
-      {distClip && <DistributeModal clipTitle={app.getClip(distClip)?.title ?? "클립"} onClose={() => setDistClip(null)} onPublish={(channels) => { app.publishClip(distClip, channels); flash(`${channels.length}개 채널에 배포 예약`); setDistClip(null); }} />}
-      {registerOpen && <RegisterModal onClose={() => setRegisterOpen(false)} onConnect={() => { window.location.href = getYouTubeAuthUrl(undefined, "analytics", "/os"); }} />}
+      {editCastId && (() => {
+        const prog = app.programs.find((p) => p.id === editCastId);
+        if (!prog) return null;
+        return (
+          <EditCastModal
+            programTitle={prog.title}
+            initialCast={prog.cast ?? []}
+            onClose={() => setEditCastId(null)}
+            flash={flash}
+            onSave={async (cast) => {
+              await app.updateProgram(editCastId, { cast });
+              flash(`출연자 ${cast.length}명 저장 · 다음 재분석부터 refine에 반영`);
+            }}
+          />
+        );
+      })()}
+      {distClip && (
+        <DistributeModal
+          clipTitle={app.getClip(distClip)?.title ?? "클립"}
+          connections={app.connections}
+          onClose={() => setDistClip(null)}
+          onPublish={({ platform, metaPlatforms }) => {
+            app.publishClip(distClip, [platform], metaPlatforms ? { platforms: metaPlatforms } : undefined);
+            const count = platform === "meta" ? (metaPlatforms?.length ?? 1) : 1;
+            flash(`${count}개 채널에 배포 예약`);
+            setDistClip(null);
+          }}
+        />
+      )}
+      {registerOpen && (
+        <RegisterModal
+          connections={app.connections}
+          onClose={() => setRegisterOpen(false)}
+          onConnect={(platform) => {
+            if (platform === "youtube") {
+              window.location.href = getYouTubeAuthUrl(undefined, "analytics", "/os");
+            } else {
+              flash(`${platform === "meta" ? "Meta" : "SMR"} 연결은 곧 지원 예정입니다`);
+            }
+          }}
+        />
+      )}
 
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-[9px] rounded-[10px] border border-[#333333] bg-[#1a1e26] px-[18px] py-[11px] text-[13px] font-semibold text-[#eceef2] shadow-[0_12px_30px_rgba(0,0,0,.35)]">
@@ -464,6 +607,10 @@ type ReviewProps = {
   pplOut: Flags; setPplOut: React.Dispatch<React.SetStateAction<Flags>>;
   clipRender: Record<string, string>; setClipRender: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   flash: (m: string) => void; back: () => void;
+  /** 클립 카드의 "편집기" 버튼 → 풀스크린 편집기 오버레이. */
+  openEditor: (item: Item) => void;
+  /** 썸네일 그라디언트 인덱스 (원본 영상 색감 유지). */
+  thumbIdx: number;
 };
 function Review(p: ReviewProps) {
   const { v, tab, sel, setSel, playhead, setPlayhead, playPct, lanesOff } = p;
@@ -572,7 +719,8 @@ function Review(p: ReviewProps) {
         </div>
       )}
 
-      {tab === "clips" && <ClipsTab adopted={p.adopted} clipRender={p.clipRender} setClipRender={p.setClipRender} flash={p.flash} gotoTimeline={() => p.setTab("timeline")} />}
+      {tab === "clips" && <ClipsTab adopted={p.adopted} clipRender={p.clipRender} setClipRender={p.setClipRender} flash={p.flash} gotoTimeline={() => p.setTab("timeline")} openEditor={p.openEditor} thumbIdx={p.thumbIdx} />}
+      {tab === "analyze" && <AnalyzeTab mediaId={p.v.mediaId} />}
       {tab === "ppl" && <PplTab pplOut={p.pplOut} setPplOut={p.setPplOut} flash={p.flash} />}
       {tab === "perf" && <PerfTab />}
     </div>
@@ -658,7 +806,7 @@ function Inspector({ id, ...p }: { id: string } & ReviewProps) {
   );
 }
 
-function ClipsTab({ adopted, clipRender, setClipRender, flash, gotoTimeline }: { adopted: Flags; clipRender: Record<string, string>; setClipRender: React.Dispatch<React.SetStateAction<Record<string, string>>>; flash: (m: string) => void; gotoTimeline: () => void }) {
+function ClipsTab({ adopted, clipRender, setClipRender, flash, gotoTimeline, openEditor, thumbIdx }: { adopted: Flags; clipRender: Record<string, string>; setClipRender: React.Dispatch<React.SetStateAction<Record<string, string>>>; flash: (m: string) => void; gotoTimeline: () => void; openEditor: (item: Item) => void; thumbIdx: number }) {
   const list = ITEMS.filter((x) => x.lane === "shorts" && adopted[x.id]);
   return (
     <div className="max-w-[860px]">
@@ -674,19 +822,292 @@ function ClipsTab({ adopted, clipRender, setClipRender, flash, gotoTimeline }: {
             const r = clipRender[x.id] === "rendered";
             return (
               <div key={x.id} className="flex items-center gap-3.5 rounded-[12px] border border-[#262626] bg-[#161616] px-[15px] py-[13px]">
-                <div className="relative h-[103px] w-[58px] flex-none rounded-[7px]" style={{ background: THUMBS[1] }}><div className="mono absolute inset-x-0 bottom-[5px] text-center text-[9px] text-[#e6e9ef]">9:16</div></div>
+                <div className="relative h-[103px] w-[58px] flex-none rounded-[7px]" style={{ background: THUMBS[thumbIdx] }}><div className="mono absolute inset-x-0 bottom-[5px] text-center text-[9px] text-[#e6e9ef]">9:16</div></div>
                 <div className="min-w-0 flex-1">
                   <div className="mb-[5px] flex items-center gap-2"><span className="rounded-[5px] px-2 py-0.5 text-[11px] font-bold" style={r ? { color: "#0a0a0a", background: "#34d399" } : { color: "#c3c8ff", background: "rgba(139,147,255,.14)", border: "1px solid rgba(139,147,255,.3)" }}>{r ? "확정 · 렌더됨" : "초안"}</span><span className="mono text-[11px] text-[#707070]">{fmt(x.t0)}–{fmt(x.t1)}</span></div>
                   <div className="mb-1 text-[14px] font-bold tracking-[-.3px]">{x.title}</div>
                   <div className="text-[12px] text-[#9a9a9a]">{r ? "YouTube Shorts 프리셋 · 자막 번인 완료" : "세로 크롭·자막 근사 프리뷰"}</div>
                 </div>
                 <div className="flex flex-none flex-col gap-[7px]">
-                  <button onClick={() => flash("편집기 v2 (데모 범위 밖)")} className="rounded-[8px] border border-[#2b2b2b] bg-[#1e1e1e] px-[15px] py-[7px] text-[12.5px] font-semibold text-[#cfcfcf] hover:border-[#3a3a3a] hover:text-[#eceef2]">편집기</button>
+                  <button onClick={() => openEditor(x)} className="rounded-[8px] border border-[#2b2b2b] bg-[#1e1e1e] px-[15px] py-[7px] text-[12.5px] font-semibold text-[#cfcfcf] hover:border-[#3a3a3a] hover:text-[#eceef2]">편집기</button>
                   <button onClick={() => { if (r) return; setClipRender((s) => ({ ...s, [x.id]: "rendered" })); flash("서버 렌더 1회 실행 → 확정 클립"); }} className="rounded-[8px] px-[15px] py-[7px] text-[12.5px] font-bold" style={r ? { background: "#1e1e1e", border: "1px solid #2b2b2b", color: "#707070", cursor: "default" } : { background: "#6b74f0", color: "#fff" }}>{r ? "완료" : "확정·익스포트"}</button>
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────── ANALYZE (real backend) ─────────────────────────── */
+// 실 백엔드 /api/media/:id/analysis 데이터 렌더. mediaId 없으면(=목 데이터 검수) 안내만.
+// 서브탭: 요약 · 자막 · 청크 · 서사 · 쇼츠. 20초 폴링으로 진행 중인 분석도 자동 갱신됨.
+function AnalyzeTab({ mediaId }: { mediaId: string | undefined }) {
+  const { analysis, loading } = useMediaAnalysisPoll(mediaId);
+  const [sub, setSub] = useState<"summary" | "captions" | "chunks" | "narrative" | "shorts" | "people">("summary");
+  const [faces, setFaces] = useState<import("@/lib/data/api").MediaFaces | null>(null);
+  const app = useAppData();
+  // faces.json 폴링 — 20초. 분석 진행 중에도 완성되는 대로 나타나도록.
+  useEffect(() => {
+    if (!mediaId) return;
+    let alive = true;
+    const load = () => {
+      import("@/lib/data/api").then(({ getMediaFaces }) => getMediaFaces(mediaId))
+        .then((f) => { if (alive) setFaces(f); })
+        .catch(() => {});
+    };
+    load();
+    const t = window.setInterval(load, 20000);
+    return () => { alive = false; clearInterval(t); };
+  }, [mediaId]);
+
+  if (!mediaId) {
+    return (
+      <div className="max-w-[860px] rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
+        이 원본은 목 데이터라 분석 결과가 없어요. 실제 업로드/YT 임포트한 회차에서 열어야 데이터가 뜹니다.
+      </div>
+    );
+  }
+  if (loading && !analysis) {
+    return <div className="max-w-[860px] rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">분석 데이터 불러오는 중…</div>;
+  }
+  if (!analysis || analysis.status !== "done" || !analysis.data) {
+    const label = analysis?.status === "failed"
+      ? `분석 실패 — ${analysis.error ?? "재시도 필요"}`
+      : analysis?.status === "pending"
+        ? "분석 진행 중… 완료되면 자동으로 채워집니다 (20초 폴링)"
+        : "분석 데이터가 없습니다.";
+    return <div className="max-w-[860px] rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">{label}</div>;
+  }
+
+  const d = analysis.data;
+  const transcript = d.transcript ?? [];
+  const scenes = d.scenes ?? [];
+  const shorts = d.shorts ?? [];
+  const narrative = d.narrative ?? null;
+
+  // 화자 분포 집계 — speaker 라벨 검증용 (Phase C)
+  const speakerCounts = new Map<string, number>();
+  for (const t of transcript) {
+    const sp = (t as { speaker?: string }).speaker || "(없음)";
+    speakerCounts.set(sp, (speakerCounts.get(sp) ?? 0) + 1);
+  }
+  const speakers = [...speakerCounts.entries()].sort((a, b) => b[1] - a[1]);
+
+  const faceClusters = faces?.clusters ?? {};
+  const faceCount = Object.keys(faceClusters).length;
+
+  const subTabs: { key: typeof sub; label: string; count?: number }[] = [
+    { key: "summary", label: "요약" },
+    { key: "captions", label: "자막", count: transcript.length },
+    { key: "chunks", label: "청크", count: scenes.length },
+    { key: "people", label: "인물", count: faceCount },
+    { key: "narrative", label: "서사", count: narrative?.segments?.length ?? 0 },
+    { key: "shorts", label: "쇼츠", count: shorts.length },
+  ];
+
+  const mmss = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${Math.floor(s % 60).toString().padStart(2, "0")}`;
+
+  return (
+    <div className="max-w-[960px]">
+      {/* 상단 KPI 4개 */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-[15px] py-3">
+          <div className="text-[11px] text-[#707070]">자막 세그먼트</div>
+          <div className="grotesk mt-1 text-[22px] font-bold">{transcript.length}</div>
+        </div>
+        <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-[15px] py-3">
+          <div className="text-[11px] text-[#707070]">5분 청크</div>
+          <div className="grotesk mt-1 text-[22px] font-bold">{scenes.length}</div>
+        </div>
+        <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-[15px] py-3">
+          <div className="text-[11px] text-[#707070]">감지 화자</div>
+          <div className="grotesk mt-1 text-[22px] font-bold" style={{ color: "#8b93ff" }}>{speakers.length}</div>
+        </div>
+        <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-[15px] py-3">
+          <div className="text-[11px] text-[#707070]">쇼츠 추천</div>
+          <div className="grotesk mt-1 text-[22px] font-bold" style={{ color: "#f5a524" }}>{shorts.length}</div>
+        </div>
+      </div>
+
+      {/* 서브 nav */}
+      <div className="mb-3 flex gap-1 rounded-[9px] border border-[#232323] bg-[#0e0e0e] p-1">
+        {subTabs.map((t) => {
+          const on = sub === t.key;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setSub(t.key)}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-[7px] py-2 text-[12.5px] font-semibold"
+              style={on ? { background: "#161616", color: "#eceef2", boxShadow: "0 1px 0 #232323" } : { color: "#9a9a9a" }}
+            >
+              {t.label}
+              {t.count != null && <span className="rounded-md px-1.5 py-0.5 text-[10px] font-bold" style={on ? { background: "#232323", color: "#c3c8ff" } : { background: "#161616", color: "#5a5a5a" }}>{t.count}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 서브탭 내용 */}
+      {sub === "summary" && (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-[12px] border border-[#262626] bg-[#161616] p-4">
+            <div className="mb-2 text-[12px] font-bold text-[#9a9a9a]">화자 분포 (speaker 라벨)</div>
+            {speakers.length === 0 ? (
+              <div className="text-[12px] text-[#707070]">라벨 없음.</div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {speakers.map(([sp, n]) => (
+                  <span key={sp} className="mono rounded-[6px] border border-[#2b2b2b] bg-[#121212] px-2 py-1 text-[11.5px] text-[#cfcfcf]">
+                    <b className="text-[#eceef2]">{sp}</b> · {n}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          {narrative?.full_summary && (
+            <div className="rounded-[12px] border border-[#262626] bg-[#161616] p-4">
+              <div className="mb-2 text-[12px] font-bold text-[#9a9a9a]">전체 서사 요약</div>
+              <pre className="whitespace-pre-wrap break-words text-[12.5px] leading-[1.6] text-[#cfcfcf]" style={{ fontFamily: "inherit" }}>{narrative.full_summary}</pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      {sub === "captions" && (
+        <div className="max-h-[70vh] overflow-auto rounded-[12px] border border-[#262626] bg-[#161616]">
+          <table className="w-full text-[12px]">
+            <thead className="sticky top-0 bg-[#121212] text-[11px] text-[#707070]">
+              <tr>
+                <th className="w-[70px] px-3 py-2 text-left font-semibold">시각</th>
+                <th className="w-[50px] px-2 py-2 text-left font-semibold">화자</th>
+                <th className="px-3 py-2 text-left font-semibold">텍스트</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transcript.map((t, i) => {
+                const sp = (t as { speaker?: string }).speaker || "";
+                return (
+                  <tr key={i} className="border-t border-[#1f1f1f]">
+                    <td className="mono px-3 py-1.5 text-[11px] text-[#9a9a9a]">{mmss(t.start)}</td>
+                    <td className="mono px-2 py-1.5 text-[11px] font-bold" style={{ color: sp.startsWith("M") ? "#5e9bff" : sp.startsWith("F") ? "#f5a524" : "#8b93ff" }}>{sp || "-"}</td>
+                    <td className="px-3 py-1.5 text-[#cfcfcf]">{t.text || <span className="text-[#5a5a5a]">(빈 자막)</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {sub === "chunks" && (
+        <div className="flex flex-col gap-2">
+          {scenes.map((c) => (
+            <div key={c.index ?? c.start} className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-3">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="grotesk text-[13px] font-bold text-[#8b93ff]">#{c.index ?? "-"}</span>
+                <span className="mono text-[11px] text-[#9a9a9a]">{mmss(c.start)}~{c.end != null ? mmss(c.end) : "-"}</span>
+                <span className="mono text-[11px] text-[#707070]">· {Math.round(c.duration ?? 0)}s</span>
+                {c.has_dialogue === false && <span className="rounded-[5px] bg-[#232323] px-1.5 py-0.5 text-[10px] font-bold text-[#9a9a9a]">무발화</span>}
+              </div>
+              <div className="line-clamp-4 whitespace-pre-wrap text-[12px] leading-[1.5] text-[#cfcfcf]">{c.text || <span className="text-[#5a5a5a]">(빈 텍스트)</span>}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {sub === "people" && (
+        faceCount === 0 ? (
+          <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
+            {faces === null ? "얼굴 데이터 불러오는 중…" : (faces.note ?? "얼굴 클러스터 데이터가 없어요. 정밀 분석이 완료되면 나타납니다.")}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="rounded-[10px] border border-[rgba(139,147,255,.25)] bg-[rgba(139,147,255,.08)] px-3 py-2.5 text-[11.5px] leading-[1.5] text-[#c3c8ff]">
+              얼굴 검출·클러스터링으로 {faceCount}개 인물 그룹을 잡음 · {faces?.labeled_segments ?? 0}/{transcript.length} 세그먼트에 speaker 라벨 덮어씀 · 대표 프레임 3장씩. 사용자가 "M2=정숙" 매핑하면 speaker 필드 전체 rename (매핑 UI는 후속).
+            </div>
+            <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+              {Object.entries(faceClusters)
+                .sort((a, b) => b[1].count - a[1].count)
+                .map(([label, meta]) => (
+                  <div key={label} className="rounded-[12px] border border-[#262626] bg-[#161616] p-3">
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="grotesk rounded-[6px] px-2 py-0.5 text-[13px] font-bold" style={{ background: meta.gender_hint === "M" ? "rgba(94,155,255,.15)" : "rgba(245,165,36,.15)", color: meta.gender_hint === "M" ? "#5e9bff" : "#f5a524" }}>{label}</span>
+                      <span className="text-[11.5px] text-[#9a9a9a]">{meta.count}회 등장</span>
+                      <span className="ml-auto text-[11px] text-[#707070]">{meta.gender_hint === "M" ? "남성" : "여성"}</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {meta.representative_frames.map((fp) => {
+                        const name = fp.split("/").pop() ?? fp;
+                        const url = mediaId ? `${app.apiBase}/api/media/${mediaId}/analysis/faces/${name}` : "";
+                        return (
+                          <div key={fp} className="relative aspect-square overflow-hidden rounded-[7px] border border-[#2b2b2b] bg-[#0a0a0a]">
+                            {url && (
+                              <img src={url} alt={label} loading="lazy" className="absolute inset-0 size-full object-cover" />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )
+      )}
+
+      {sub === "narrative" && (
+        <div className="flex flex-col gap-3">
+          {narrative?.segments?.length ? narrative.segments.map((seg) => (
+            <div key={seg.block_index} className="rounded-[12px] border border-[#262626] bg-[#161616] p-4">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="grotesk text-[13px] font-bold text-[#8b93ff]">#{seg.block_index}</span>
+                <span className="text-[13px] font-bold text-[#eceef2]">{seg.title}</span>
+                <span className="mono text-[11px] text-[#707070]">{mmss(seg.start)}~{mmss(seg.end)}</span>
+              </div>
+              <div className="text-[12.5px] leading-[1.6] text-[#cfcfcf]">{seg.summary}</div>
+              {seg.key_moments?.length > 0 && (
+                <div className="mt-2.5 flex flex-wrap gap-1">
+                  {seg.key_moments.map((m, i) => <span key={i} className="rounded-[5px] bg-[#1e1e1e] px-2 py-0.5 text-[11px] text-[#c3c8ff]">{m}</span>)}
+                </div>
+              )}
+            </div>
+          )) : <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">서사 데이터가 없어요.</div>}
+          {narrative?.key_conflicts?.length ? (
+            <div className="rounded-[12px] border border-[#262626] bg-[#161616] p-4">
+              <div className="mb-2 text-[12px] font-bold text-[#f5a524]">주요 갈등 · {narrative.key_conflicts.length}건</div>
+              <div className="flex flex-col gap-2">
+                {narrative.key_conflicts.map((k, i) => (
+                  <div key={i} className="border-t border-[#232323] pt-2 text-[12px] leading-[1.55] text-[#cfcfcf]">
+                    <div className="mb-1 font-bold text-[#eceef2]">{k.title}</div>
+                    <div className="text-[#9a9a9a]">{k.description}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {sub === "shorts" && (
+        <div className="flex flex-col gap-2">
+          {shorts.map((s, i) => (
+            <div key={i} className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-3">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="grotesk text-[13px] font-bold text-[#f5a524]">#{s.rank ?? i + 1}</span>
+                <span className="text-[13.5px] font-bold text-[#eceef2]">{s.title}</span>
+              </div>
+              <div className="mono mb-1 text-[11px] text-[#9a9a9a]">{mmss(s.start)}~{mmss(s.end)} · {Math.round(s.end - s.start)}s</div>
+              {s.reason && <div className="text-[12.5px] leading-[1.55] text-[#cfcfcf]">{s.reason}</div>}
+              {s.tags && s.tags.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {s.tags.map((t) => <span key={t} className="rounded-[5px] bg-[#1e1e1e] px-2 py-0.5 text-[11px] text-[#c3c8ff]">{t}</span>)}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -776,17 +1197,31 @@ function DerivationModal({ ep, onClose, onEnter }: {
   const masterThumb = abs(master?.thumbUrl);
   const clipList = app.clipsForEpisode(ep.id);
   const recList = [...app.recsForEpisode(ep.id)].sort((a, b) => b.appeal - a.appeal);
-  const recs = recList.length;
-  const clips = clipList.length;
+  const shortRecs = recList.filter((r) => r.kind === "short");
+  const clipRecs = recList.filter((r) => r.kind === "clip");
+  const shortsCount = shortRecs.length;
+  const highlightCount = clipRecs.length;
 
-  // Shorts previews — prefer adopted clips (→ 편집기), else AI candidates (→ 검수 워크스페이스).
-  // No per-segment frames exist server-side, so the master thumbnail stands in as the preview
-  // image (falls back to a gradient when the master has none yet).
   const go = (path: string) => { onClose(); router.push(path); };
-  const previews = clips > 0
+
+  const rgba = (h: string, a: number) => { const n = parseInt(h.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
+  // 원본 컨트롤러 catMeta(디자인 lines 1677~1682)와 동일: 쇼츠·하이라이트·PPL·영상분석 4종.
+  const cats = [
+    { key: "shorts", label: "쇼츠 클립", color: "#8b7cf6", count: `${shortsCount}개`, sub: "세로 9:16 후보" },
+    { key: "highlight", label: "하이라이트", color: "#2dd4bf", count: `${highlightCount}개`, sub: "가로 명장면 편집" },
+    { key: "ppl", label: "PPL 노출", color: "#f5a524", count: "감지 예정", sub: "브랜드 감지·집계" },
+    { key: "analysis", label: "영상 분석", color: "#5e9bff", count: "리포트", sub: "AI 구조화 리포트" },
+  ];
+  const [cat, setCat] = useState("shorts");
+  const grad = THUMBS[(ep.episodeNumber ?? 0) % THUMBS.length];
+  const sel = cats.find((c) => c.key === cat)!;
+
+  // 카테고리별 프리뷰. shorts/highlight는 썸네일 그리드, ppl/analysis는 안내 메시지.
+  // shorts는 채택 클립이 있으면 그걸 우선(→편집기 라우팅), 없으면 short-kind 추천(→검수).
+  // highlight는 clip-kind 추천을 16:9 카드로 표시.
+  const shortsPreviews = clipList.length > 0
     ? clipList.map((c, i) => ({
-        key: c.id,
-        title: c.title,
+        key: c.id, title: c.title,
         range: c.startTime != null && c.endTime != null
           ? `${formatTimecode(c.startTime)}–${formatTimecode(c.endTime)}`
           : formatTimecode(c.durationSec),
@@ -795,25 +1230,22 @@ function DerivationModal({ ep, onClose, onEnter }: {
         grad: THUMBS[i % THUMBS.length],
         onClick: () => go(`/editor/${c.id}`),
       }))
-    : recList.map((r, i) => ({
-        key: r.id,
-        title: r.title,
+    : shortRecs.map((r, i) => ({
+        key: r.id, title: r.title,
         range: `${formatTimecode(r.startTime)}–${formatTimecode(r.endTime)}`,
         badge: `#${i + 1}`,
         thumb: masterThumb,
         grad: THUMBS[i % THUMBS.length],
         onClick: onEnter,
       }));
-
-  const rgba = (h: string, a: number) => { const n = parseInt(h.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
-  const cats = [
-    { key: "shorts", label: "쇼츠 클립", color: "#8b7cf6", count: `${recs}개`, sub: "세로 9:16 후보" },
-    { key: "ppl", label: "PPL 노출", color: "#f5a524", count: "감지 예정", sub: "브랜드 감지·집계" },
-    { key: "analysis", label: "영상 분석", color: "#5e9bff", count: "리포트", sub: "AI 구조화 리포트" },
-  ];
-  const [cat, setCat] = useState("shorts");
-  const grad = THUMBS[(ep.episodeNumber ?? 0) % THUMBS.length];
-  const sel = cats.find((c) => c.key === cat)!;
+  const highlightPreviews = clipRecs.map((r, i) => ({
+    key: r.id, title: r.title,
+    range: `${formatTimecode(r.startTime)}–${formatTimecode(r.endTime)}`,
+    badge: "HL",
+    thumb: masterThumb,
+    grad: THUMBS[i % THUMBS.length],
+    onClick: onEnter,
+  }));
 
   return (
     <div onClick={onClose} className="fixed inset-0 z-[70] flex items-center justify-center bg-[rgba(5,6,9,.72)] p-[30px] backdrop-blur-[6px]">
@@ -825,7 +1257,7 @@ function DerivationModal({ ep, onClose, onEnter }: {
           <button onClick={onClose} className="text-[20px] leading-none text-[#707070] hover:text-[#eceef2]">✕</button>
         </div>
         <div className="p-[22px]">
-          <div className="mb-4 text-[12px] text-[#9a9a9a]">하나의 원본이 AI를 거쳐 <b className="text-[#eceef2]">파생물</b>로 구조화돼요. 카드를 눌러 각 파생 결과를 확인하세요.</div>
+          <div className="mb-4 text-[12px] text-[#9a9a9a]">하나의 원본이 AI를 거쳐 <b className="text-[#eceef2]">4가지 파생물</b>로 구조화돼요. 카드를 눌러 각 파생 결과를 확인하세요.</div>
           <div className="mb-5 flex items-stretch gap-0">
             <div className="flex w-[216px] flex-none flex-col justify-center">
               <button
@@ -843,11 +1275,16 @@ function DerivationModal({ ep, onClose, onEnter }: {
                 )}
               </button>
             </div>
+            {/* 4-branch connector — 원본 디자인 lines 1075~1082 */}
             <div className="w-[54px] flex-none">
               <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none" className="block">
                 <g stroke="#3a3a3a" strokeWidth={1.4} fill="none" vectorEffect="non-scaling-stroke">
-                  <path d="M0 50 H45" vectorEffect="non-scaling-stroke" /><path d="M45 16.5 V83.5" vectorEffect="non-scaling-stroke" />
-                  <path d="M45 16.5 H100" vectorEffect="non-scaling-stroke" /><path d="M45 50 H100" vectorEffect="non-scaling-stroke" /><path d="M45 83.5 H100" vectorEffect="non-scaling-stroke" />
+                  <path d="M0 50 H45" vectorEffect="non-scaling-stroke" />
+                  <path d="M45 12.5 V87.5" vectorEffect="non-scaling-stroke" />
+                  <path d="M45 12.5 H100" vectorEffect="non-scaling-stroke" />
+                  <path d="M45 37.5 H100" vectorEffect="non-scaling-stroke" />
+                  <path d="M45 62.5 H100" vectorEffect="non-scaling-stroke" />
+                  <path d="M45 87.5 H100" vectorEffect="non-scaling-stroke" />
                 </g>
               </svg>
             </div>
@@ -868,45 +1305,61 @@ function DerivationModal({ ep, onClose, onEnter }: {
             <div className="mb-3.5 flex items-center gap-2">
               <span className="size-2.5 rounded-[3px]" style={{ background: sel.color }} />
               <span className="text-[14px] font-bold">{sel.label}</span>
-              {cat === "shorts" && previews.length > 0 && (
-                <span className="text-[11px] text-[#707070]">· {clips > 0 ? `채택 클립 ${clips}개` : `쇼츠 추천 ${recs}개`}</span>
+              {cat === "shorts" && shortsPreviews.length > 0 && (
+                <span className="text-[11px] text-[#707070]">· {clipList.length > 0 ? `채택 클립 ${clipList.length}개` : `쇼츠 추천 ${shortsCount}개`}</span>
+              )}
+              {cat === "highlight" && highlightPreviews.length > 0 && (
+                <span className="text-[11px] text-[#707070]">· 하이라이트 후보 {highlightCount}개</span>
               )}
             </div>
-            {cat === "shorts" ? (
-              previews.length > 0 ? (
-                <>
-                  <div className="mb-3 text-[12px] text-[#9a9a9a]">
-                    {clips > 0
-                      ? <>채택된 쇼츠 클립이에요. 카드를 누르면 <b className="text-[#8b93ff]">편집기</b>로 이동해요.</>
-                      : <>AI가 추천한 쇼츠 후보예요. 카드를 누르면 <b className="text-[#8b93ff]">검수 워크스페이스</b>에서 타임라인·인스펙터로 채택/편집할 수 있어요.</>}
-                  </div>
-                  <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(112px,1fr))]">
-                    {previews.map((p) => (
-                      <button
-                        key={p.key}
-                        onClick={p.onClick}
-                        className="group flex flex-col overflow-hidden rounded-[10px] border border-[#262626] bg-[#161616] text-left transition-colors hover:border-[#3a3a3a]"
-                      >
-                        <div className="relative aspect-[9/16] bg-cover bg-center" style={p.thumb ? { backgroundImage: `url(${p.thumb})` } : { background: p.grad }}>
-                          <span className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent" />
-                          <span className="absolute left-1.5 top-1.5 rounded-[5px] bg-black/55 px-1.5 py-[2px] text-[9.5px] font-bold text-white">{p.badge}</span>
-                          <span className="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100">
-                            <span className="flex size-8 items-center justify-center rounded-full border border-white/30 bg-[rgba(10,11,15,.55)]"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fff" style={{ marginLeft: 2 }}><path d="M8 5v14l11-7z" /></svg></span>
-                          </span>
-                          <span className="absolute inset-x-1.5 bottom-1.5">
-                            <span className="mono block text-[9px] tabular-nums text-[#d7dae2]">{p.range}</span>
-                            <span className="mt-px block truncate text-[10.5px] font-semibold leading-tight text-white">{p.title}</span>
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
-                  아직 생성된 쇼츠가 없어요. 분석이 끝나면 후보가 채워집니다.
-                </div>
-              )
+            {(cat === "shorts" || cat === "highlight") ? (
+              (() => {
+                const previews = cat === "shorts" ? shortsPreviews : highlightPreviews;
+                const isShort = cat === "shorts";
+                if (previews.length === 0) {
+                  return (
+                    <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
+                      {isShort
+                        ? "아직 생성된 쇼츠가 없어요. 분석이 끝나면 후보가 채워집니다."
+                        : "아직 하이라이트 후보가 없어요. 분석이 끝나면 채워집니다."}
+                    </div>
+                  );
+                }
+                return (
+                  <>
+                    <div className="mb-3 text-[12px] text-[#9a9a9a]">
+                      {isShort
+                        ? (clipList.length > 0
+                          ? <>채택된 쇼츠 클립이에요. 카드를 누르면 <b className="text-[#8b93ff]">편집기</b>로 이동해요.</>
+                          : <>AI가 추천한 쇼츠 후보예요. 카드를 누르면 <b className="text-[#8b93ff]">검수 워크스페이스</b>에서 타임라인·인스펙터로 채택/편집할 수 있어요.</>)
+                        : <>가로 명장면 편집 후보예요. 카드를 누르면 <b className="text-[#2dd4bf]">검수 워크스페이스</b>에서 편집·확정할 수 있어요.</>}
+                    </div>
+                    <div className={isShort
+                      ? "grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(112px,1fr))]"
+                      : "grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(180px,1fr))]"}>
+                      {previews.map((p) => (
+                        <button
+                          key={p.key}
+                          onClick={p.onClick}
+                          className="group flex flex-col overflow-hidden rounded-[10px] border border-[#262626] bg-[#161616] text-left transition-colors hover:border-[#3a3a3a]"
+                        >
+                          <div className={`relative bg-cover bg-center ${isShort ? "aspect-[9/16]" : "aspect-video"}`} style={p.thumb ? { backgroundImage: `url(${p.thumb})` } : { background: p.grad }}>
+                            <span className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent" />
+                            <span className="absolute left-1.5 top-1.5 rounded-[5px] px-1.5 py-[2px] text-[9.5px] font-bold text-white" style={{ background: isShort ? "rgba(0,0,0,.55)" : "#2dd4bf", color: isShort ? "#fff" : "#0a0a0a" }}>{p.badge}</span>
+                            <span className="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100">
+                              <span className="flex size-8 items-center justify-center rounded-full border border-white/30 bg-[rgba(10,11,15,.55)]"><svg width="12" height="12" viewBox="0 0 24 24" fill="#fff" style={{ marginLeft: 2 }}><path d="M8 5v14l11-7z" /></svg></span>
+                            </span>
+                            <span className="absolute inset-x-1.5 bottom-1.5">
+                              <span className="mono block text-[9px] tabular-nums text-[#d7dae2]">{p.range}</span>
+                              <span className="mt-px block truncate text-[10.5px] font-semibold leading-tight text-white">{p.title}</span>
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()
             ) : (
               <div className="rounded-[12px] border border-[#262626] bg-[#161616] px-4 py-6 text-center text-[12.5px] text-[#9a9a9a]">
                 {cat === "ppl" ? <>PPL·브랜드 노출 집계는 파이프라인 연동 후 채워집니다.</>

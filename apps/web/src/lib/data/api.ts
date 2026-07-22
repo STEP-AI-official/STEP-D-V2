@@ -112,6 +112,34 @@ export async function getMediaAnalysis(mediaId: string): Promise<MediaAnalysis> 
   return res.json();
 }
 
+/** 얼굴 클러스터 메타(faces.py 출력). representative_frames는 서버-상대 경로("face_clusters/M1_0.jpg").
+ *  UI는 이걸 `${API_BASE}/media/{id}/analysis/{path}` 로 붙여서 <img src>. */
+export interface MediaFaceCluster {
+  cluster_id: number;
+  count: number;
+  gender_hint: "M" | "F";
+  representative_frames: string[];
+}
+export interface MediaFaces {
+  clusters: Record<string, MediaFaceCluster>; // key: "M1", "F1", ...
+  mapping: Record<string, string>;             // 사용자 매핑 결과: {"M1": "정숙", ...}
+  labeled_segments?: number;
+  total_frames_scanned?: number;
+  total_faces_detected?: number;
+  detect_sec?: number;
+  note?: string;
+}
+export async function getMediaFaces(mediaId: string): Promise<MediaFaces> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/faces`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`faces fetch failed (${res.status})`);
+  return res.json();
+}
+export function faceCropUrl(apiBase: string, mediaId: string, framePath: string): string {
+  // framePath는 "face_clusters/M1_0.jpg" — 파일명만 뽑아 새 라우트에 붙임.
+  const name = framePath.split("/").pop() ?? framePath;
+  return `${apiBase}/media/${mediaId}/analysis/faces/${name}`;
+}
+
 export interface EpisodeCastPerson {
   name: string;
   castId: string | null;
@@ -178,6 +206,20 @@ export async function createProgram(input: CreateProgramInput): Promise<{ progra
   );
 }
 
+/** Update a program in place. 서버 PATCH는 지정한 필드만 병합 — 여기 안 넣은 필드는 유지됨.
+ *  cast는 전체 재정의(빈 배열로 덮어쓰면 캐스트 없음). 재분석 시 refine 지문에 cast_registry가
+ *  들어가 있어, cast 바뀌면 다음 content.analyze에서 refined.json이 자동 재생성됨. */
+export type UpdateProgramInput = Partial<CreateProgramInput>;
+export async function updateProgram(id: string, patch: UpdateProgramInput): Promise<{ program: Program }> {
+  return json(
+    await fetch(`${API_BASE}/programs/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
 /** Persist the editor's decision blob on a clip (metadata only — no render, plan §2.4). */
 export async function saveClipEditor(clipId: string, editorState: EditorState): Promise<void> {
   const res = await fetch(`${API_BASE}/clips/${clipId}/editor`, {
@@ -210,6 +252,8 @@ export async function uploadVideo(
   programId: string,
   title?: string,
   onProgress?: (pct: number) => void,
+  /** true = 빠른 분석(자막만, 시각 분석 스킵). 기본 false=정밀. content.analyze 잡 페이로드로 전달. */
+  fast?: boolean,
 ): Promise<UploadResult> {
   const init = await json<
     | { mode: "resumable"; mediaId: string; objectPath: string; sessionUrl: string }
@@ -227,7 +271,7 @@ export async function uploadVideo(
     }),
   );
 
-  if (init.mode === "multipart") return uploadVideoMultipart(file, programId, title, onProgress);
+  if (init.mode === "multipart") return uploadVideoMultipart(file, programId, title, onProgress, fast);
 
   await uploadResumable(init.sessionUrl, file, onProgress);
 
@@ -243,6 +287,7 @@ export async function uploadVideo(
         filename: file.name,
         contentType: file.type || "video/mp4",
         size: file.size,
+        ...(fast ? { fast: true } : {}),
       }),
     }),
   );
@@ -257,12 +302,13 @@ export async function importYoutubeVideo(
   url: string,
   programId: string,
   title?: string,
+  fast?: boolean,
 ): Promise<{ episodeId: string; mediaId: string }> {
   const res = await json<{ episode: { id: string }; media: { id: string } }>(
     await fetch(`${API_BASE}/media/from-youtube`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, programId, title }),
+      body: JSON.stringify({ url, programId, title, ...(fast ? { fast: true } : {}) }),
     }),
   );
   return { episodeId: res.episode.id, mediaId: res.media.id };
@@ -376,12 +422,14 @@ function uploadVideoMultipart(
   programId: string,
   title: string | undefined,
   onProgress?: (pct: number) => void,
+  fast?: boolean,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append("file", file);
     form.append("programId", programId);
     if (title) form.append("title", title);
+    if (fast) form.append("fast", "true");
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_BASE}/media/upload`);
     xhr.upload.onprogress = (e) => {
