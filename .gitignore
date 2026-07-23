@@ -41,5 +41,10 @@ apps/web/src/vendor/opencut-src/
 
 # NCC 바우처 결과보고 (컴플라이언스: 리포와 물리 분리 유지)
 바우처_결과보고_*/
-STEP-D_일정표.xlsx
+STEP-D_일정표*.xlsx
 .__wtest
+
+# 로컬 테스트·파이프라인 산출물 스크래치 — 커밋 X (repo root 오염 방지)
+/local-scratch/
+/logs/
+/eval/
