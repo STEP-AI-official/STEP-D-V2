@@ -87,8 +87,17 @@ export interface Recommendation {
   episodeId: string;
   kind: RecommendationKind;
   title: string;
-  /** 1–5 appeal score from the recommend pass (higher = surfaced first). */
+  /** 처음 제목 생성 단계에서 뽑힌 대체 제목 후보들 (기본 title 포함/미포함 무관).
+   *  에디터의 '제목 후보' 탭이 이 배열을 후보 리스트로 표시한다. 비어 있으면 title 하나만. */
+  titleCandidates?: string[];
+  /** 1–5 legacy compressed appeal (higher = surfaced first). 2026-07-23~는 score100/3축이 진짜 스코어. */
   appeal: number;
+  /** 3축 가중합 0-100 — 2026-07-23~ 신규. hook 0.40·payoff 0.35·완결 0.25. */
+  score100?: number;
+  /** 3축 각 축 0-10 — score100의 근거. 옛 회차는 없을 수 있음. */
+  hookStrength?: number;
+  payoff?: number;
+  completeness?: number;
   startTime: number; // seconds into master
   endTime: number;
   thumbnailUrl?: string;

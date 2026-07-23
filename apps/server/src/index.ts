@@ -206,6 +206,22 @@ app.patch("/api/programs/:id", async (c) => {
   if (typeof body.targetAge === "number") next.targetAge = body.targetAge;
   if (Array.isArray(body.cast)) {
     next.cast = body.cast.filter((x: unknown): x is string => typeof x === "string");
+    // 2026-07-23: entities.data.cast → program_cast 테이블 sync. 파이프라인(listProgramCast)이
+    // program_cast에서 읽으므로 UI가 program_cast API 안 써도 여기서 sync. 기존 목록 전부
+    // 삭제 후 새로 insert (덮어쓰기 시맨틱).
+    const pool = getPool();
+    await pool.query("DELETE FROM program_cast WHERE programid = $1", [id]);
+    for (const name of next.cast as string[]) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+      const castId = newId("cast");
+      try {
+        await upsertCastMember({ castId, programId: id, name: trimmed });
+      } catch (e: any) {
+        // (programId, name, season) unique · 중복이면 조용히 skip
+        if (e?.code !== "23505") throw e;
+      }
+    }
   }
 
   // SMR: merge onto the existing config so fields absent from the body survive; an
@@ -580,6 +596,52 @@ app.get("/api/media/:id/thumb", async (c) => {
   });
 });
 
+// ── frame at arbitrary timestamp — 쇼츠·씬 카드 미리보기용 정지 프레임 ─────────
+//
+// 쿼리 t(초)를 두 자리로 반올림해 캐시 키로 사용 · analysis/{id}/frames/{key}.jpg.
+// 캐시 히트면 즉시 반환, 미스면 ffmpeg(-ss t -vframes 1)로 뽑아 저장 후 서빙.
+// 클립 카드도 이 라우트로 원본 구간의 시작 프레임을 표시(트림 전에도 검증 가능).
+app.get("/api/media/:id/frame", async (c) => {
+  const id = c.req.param("id");
+  if (!/^[\w-]+$/.test(id)) return c.json({ error: "bad media id" }, 400);
+  const tRaw = c.req.query("t");
+  const t = Number(tRaw);
+  if (!Number.isFinite(t) || t < 0) return c.json({ error: "bad t" }, 400);
+
+  const m = await getMedia(id);
+  if (!m) return c.json({ error: "media not found" }, 404);
+  // 끝단 ffmpeg 실패 방지: 마지막 100ms는 피하고 clamp.
+  const dur = Number(m.durationSec ?? 0);
+  const clamped = Math.max(0, Math.min(t, Math.max(0.1, dur - 0.1)));
+  const key = clamped.toFixed(2);
+  const objPath = `analysis/${id}/frames/${key}.jpg`;
+
+  if (!(await fileExists(objPath))) {
+    if (!FFMPEG) return c.json({ error: "ffmpeg unavailable" }, 503);
+    const masterObjPath = parseObjectPath(m.path);
+    if (!(await fileExists(masterObjPath))) return c.json({ error: "source not found" }, 404);
+    const srcPath = useGcs() ? await signedReadUrl(masterObjPath, 60 * 60 * 1000) : m.path;
+    const tmpDir = path.resolve("/tmp/stepd-frames");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = path.join(tmpDir, `${id}_${key.replace(/\./g, "_")}.jpg`);
+    try {
+      await captureThumbnail(srcPath, clamped, tmpPath);
+      await uploadFile(objPath, tmpPath);
+    } catch (err) {
+      console.error("[frame] capture failed:", err);
+      try { fs.unlinkSync(tmpPath); } catch {}
+      return c.json({ error: "capture failed" }, 500);
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+  }
+
+  return new Response(createReadStream(objPath), {
+    status: 200,
+    headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
+  });
+});
+
 // ── content analysis result (AI pipeline: transcript + scenes + shorts) ─────────
 app.get("/api/media/:id/analysis", async (c) => {
   const row = await getContentAnalysis(c.req.param("id"));
@@ -657,6 +719,34 @@ app.get("/api/media/:id/faces", async (c) => {
   const objPath = `analysis/${id}/faces.json`;
   if (!(await fileExists(objPath))) return c.json({ clusters: {}, mapping: {}, labeled_segments: 0 });
   // 로컬 스토리지는 STEPD_STORAGE_DIR 하위 · GCS 모드는 signed URL로 refetch. 여기선 로컬만.
+  return new Response(createReadStream(objPath), {
+    status: 200,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+  });
+});
+
+// ppl_frames/{brand}_{idx}.jpg — PPL 검출 구간 대표 프레임. ppl.py가 저장 · UI 카드 썸네일.
+// name 형식: 브랜드 sanitize + zero-padded 인덱스 (예: "CJ_00012.jpg", "unknown_00045.jpg").
+app.get("/api/media/:id/analysis/ppl_frames/:name", async (c) => {
+  const id = c.req.param("id");
+  const name = c.req.param("name");
+  if (!/^[\w-]+$/.test(id)) return c.json({ error: "bad media id" }, 400);
+  if (!/^[\w-]+_\d+\.jpg$/.test(name)) return c.json({ error: "bad ppl frame name" }, 400);
+  const objPath = `analysis/${id}/ppl_frames/${name}`;
+  if (!(await fileExists(objPath))) return c.json({ error: "not found" }, 404);
+  return new Response(createReadStream(objPath), {
+    status: 200,
+    headers: { "Content-Type": "image/jpeg", "Cache-Control": "max-age=86400" },
+  });
+});
+
+// ppl.json — PPL·브랜드 검출 타임라인 (구간·브랜드·카테고리·대표 프레임·요약).
+// analysis.json에도 ppl 필드가 들어가지만, UI에서 분석 안 끝나도 부분 결과 폴링용으로 별도 라우트.
+app.get("/api/media/:id/ppl", async (c) => {
+  const id = c.req.param("id");
+  if (!/^[\w-]+$/.test(id)) return c.json({ error: "bad media id" }, 400);
+  const objPath = `analysis/${id}/ppl.json`;
+  if (!(await fileExists(objPath))) return c.json({ detections: [], brand_summary: {} });
   return new Response(createReadStream(objPath), {
     status: 200,
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
@@ -1621,9 +1711,16 @@ async function renderClipMedia(opts: {
       // volume change, no speed change, native 16:9). Any edit routes through renderShort.
       await trimEncode(srcPath, startTime, endTime, tmpPath);
     } else {
+      // 배경 채우기 방식 — 에디터에서 지정한 bgType(solid/blur/image). image는 아직 렌더 파이프라인
+      // 미지원이라 solid로 폴백(renderShort 내부에서 처리). solid일 때 letterbox 색은 state.bg.
+      const bgType = (editorState?.bgType === "solid" || editorState?.bgType === "image"
+        ? editorState.bgType
+        : "blur") as "solid" | "blur" | "image";
+      const bgColor = typeof editorState?.bg === "string" ? editorState.bg : undefined;
       await renderShort({
         inputPath: srcPath, startTime, endTime, outputPath: tmpPath, width: W, height: H,
         assPath: ass ? assTmp : null, videoFilters, audioFilter, speed,
+        bgType, bgColor,
       });
     }
     const cmeta = await probe(tmpPath).catch(() => ({
@@ -1925,8 +2022,230 @@ app.patch("/api/clips/:id/editor", async (c) => {
     return c.json({ error: "editorState is required" }, 400);
   }
 
-  await putEntity("clip", clipId, { ...clip, editorState: body.editorState });
+  const es = body.editorState as {
+    trimIn?: unknown; trimOut?: unknown; trimBase?: unknown;
+  };
+  // Master-absolute trim(에디터 새 모델): editorState.trimIn/trimOut이 이미 마스터 절대 초.
+  // 세그먼트(=clip.startTime/endTime)를 트림에 맞춰 이동시켜 두면, 아래 /export의 세그먼트
+  // 상대 계산이 자연스럽게 trimIn=0, trimOut=segLen인 상태로 굽는다 — 렌더 로직 손 안 대고 통합.
+  const patch: Record<string, unknown> = { ...clip, editorState: body.editorState };
+  if (
+    es.trimBase === "master" &&
+    typeof es.trimIn === "number" && Number.isFinite(es.trimIn) &&
+    typeof es.trimOut === "number" && Number.isFinite(es.trimOut) &&
+    (es.trimOut as number) > (es.trimIn as number)
+  ) {
+    patch.startTime = Math.max(0, es.trimIn as number);
+    patch.endTime = es.trimOut as number;
+    patch.durationSec = Number(((es.trimOut as number) - (es.trimIn as number)).toFixed(3));
+    // 새 세그먼트 좌표로 옮겼으니 다음 로드 때 다시 shift되지 않도록 trim은 0..segLen로 정규화.
+    (body.editorState as { trimIn: number; trimOut: number; trimBase: string }).trimIn = 0;
+    (body.editorState as { trimOut: number }).trimOut = Number(((es.trimOut as number) - (es.trimIn as number)).toFixed(3));
+    (body.editorState as { trimBase: string }).trimBase = "segment";
+    // Track[0]도 같이 재정규화 (main track이 trim을 미러링해야 render 일관성 유지)
+    const tracks = (body.editorState as { tracks?: Array<Record<string, unknown>> }).tracks;
+    if (Array.isArray(tracks) && tracks.length > 0) {
+      const segLen = (body.editorState as { trimOut: number }).trimOut;
+      tracks[0].trimIn = 0;
+      tracks[0].trimOut = segLen;
+      tracks[0].startTime = 0;
+      tracks[0].duration = segLen;
+    }
+    patch.editorState = body.editorState;
+  }
+
+  await putEntity("clip", clipId, patch);
   return c.json({ ok: true, clipId });
+});
+
+// ── 제목 후보 재생성 — 에디터에서 사용자가 추가 지시(예: "더 자극적으로", "이모지 넣지 마")를
+//    넣어 요청하면, 그 클립의 자막 창을 기반으로 새 후보 4~5개를 뽑아 돌려준다.
+//    저장하지 않는다(에디터 세션 로컬). editorState.uploadMeta 흐름과 별개 — 여기서 나온
+//    후보 중 하나를 사용자가 클릭하면 클립 제목이 갈아끼워질 뿐이고, DB에 커밋되지 않는다.
+app.post("/api/clips/:id/regenerate-titles", async (c) => {
+  const clipId = c.req.param("id");
+  const clip = await getEntity<any>("clip", clipId);
+  if (!clip) return c.json({ error: "clip not found" }, 404);
+
+  const body = await c.req.json<{ prompt?: string }>().catch(() => ({} as { prompt?: string }));
+  const extra = String(body.prompt ?? "").trim().slice(0, 400); // 지나치게 긴 지시는 컷
+
+  const start = Number(clip.startTime ?? 0);
+  const end = Number(clip.endTime ?? start + (clip.durationSec ?? 0));
+  if (!(end > start)) return c.json({ error: "clip has no valid segment" }, 400);
+
+  // 소스 미디어의 자막(마스터 절대 초) → 현재 세그먼트 창으로 windowCaptions rebase.
+  // 자막이 없으면 제목 근거가 없어 재생성 의미가 없음 → 409.
+  const resolved = clip.sourceMediaId
+    ? await resolveTranscript(clip.sourceMediaId)
+    : { segments: [] as unknown[], updatedAt: 0, source: "none" as const };
+  const captions = windowCaptions(resolved.segments, start, end);
+  if (captions.length === 0) {
+    return c.json({ error: "no captions in clip segment — cannot regenerate titles" }, 409);
+  }
+
+  // 자막을 프롬프트에 실을 최대 개수 (지나치게 길면 토큰 낭비, 처음 24개 창은 충분히 대표적).
+  const shown = captions.slice(0, 24)
+    .map((cp) => `[${cp.start.toFixed(1)}s] ${cp.text.slice(0, 140)}`)
+    .join("\n");
+
+  const old = String(clip.title ?? "").trim() || "-";
+  // 재제목 프롬프트(core/recommend.py _retitle_final_windows)와 동일 규칙을 짧게 반영 —
+  // 어그로 강하게, 자막 근거 필수, 답 없는 물음표 금지, 이모지 최대 1개.
+  // 그 위에 사용자의 extra 지시를 '우선순위 규칙'으로 얹는다.
+  const systemBase =
+    "너는 한국 예능 방송의 자막 카피라이터다. 방송 화면 하단에 뜨는 CG 자막처럼 " +
+    "**담백하게 상황을 관찰조로 서술**하되, 다음 장면이 궁금해지는 여운을 남기는 톤으로 " +
+    "제목을 짓는다. 아래 자막이 이 클립의 실제 대사다. 실제로 있는 일만 짧게 툭 던져라. " +
+    "**5개 후보를 서로 다른 결로 흩어** 뽑아라 (구체 문구 예시는 주지 않으니 결에 맞게 스스로 만들어라).\n\n" +
+    "[감성]\n" +
+    "- 길이 8~18자. 명사구 하나만으로도 좋다.\n" +
+    "- 담백한 관찰조·현재형. 감정 어휘는 최소화, 벌어진 일을 담담히.\n" +
+    "- '…' 여운은 강한 훅. 인용은 자막 원문 그대로 인용부호로. 인용 뒤 서술 최소.\n" +
+    "- 5개 결(반드시 흩어라): (a) 상황 관찰형 (b) 명사구형 (c) 여운형 (d) 인용형 (e) 자유.\n\n" +
+    "[치명적 금지 — 어기면 실격]\n" +
+    "- 다음 어휘 금지: 미친, 헐, 실화, 대박, 소름, 레전드, 폭발, 폭탄, 어이없는, 충격, " +
+    "초토화, 뒤집어졌다, 뒤집혔다, 해버렸다, 터졌다, 저질렀다, 스튜디오.\n" +
+    "- 화살표(→)·물결(~)·이모지·특수문자 금지 (인용부호와 '…'만 허용).\n" +
+    "- ㅋㅋㅋ·ㅎㅎ 자모 반복 금지. 감탄사(오·와·헐 등) 문두 금지.\n" +
+    "- 대괄호 뉴스 접두어([속보]/[단독]/[충격]) 금지. 두루뭉술 명사(썰/이야기/모먼트/사연) 금지.\n" +
+    "- **자막에 없는 사실 금지**. 인물·장소·수치·행동을 만들지 마라. 인용은 자막 원문 그대로.";
+  const extraBlock = extra
+    ? `\n\n[사용자 추가 요청 — 위 규칙과 충돌하면 사용자 요청을 우선]\n${extra}`
+    : "";
+  const prompt =
+    `${systemBase}${extraBlock}\n\n` +
+    `[기존 제목(참고만)]\n${old}\n\n` +
+    `[클립 자막]\n${shown}\n\n` +
+    'Return ONLY a valid JSON object like {"titles": ["...", "...", "...", "...", "..."]}. ' +
+    "정확히 5개.";
+
+  const schema = {
+    type: "OBJECT",
+    properties: {
+      titles: { type: "ARRAY", items: { type: "STRING" } },
+    },
+    required: ["titles"],
+  };
+
+  try {
+    // temperature 1.5 — 예시 문구를 프롬프트에서 뺐으므로 결이 실제로 흩어지려면 창의 상한을
+    // 밀어야 함. 자막 근거는 금지 규칙으로 통제해 hallucination은 별개 축.
+    const res = await geminiGenerate(prompt, { schema, temperature: 1.5, maxOutputTokens: 1024 });
+    const parsed = parseJsonLoose(res.text) as { titles?: unknown };
+    const raw = Array.isArray(parsed.titles) ? parsed.titles : [];
+    // dedupe + trim + 빈 문자열 제거, 상위 5개까지 유지.
+    const seen = new Set<string>();
+    const titles: string[] = [];
+    for (const t of raw) {
+      const v = String(t ?? "").trim();
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      titles.push(v);
+      if (titles.length >= 5) break;
+    }
+    if (titles.length === 0) {
+      // 원인 파악을 위해 raw text와 파싱 결과를 로그 + 에러 응답에 실어 반환.
+      console.error("[regenerate-titles] empty result — raw:", res.text?.slice(0, 500));
+      return c.json({
+        error: "no titles generated",
+        rawText: res.text?.slice(0, 500) ?? "",
+        parsedShape: typeof parsed === "object" && parsed ? Object.keys(parsed) : [],
+      }, 502);
+    }
+    return c.json({ titles });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[regenerate-titles] failed:", msg);
+    return c.json({ error: "generation failed", message: msg.slice(0, 300) }, 502);
+  }
+});
+
+// ── 업로드 메타데이터 AI 자동 생성 — YouTube 업로드용 title/description/tags를 자막 근거로 생성.
+//    저장 X. 프론트 MetadataButton의 '생성' 버튼이 호출 → 결과를 state.uploadMeta에 얹는다. ──
+app.post("/api/clips/:id/generate-metadata", async (c) => {
+  const clipId = c.req.param("id");
+  const clip = await getEntity<any>("clip", clipId);
+  if (!clip) return c.json({ error: "clip not found" }, 404);
+
+  const start = Number(clip.startTime ?? 0);
+  const end = Number(clip.endTime ?? start + (clip.durationSec ?? 0));
+  if (!(end > start)) return c.json({ error: "clip has no valid segment" }, 400);
+
+  const resolved = clip.sourceMediaId
+    ? await resolveTranscript(clip.sourceMediaId)
+    : { segments: [] as unknown[], updatedAt: 0, source: "none" as const };
+  const captions = windowCaptions(resolved.segments, start, end);
+  if (captions.length === 0) {
+    return c.json({ error: "no captions in clip segment — cannot generate metadata" }, 409);
+  }
+
+  const shown = captions.slice(0, 40)
+    .map((cp) => `[${cp.start.toFixed(1)}s] ${cp.text.slice(0, 180)}`)
+    .join("\n");
+  const currentTitle = String(clip.title ?? "").trim() || "-";
+  const channelHint = typeof clip.programTitle === "string" ? clip.programTitle : "";
+
+  // 제목은 '예능 자막 톤' 원칙 유지 (title-prompt-yeneung-caption-tone 메모리 참고).
+  // 설명은 3~5 문장, 자연스럽고 담담하게. 마지막에 해시태그 2~4개.
+  // 태그는 YouTube 태그 필드용 5~10개, 인물·상황·프로그램 키워드.
+  const prompt =
+    "너는 한국 예능 유튜브 채널의 업로드 담당자다. 아래 자막이 이 쇼츠 클립의 실제 대사다. " +
+    "이 자막 안에서 벌어진 일만을 근거로 YouTube 업로드용 **title·description·tags**를 만들어라.\n\n" +
+    "[title — 예능 자막 톤]\n" +
+    "- 8~18자. 담백한 관찰조·현재형, 여운(…) 활용 가능.\n" +
+    "- 다음 어휘 금지: 미친/헐/실화/대박/소름/레전드/폭발/폭탄/충격/초토화/뒤집혔다/해버렸다/터졌다/저질렀다/스튜디오.\n" +
+    "- 화살표(→)·이모지·특수문자 금지. ㅋㅋ·ㅎㅎ 반복 금지.\n" +
+    "- 두루뭉술 명사(썰/이야기/모먼트/사연) 금지.\n\n" +
+    "[description — 3~5문장 · 자연스럽게]\n" +
+    "- 클립에서 벌어지는 상황을 간결히 소개. 감정어휘 남발 금지, TV 프로그램 소개 톤.\n" +
+    "- 등장 인물·상황·핵심 대사는 자막에 있는 것만.\n" +
+    "- 마지막 줄에 관련 해시태그 2~4개 (프로그램/인물/장르 키워드).\n\n" +
+    "[tags — 5~10개]\n" +
+    "- YouTube 태그 필드용. 인물명·프로그램명·장르·상황 키워드. 한 태그당 1~4단어.\n" +
+    "- 자막에 등장한 실 인물명은 반드시 포함. 만들어낸 이름 금지.\n\n" +
+    "[절대 규칙]\n" +
+    "- **자막에 없는 사실 금지**. 인물·장소·수치·행동을 만들지 마라.\n\n" +
+    `[기존 제목] ${currentTitle}\n` +
+    (channelHint ? `[채널/프로그램] ${channelHint}\n` : "") +
+    `\n[자막]\n${shown}\n\n` +
+    'Return ONLY a valid JSON object like {"title":"...","description":"...","tags":["...","..."]}.';
+
+  const schema = {
+    type: "OBJECT",
+    properties: {
+      title: { type: "STRING" },
+      description: { type: "STRING" },
+      tags: { type: "ARRAY", items: { type: "STRING" } },
+    },
+    required: ["title", "description", "tags"],
+  };
+
+  try {
+    const res = await geminiGenerate(prompt, { schema, temperature: 1.1, maxOutputTokens: 2048 });
+    const parsed = parseJsonLoose(res.text) as { title?: unknown; description?: unknown; tags?: unknown };
+    const title = String(parsed.title ?? "").trim();
+    const description = String(parsed.description ?? "").trim();
+    const tagsRaw = Array.isArray(parsed.tags) ? parsed.tags : [];
+    const tags: string[] = [];
+    const seen = new Set<string>();
+    for (const t of tagsRaw) {
+      const v = String(t ?? "").trim().replace(/^#/, "");
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      tags.push(v);
+      if (tags.length >= 10) break;
+    }
+    if (!title || !description) {
+      console.error("[generate-metadata] empty result — raw:", res.text?.slice(0, 500));
+      return c.json({ error: "empty metadata", rawText: res.text?.slice(0, 500) ?? "" }, 502);
+    }
+    return c.json({ title, description, tags });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[generate-metadata] failed:", msg);
+    return c.json({ error: "generation failed", message: msg.slice(0, 300) }, 502);
+  }
 });
 
 // ── export/render a clip → the single expensive render (plan §2.4) ────────────

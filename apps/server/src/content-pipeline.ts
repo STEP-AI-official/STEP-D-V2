@@ -51,14 +51,16 @@ const WORK_ROOT = path.join(os.tmpdir(), "stepd-content");
 const WORK_DIR_TTL_MS = 48 * 60 * 60 * 1000;
 
 /** Stage outputs core/analyze.py checkpoints into the work dir (upload order). */
-const CHECKPOINT_FILES = ["analysis.json", "scenes.json", "cast.json", "timeline.json", "narrative.json", "shorts.json", "refined.json", "faces.json", "stt.json", "manifest.json"];
+const CHECKPOINT_FILES = ["analysis.json", "scenes.json", "cast.json", "timeline.json", "narrative.json", "shorts.json", "refined.json", "faces.json", "ppl.json", "stt.json", "manifest.json"];
 
 /**
  * Watchdog: kill the python child after this long with NO stdout output. A hung Vertex
  * call would otherwise keep the job 'running' forever — the heartbeat refreshes the lock
  * indefinitely, so requeueStale can never reclaim it and the content lane wedges.
  */
-const STALL_TIMEOUT_MS = (Number(process.env.CORE_ANALYZE_STALL_MIN) || 30) * 60 * 1000;
+// 2026-07-23: 90분+ 영상 정밀 분석에서 30분 무출력 관찰됨(faces·ppl 프레임 뽑기 순차 처리 구간).
+// 60분으로 상향 · 환경변수로 더 늘릴 수 있음. 완전 무출력 시나리오만 잘라내는 안전망.
+const STALL_TIMEOUT_MS = (Number(process.env.CORE_ANALYZE_STALL_MIN) || 60) * 60 * 1000;
 
 function workDirFor(mediaId: string): string {
   return path.join(WORK_ROOT, mediaId.replace(/[^a-zA-Z0-9_-]/g, "_"));
@@ -143,6 +145,10 @@ function runAnalyze(
     if (profilePath) args.push("--profile", profilePath);
     if (castPath) args.push("--cast", castPath);
     if (fast) args.push("--fast");  // 자막만으로 빠른 추천 (시각 분석 스킵)
+    // 2026-07-23: Windows에서 python native crash(0xC0000005) 가 tsx 워커 프로세스까지 kill
+    // 하는 문제 관찰 (job object 공유로 인한 cascade). detached:true 로 별도 process group
+    // 만들어 격리. stderr도 inherit → pipe로 signal 전파 차단.
+    const isWindows = process.platform === "win32";
     const proc = spawn(
       CORE_PYTHON,
       args,
@@ -157,10 +163,24 @@ function runAnalyze(
           GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || "step-d",
           VERTEX_LOCATION: process.env.VERTEX_LOCATION || "asia-northeast3",
         },
-        stdio: ["ignore", "pipe", "inherit"],
+        stdio: ["ignore", "pipe", "pipe"],  // stderr pipe (inherit 시 워커까지 kill 관찰)
+        detached: isWindows,  // Windows job object 이탈 · 자식 crash가 부모 워커까지 kill되는 것 방지
+        windowsHide: true,
       },
     );
     activeChild = proc;
+    // 2026-07-23: proc.unref() — 워커가 python subprocess 종료를 wait하지 않게 함.
+    // Python native crash 시 close event 처리 도중 워커까지 kill되던 이슈 대응.
+    // stdin 읽기 안 함(ignore) + stdout/stderr는 pipe 로 별도 처리 후 unref.
+    if (typeof proc.unref === "function") proc.unref();
+    if (proc.stdin && typeof proc.stdin.unref === "function") proc.stdin.unref();
+    if (proc.stdout && typeof proc.stdout.unref === "function") proc.stdout.unref();
+    if (proc.stderr && typeof proc.stderr.unref === "function") proc.stderr.unref();
+    // stderr는 로그로만 사용 (워커 프로세스에 영향 없게)
+    if (proc.stderr) {
+      const errRl = readline.createInterface({ input: proc.stderr });
+      errRl.on("line", (line) => console.error(`[core:err] ${line}`));
+    }
 
     // Stall watchdog: every stdout line re-arms it. The pipeline prints per-window/-frame/
     // -batch progress on stdout, so a long silence means a hung call, not slow work.
@@ -178,6 +198,10 @@ function runAnalyze(
     armStall();
 
     // Parse progress markers out of stdout; everything else passes through to the log.
+    // @@COMPLETE 마커 감지 시 즉시 resolve — python close 이벤트 안 기다림.
+    // Windows에서 python native cleanup crash로 exit code non-zero 되어도 결과는 유효
+    // (analysis.json 이미 write됨). 2026-07-23 워커 안정성 개선.
+    let earlyResolved = false;
     const rl = readline.createInterface({ input: proc.stdout! });
     rl.on("line", (line) => {
       armStall();
@@ -189,14 +213,37 @@ function runAnalyze(
         }
         return;
       }
+      if (line.startsWith("@@COMPLETE ")) {
+        console.log(`[core] ${line}`);
+        if (!earlyResolved) {
+          earlyResolved = true;
+          if (stallTimer) clearTimeout(stallTimer);
+          resolve();  // 조기 resolve. python이 이후 crash해도 이미 완료 처리됨
+        }
+        return;
+      }
       console.log(`[core] ${line}`);
     });
     proc.on("close", (code) => {
       if (stallTimer) clearTimeout(stallTimer);
       activeChild = null;
-      if (stalled) reject(new Error(`core.analyze stalled (${STALL_TIMEOUT_MS / 60000}min without output) — killed`));
-      else if (code === 0) resolve();
-      else reject(new Error(`core.analyze exited ${code}`));
+      if (earlyResolved) return;  // @@COMPLETE로 이미 resolve됨 · 뒤늦은 exit code 무시
+      if (stalled) {
+        reject(new Error(`core.analyze stalled (${STALL_TIMEOUT_MS / 60000}min without output) — killed`));
+        return;
+      }
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      // Fallback: @@COMPLETE 없이 종료 (구 코드 or 예외) — analysis.json 있으면 사용
+      const analysisPath = path.join(outDir, "analysis.json");
+      if (fs.existsSync(analysisPath)) {
+        console.warn(`[worker] core.analyze exited ${code} · @@COMPLETE 없음 · analysis.json 존재하므로 결과 사용`);
+        resolve();
+        return;
+      }
+      reject(new Error(`core.analyze exited ${code}`));
     });
     proc.on("error", (err) => {
       if (stallTimer) clearTimeout(stallTimer);
@@ -210,6 +257,13 @@ function runAnalyze(
 type Short = {
   rank?: number; appeal?: number; start?: number; end?: number;
   title?: string; reason?: string; tags?: string[];
+  /** 3축 직교 스코어(각 0-10, 2026-07-23~). hook_strength·payoff·completeness — appeal은 이 셋에서 산출. */
+  hook_strength?: number; payoff?: number; completeness?: number;
+  /** 3축 가중합 0-100 (hook 0.40·payoff 0.35·completeness 0.25). 프론트 메인 스코어. */
+  score100?: number;
+  /** 처음 제목 생성 단계(_retitle_final_windows)에서 뽑힌 대체 제목 후보들.
+   *  기본 title을 포함할 수도 있고 아닐 수도 있음 — 프론트는 dedupe 처리. */
+  title_candidates?: string[];
   /** (후보 × 배포처) matrix from core/channels.py apply_channel_fit — absent when the
    *  analysis ran without destinations, or on any pre-matrix run. */
   channel_scores?: Record<string, ChannelScore>;
@@ -233,12 +287,22 @@ function recFromShort(episodeId: string, s: Short) {
   const rank = typeof s.rank === "number" ? s.rank : 3;
   // The model scores appeal itself (1–5, 절대평가); 6-rank is only the legacy fallback.
   const appeal = typeof s.appeal === "number" ? s.appeal : 6 - rank;
+  const titleMain = s.title || "쇼츠 추천";
+  const titleCandidates = Array.isArray(s.title_candidates)
+    ? Array.from(new Set([titleMain, ...s.title_candidates.filter((t) => typeof t === "string" && t.trim())]))
+    : undefined;
   return {
     id,
     episodeId,
     kind: "short",
-    title: s.title || "쇼츠 추천",
+    title: titleMain,
+    titleCandidates,
     appeal: Math.max(1, Math.min(5, appeal)),
+    // 신규 스코어(있으면 그대로 전달). 프론트 카드가 score100 우선 표시.
+    score100: typeof s.score100 === "number" ? s.score100 : undefined,
+    hookStrength: typeof s.hook_strength === "number" ? s.hook_strength : undefined,
+    payoff: typeof s.payoff === "number" ? s.payoff : undefined,
+    completeness: typeof s.completeness === "number" ? s.completeness : undefined,
     startTime: start,
     endTime: end,
     editNote: s.reason || "",
@@ -372,6 +436,19 @@ async function persistArtifacts(work: string, mediaId: string): Promise<{ base: 
         await Promise.all(
           faceFiles.slice(i, i + CONCURRENCY).map((f) =>
             uploadFile(`${base}/face_clusters/${f}`, path.join(faceDir, f)),
+          ),
+        );
+      }
+    }
+    // ppl_frames/ — PPL 검출 구간별 대표 프레임. UI PPL 카드에서 썸네일로 뜸.
+    const pplDir = path.join(work, "ppl_frames");
+    if (fs.existsSync(pplDir)) {
+      const pplFiles = fs.readdirSync(pplDir).filter((f) => f.endsWith(".jpg"));
+      const CONCURRENCY = 8;
+      for (let i = 0; i < pplFiles.length; i += CONCURRENCY) {
+        await Promise.all(
+          pplFiles.slice(i, i + CONCURRENCY).map((f) =>
+            uploadFile(`${base}/ppl_frames/${f}`, path.join(pplDir, f)),
           ),
         );
       }
@@ -555,7 +632,15 @@ export async function runContentAnalyze(mediaId: string, fast = false): Promise<
       console.error("[worker] program context resolve failed (proceeding without):", e);
     }
 
-    await runAnalyze(videoPath, work, onProgress, profilePath, castPath, fast);
+    // 2026-07-23: runAnalyze reject 되어도 analysis.json 있으면 결과 사용 (native cleanup crash 등).
+    // 워커 안정성 개선의 두 번째 축 — 파일 있으면 DB write 반드시 진행, 없으면 진짜 실패.
+    try {
+      await runAnalyze(videoPath, work, onProgress, profilePath, castPath, fast);
+    } catch (e) {
+      const analysisPath = path.join(work, "analysis.json");
+      if (!fs.existsSync(analysisPath)) throw e;
+      console.warn(`[worker] content.analyze ${mediaId}: runAnalyze 실패 (${(e as Error).message}) — analysis.json 있어 진행`);
+    }
     await chain.catch(() => {});
 
     const analysis = JSON.parse(fs.readFileSync(path.join(work, "analysis.json"), "utf-8"));

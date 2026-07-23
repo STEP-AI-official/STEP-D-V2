@@ -57,6 +57,21 @@ export interface AnalysisShort {
   end: number;
   reason?: string;
   tags?: string[];
+  /** 3축 직교 스코어(각 0-10). 2026-07-23~ 신규. hook_strength=시선강탈·payoff=결정타·completeness=완결성. */
+  hook_strength?: number;
+  payoff?: number;
+  completeness?: number;
+  /** 3축 가중합 0-100 (weights: hook 0.40 · payoff 0.35 · completeness 0.25). 프론트 메인 스코어. */
+  score100?: number;
+  /** 1~5 legacy compressed appeal. UI 호환용 — 신규 카드는 score100/3축을 우선 표시. */
+  appeal?: number;
+  /** 훅 카테고리 — "웃음"·"반전"·"감정고조"·"돌직구"·"질문"·"정보성"·"갈등"·"공감"·"기타". */
+  hook?: string;
+  /** 방송 실무 3-type (2026-07-23~): shortform(40~60s SNS) / clip(1~5분 SMR·재편집) / highlight(5~10분 회차 요약). */
+  type?: "shortform" | "clip" | "highlight";
+  /** highlight 전용 — 여러 시나리오를 시간순으로 이어붙인 편집 세그먼트 리스트. */
+  segments?: { scenario_id?: number | null; start: number; end: number; title?: string }[];
+  total_length_sec?: number;
 }
 /** One refined transcript segment (STT → refine). */
 export interface AnalysisTranscriptSegment {
@@ -64,6 +79,8 @@ export interface AnalysisTranscriptSegment {
   end?: number;
   text?: string;
   appealScore?: number;
+  /** refine이 붙인 화자 라벨 — 실명("김수현") or M1/F1 폴백. faces 매핑 저장 시 rename. */
+  speaker?: string;
 }
 export interface NarrativeSegment {
   block_index: number;
@@ -73,6 +90,10 @@ export interface NarrativeSegment {
   characters: string[];
   start: number;
   end: number;
+  /** Pass3 확장(2026-07-22, AENA 레퍼런스): 장소·브랜드·정서 톤. */
+  locations?: string[];
+  brands?: string[];
+  emotional_tone?: string;
 }
 export interface NarrativeCharacter {
   name: string;
@@ -94,6 +115,32 @@ export interface NarrativeData {
   characters?: NarrativeCharacter[];
   key_conflicts?: NarrativeConflict[];
 }
+/** 하나의 PPL/브랜드 노출 구간 (core/ppl.py 산출). 인접 프레임은 병합된 상태. */
+export interface PplDetection {
+  brand: string;
+  category?: string;
+  position?: string;
+  start: number;
+  end: number;
+  confidence: number;
+  notes?: string;
+  /** analysis/{mediaId}/ppl_frames/{name}.jpg — 대표 프레임 (peak confidence). */
+  frame_ref?: string;
+  /** 병합된 구간이 몇 개 샘플 프레임에 걸쳤는지. */
+  frames_hit?: number;
+}
+export interface PplData {
+  detections?: PplDetection[];
+  /** 브랜드별 총 노출초 합계. */
+  brand_summary?: Record<string, number>;
+  total_frames_scanned?: number;
+  total_detections?: number;
+  detect_sec?: number;
+  sample_sec?: number;
+  error?: string;
+  note?: string;
+}
+
 export interface MediaAnalysis {
   status: "pending" | "done" | "failed" | null;
   data?: {
@@ -101,8 +148,21 @@ export interface MediaAnalysis {
     scenes?: AnalysisScene[];
     shorts?: AnalysisShort[];
     narrative?: NarrativeData | null;
+    ppl?: PplData | null;
   } | null;
   error?: string | null;
+}
+
+/** PPL 결과 별도 폴링 — 분석 진행 중에도 도착하는 대로 UI에 반영 (faces와 동일 패턴). */
+export async function getMediaPpl(mediaId: string): Promise<PplData> {
+  const res = await fetch(`${API_BASE}/media/${mediaId}/ppl`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`ppl fetch failed (${res.status})`);
+  return res.json();
+}
+export function pplFrameUrl(apiBase: string, mediaId: string, framePath: string): string {
+  // framePath = "ppl_frames/CJ_00012.jpg" — 파일명만 뽑아 라우트에 붙임.
+  const name = framePath.split("/").pop() ?? framePath;
+  return `${apiBase}/media/${mediaId}/analysis/ppl_frames/${name}`;
 }
 
 /** Content-pipeline result for one uploaded media (STT → scenes → shorts). */
@@ -138,6 +198,12 @@ export function faceCropUrl(apiBase: string, mediaId: string, framePath: string)
   // framePath는 "face_clusters/M1_0.jpg" — 파일명만 뽑아 새 라우트에 붙임.
   const name = framePath.split("/").pop() ?? framePath;
   return `${apiBase}/media/${mediaId}/analysis/faces/${name}`;
+}
+
+/** 원본 영상의 특정 순간(t초) 정지 프레임 URL. 서버에서 캡처·캐시.
+ *  쇼츠 카드·씬 카드·클립 카드가 시각 미리보기로 사용. */
+export function frameUrl(apiBase: string, mediaId: string, t: number): string {
+  return `${apiBase}/media/${mediaId}/frame?t=${Math.max(0, t).toFixed(2)}`;
 }
 
 /** 인물 매핑 저장 — {M1:"정숙", F2:"영자"}을 서버 faces.json에 병합 + refined.json speaker rename.
@@ -248,6 +314,35 @@ export async function saveClipEditor(clipId: string, editorState: EditorState): 
     body: JSON.stringify({ editorState }),
   });
   await json<{ ok: boolean }>(res);
+}
+
+/** 에디터 '제목 후보' 탭의 '새로 생성' 배선 — 사용자 추가 지시(prompt)를 얹어 5개 재생성.
+ *  결과는 세션 로컬(에디터에서만 보임) — 서버 저장 없음. 클릭 시 클립 제목만 갈아끼운다. */
+export async function regenerateTitles(clipId: string, prompt: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/regenerate-titles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const data = await json<{ titles: string[] }>(res);
+  return Array.isArray(data.titles) ? data.titles : [];
+}
+
+/** 메타데이터 버튼 '생성' 배선 — 자막 근거로 YouTube 업로드용 title/description/tags 자동 생성.
+ *  서버 저장 X. 결과를 state.uploadMeta에 얹으면 됨. */
+export async function generateUploadMetadata(
+  clipId: string,
+): Promise<{ title: string; description: string; tags: string[] }> {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/generate-metadata`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  const data = await json<{ title: string; description: string; tags: string[] }>(res);
+  return {
+    title: data.title ?? "",
+    description: data.description ?? "",
+    tags: Array.isArray(data.tags) ? data.tags : [],
+  };
 }
 
 type UploadResult = { episode: { id: string }; media: unknown; recommendations: unknown[] };

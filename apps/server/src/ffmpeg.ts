@@ -12,6 +12,13 @@ export type ProbeResult = {
   hasAudio: boolean;
 };
 
+/** #rrggbb 또는 rrggbb 문자열을 3~6자 안 되면 fallback으로 대체. ffmpeg color 필터에 넘길 값 정규화용. */
+function normalizeHexColor(input: string | undefined, fallback: string): string {
+  const v = (input ?? "").trim();
+  const m = /^#?([0-9a-f]{6})$/i.exec(v);
+  return m ? `#${m[1].toLowerCase()}` : fallback;
+}
+
 export function hasFfmpeg(): boolean {
   try {
     const out = execFileSync("ffmpeg", ["-version"], { timeout: 5000, encoding: "utf8", stdio: "pipe" });
@@ -134,6 +141,13 @@ export type RenderShortOpts = {
   /** Uniform playback speed (1 = normal, 2 = 2× fast, 0.5 = half). Burned via setpts AFTER
    *  the ASS/overlay burn so captions speed up in sync. Audio atempo is expected in audioFilter. */
   speed?: number;
+  /** 배경 채우기 방식.
+   *  - "blur"(기본, 하위호환): 원본 확대 블러 커버.
+   *  - "solid": 단색 letterbox. bgColor(#rrggbb 또는 0xRRGGBB) 사용.
+   *  - "image": TODO — 지금은 solid로 폴백. 이미지 파일 준비·filter graph 확장 후 활성. */
+  bgType?: "solid" | "blur" | "image";
+  /** bgType='solid'일 때의 letterbox 색 (예: "#0E0E12"). */
+  bgColor?: string;
 };
 
 /**
@@ -151,12 +165,28 @@ export function renderShort(opts: RenderShortOpts): Promise<void> {
   // truncated back to the source length.
   const outDur = duration / speed;
 
-  // Blurred cover behind a fit-to-frame foreground → 9:16 (or any target) with no letterbox.
-  let vf =
-    `split=2[a][b];` +
-    `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1[bg];` +
-    `[b]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg];` +
-    `[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]`;
+  // 배경 채우기 방식 결정 — blur(기본): 원본 확대 블러 커버 · solid: 단색 letterbox.
+  // image는 아직 solid로 폴백(파일 준비 파이프라인 없음). 프리뷰가 3종 모두 표시하므로
+  // 렌더가 solid만 되도 최소한 프리뷰↔렌더 일관성이 solid·blur 두 경로에서 성립.
+  const bgMode = opts.bgType === "solid" || opts.bgType === "image" ? "solid" : "blur";
+  const solidColor = normalizeHexColor(opts.bgColor, "#0E0E12");
+  let vf: string;
+  if (bgMode === "solid") {
+    // fit-to-frame foreground를 [W×H] 단색 캔버스에 오버레이. color 필터는 지속 프레임 만들고,
+    // -shortest 없이 -t로 컷하므로 무한 스트림도 안전. 색은 0xRRGGBB 형식.
+    const colorHex = `0x${solidColor.slice(1)}`;
+    vf =
+      `color=c=${colorHex}:s=${W}x${H}:d=${outDur.toFixed(3)}[bg];` +
+      `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg];` +
+      `[bg][fg]overlay=(W-w)/2:(H-h)/2:shortest=1[v0]`;
+  } else {
+    // Blurred cover behind a fit-to-frame foreground → 9:16 (or any target) with no letterbox.
+    vf =
+      `split=2[a][b];` +
+      `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1[bg];` +
+      `[b]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg];` +
+      `[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]`;
+  }
   let last = "[v0]";
   // Colour grade the composited frame BEFORE the ASS burn, so titles/captions stay crisp
   // and are not tinted by the operator's brightness/contrast/warmth adjustments.

@@ -11,11 +11,31 @@
  * `gcloud auth application-default login`. Any failure surfaces as a thrown error the caller
  * turns into a 4xx/5xx — nothing else in the server depends on this.
  */
+import fs from "node:fs";
 import { GoogleAuth } from "google-auth-library";
 
 const PROJECT = process.env.GOOGLE_CLOUD_PROJECT || "step-d";
 const LOCATION = process.env.VERTEX_LOCATION || "asia-northeast3";
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+// GOOGLE_APPLICATION_CREDENTIALS가 존재하지 않는 파일을 가리키면(과거 gcp-keys/ 삭제 등의 흔한
+// 로컬 상태) google-auth-library가 ENOENT를 던지고 ADC(gcloud auth application-default)
+// 폴백조차 안 한다. 서버 시작 시 한 번 깨끗이 정리해서 gcloud ADC로 폴백하게 한다.
+(function clearBrokenCredentialsPath() {
+  const p = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (!p) return;
+  try {
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) {
+      console.warn(
+        `[gemini] GOOGLE_APPLICATION_CREDENTIALS points to a missing file (${p}); ` +
+        `falling back to gcloud ADC (~/.config/gcloud/application_default_credentials.json).`,
+      );
+      delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    }
+  } catch {
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  }
+})();
 
 let _auth: GoogleAuth | null = null;
 function auth(): GoogleAuth {
