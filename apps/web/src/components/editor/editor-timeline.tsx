@@ -14,8 +14,6 @@ import {
   XFADE_MIN,
   type EditorState,
   type EditorTrack,
-  type KeyframePoint,
-  type KfSelection,
   type SpeedPoint,
 } from "@/lib/editor/presets";
 import { useAudioPeaks, Waveform } from "@/components/editor/editor-waveform";
@@ -26,12 +24,10 @@ type Update = (patch: Partial<EditorState>) => void;
 const SPEEDS = [0.5, 1, 1.5, 2];
 const MIN_LEN = 0.5; // seconds — smallest trim window / split piece
 const MAX_ZOOM = 8; // 800%
-const MIN_OVERLAY_LEN = 0.2; // seconds — smallest overlay visibility window
-// Lane geometry (px) — must match the h-10 / h-5 / space-y-1 classes below; used to
+// Lane geometry (px) — must match the h-10 / space-y-1 classes below; used to
 // place transition zones on the seam between adjacent track lanes.
 const LANE_H = 40;
 const LANE_GAP = 4;
-const OVERLAY_LANE_H = 20;
 
 const clampSpeed = (v: number) => Math.min(SPEED_MAX, Math.max(SPEED_MIN, v));
 // Log2 mapping so 1× sits mid-lane: lane top = 4×, bottom = 0.25×.
@@ -67,28 +63,23 @@ export function EditorTimeline({
   state,
   update,
   duration,
-  startOffset = 0,
   video,
   videoUrl,
   tracks,
   onTogglePlay,
-  kfSel,
-  onKfSelect,
+  recWindow,
 }: {
   state: EditorState;
   update: Update;
   duration: number;
-  /** Master-absolute seconds where the segment (relative t=0) begins. The <video> streams
-   *  the master, so we map segment-relative time ⇄ element time by ± startOffset. */
-  startOffset?: number;
   video: HTMLVideoElement | null;
   videoUrl?: string;
   /** Vertical layers, stacked. tracks[0] is the main track (mirrors the master trim). */
   tracks?: EditorTrack[];
   onTogglePlay: () => void;
-  /** Overlay keyframe selection, shared with the properties panel. */
-  kfSel?: KfSelection;
-  onKfSelect?: (s: KfSelection) => void;
+  /** AI 추천 창(마스터 절대 초) — 있으면 트랙 상단에 얇은 하이라이트 밴드로 표시하고
+   *  트림 IN/OUT의 "추천 원위치로" 스냅 대상이 된다. 트림 자체는 사용자 자유. */
+  recWindow?: { start: number; end: number };
 }) {
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
@@ -104,7 +95,6 @@ export function EditorTimeline({
   const [rampMode, setRampMode] = useState(false);
   const [speedDrag, setSpeedDrag] = useState<{ trackId: string; index: number } | null>(null);
   const [volPop, setVolPop] = useState<string | null>(null);
-  const [ovDrag, setOvDrag] = useState<{ target: "title" | "element"; id: string; side: "in" | "out" } | null>(null);
   const [xfDrag, setXfDrag] = useState<{ trackId: string; startX: number; startDur: number } | null>(null);
   const laneRefs = useRef(new Map<string, HTMLDivElement>());
 
@@ -126,38 +116,37 @@ export function EditorTimeline({
   focusRef.current = focusId;
 
   // Mirror the element's play state + position (it is the source of truth).
+  // 트림/타임라인/비디오가 같은 좌표계(로드된 파일의 자체 초)라 오프셋 불필요.
   useEffect(() => {
     if (!video) return;
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
-    const onTime = () => setT(video.currentTime - startOffset);
+    const onTime = () => setT(video.currentTime);
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
     video.addEventListener("seeked", onTime);
     setPlaying(!video.paused);
-    setT(video.currentTime - startOffset);
+    setT(video.currentTime);
     return () => {
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
       video.removeEventListener("seeked", onTime);
     };
-  }, [video, startOffset]);
+  }, [video]);
 
-  // While playing, advance the playhead from the element and loop within the trim window
-  // (both in segment-relative seconds; the element runs at startOffset + relative).
+  // While playing, advance the playhead from the element and loop within the trim window.
   useEffect(() => {
     if (!video || !playing) return;
     const loop = () => {
-      const rel = video.currentTime - startOffset;
-      if (rel >= state.trimOut) video.currentTime = startOffset + state.trimIn;
-      setT(video.currentTime - startOffset);
+      if (video.currentTime >= state.trimOut) video.currentTime = state.trimIn;
+      setT(video.currentTime);
       raf.current = requestAnimationFrame(loop);
     };
     raf.current = requestAnimationFrame(loop);
     return () => {
       if (raf.current) cancelAnimationFrame(raf.current);
     };
-  }, [video, playing, startOffset, state.trimIn, state.trimOut]);
+  }, [video, playing, state.trimIn, state.trimOut]);
 
   // Clamped: t is segment-relative and can run negative / past duration while the
   // element plays the master outside the segment window.
@@ -171,24 +160,8 @@ export function EditorTimeline({
   const trackList = listOf(state);
   const focused = trackList.find((x) => x.id === focusId) ?? trackList[0];
 
-  // Timed overlays (title lines + elements) shown as thin bars above the track lanes.
-  const overlayItems = [
-    ...state.titleLines.map((l) => ({
-      target: "title" as const,
-      id: l.id,
-      label: l.text || "제목",
-      item: l as { startSec?: number; endSec?: number },
-      cls: "border-amber-400/70 bg-amber-500/40 text-amber-100",
-    })),
-    ...state.elements.map((el) => ({
-      target: "element" as const,
-      id: el.id,
-      label: el.text || el.type,
-      item: el as { startSec?: number; endSec?: number },
-      cls: "border-sky-400/70 bg-sky-500/40 text-sky-100",
-    })),
-  ];
-  const tracksTop = overlayItems.length * (OVERLAY_LANE_H + LANE_GAP);
+  // 타임라인 오버레이 레인(제목·요소 시간창 UI)은 제거됨 — 오버레이 표시/편집은 프리뷰·속성 패널에서 처리.
+  const tracksTop = 0;
 
   // Keep playback speed in sync with the transport. The main track's speed ramp wins
   // (it is what the render cuts); no keyframes = uniform state.speed as before.
@@ -242,21 +215,6 @@ export function EditorTimeline({
     });
   }
 
-  // ── overlay timing: drag a bar edge to set when a title line / element shows.
-  // Unset startSec/endSec means "full clip" (legacy states keep behaving as before). ──
-  function applyOverlayDrag(target: "title" | "element", id: string, side: "in" | "out", sec: number) {
-    const s = stateRef.current;
-    const v = Math.round(Math.max(0, Math.min(sec, duration)) * 10) / 10;
-    const patchOne = <T extends { id: string; startSec?: number; endSec?: number }>(arr: T[]): T[] =>
-      arr.map((o) => {
-        if (o.id !== id) return o;
-        if (side === "in") return { ...o, startSec: Math.max(0, Math.min(v, (o.endSec ?? duration) - MIN_OVERLAY_LEN)) };
-        return { ...o, endSec: Math.min(duration, Math.max(v, (o.startSec ?? 0) + MIN_OVERLAY_LEN)) };
-      });
-    if (target === "title") updateRef.current({ titleLines: patchOne(s.titleLines) });
-    else updateRef.current({ elements: patchOne(s.elements) });
-  }
-
   // The master trim IS the main track's trim — keep tracks[0] in lockstep so the
   // stored track model never drifts from what the render will cut.
   function mainTrimPatch(s: EditorState, patch: { trimIn?: number; trimOut?: number }): Partial<EditorState> {
@@ -267,7 +225,7 @@ export function EditorTimeline({
 
   function seekTo(sec: number) {
     const clamped = Math.max(0, Math.min(sec, duration));
-    if (video) video.currentTime = startOffset + clamped;
+    if (video) video.currentTime = clamped;
     setT(clamped);
   }
   function onTrackClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -364,31 +322,6 @@ export function EditorTimeline({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [speedDrag]);
-
-  // ── overlay-bar edge drag (title/element show window) ─────────────────────────
-  useEffect(() => {
-    if (!ovDrag) return;
-    const onMove = (e: MouseEvent) => {
-      const el = trackRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      applyOverlayDrag(ovDrag.target, ovDrag.id, ovDrag.side, ((e.clientX - rect.left) / rect.width) * duration);
-    };
-    const onUp = () => {
-      suppressClick.current = true;
-      setTimeout(() => {
-        suppressClick.current = false;
-      }, 0);
-      setOvDrag(null);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ovDrag, duration]);
 
   // ── crossfade duration drag (Shift+drag on the zone): dx in px → seconds ──────
   useEffect(() => {
@@ -547,15 +480,6 @@ export function EditorTimeline({
       {/* tracks: stacked layers (waveform + trim window each) sharing one playhead — click to seek */}
       <div className="flex">
         <div className="w-28 shrink-0 space-y-1 pr-1">
-          {overlayItems.map((o) => (
-            <div
-              key={`${o.target}-${o.id}`}
-              className="flex h-5 w-full items-center truncate text-[10px] text-zinc-500"
-              title={o.label}
-            >
-              <span className="truncate">{o.label}</span>
-            </div>
-          ))}
           {trackList.map((tr) => {
             const vol = tr.volume ?? 1;
             const muted = tr.muted === true;
@@ -645,69 +569,6 @@ export function EditorTimeline({
                 );
               })()}
               <div className="space-y-1">
-                {overlayItems.map((o) => {
-                  const os = o.item.startSec ?? 0;
-                  const oe = o.item.endSec ?? duration;
-                  // 키프레임 다이아몬드 마커 (CapCut 벤치마크·감사 §3 결여 해소).
-                  // titleLines/elements의 keyframes는 오버레이 시작(startSec) 기준 상대 시간 → 절대 초 = os+kf.time.
-                  const kfsRaw =
-                    o.target === "title"
-                      ? (state.titleLines.find((l) => l.id === o.id)?.keyframes ?? [])
-                      : (state.elements.find((el) => el.id === o.id)?.keyframes ?? []);
-                  return (
-                    <div key={`${o.target}-${o.id}`} className="relative h-5 rounded bg-zinc-800/50">
-                      <div
-                        className={cn(
-                          "pointer-events-none absolute inset-y-0.5 flex items-center overflow-hidden rounded border px-1.5 text-[9px] font-medium",
-                          o.cls,
-                        )}
-                        style={{ left: pct(os), width: pct(Math.max(0.1, oe - os)) }}
-                      >
-                        <span className="truncate">{o.label}</span>
-                      </div>
-                      {/* 키프레임 다이아몬드 — 클릭하면 속성 패널로 선택 이동 */}
-                      {kfsRaw.map((kf, idx) => {
-                        const absT = Math.max(0, Math.min(duration, os + (kf.time ?? 0)));
-                        const isSel = kfSel && kfSel.target === o.id && kfSel.index === idx;
-                        return (
-                          <button
-                            key={`kf-${idx}`}
-                            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                            onClick={(e) => { e.stopPropagation(); onKfSelect?.({ target: o.id, index: idx }); }}
-                            className={cn(
-                              "absolute top-1/2 z-10 size-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[1px] border transition-colors",
-                              isSel
-                                ? "border-white bg-white shadow-[0_0_0_1px_rgba(0,0,0,.6)]"
-                                : "border-amber-300 bg-amber-400/90 hover:bg-amber-300",
-                            )}
-                            style={{ left: pct(absT) }}
-                            title={`키프레임 ${idx + 1} @ ${(kf.time ?? 0).toFixed(2)}s`}
-                          />
-                        );
-                      })}
-                      <div
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setOvDrag({ target: o.target, id: o.id, side: "in" });
-                        }}
-                        className="absolute inset-y-0 z-20 w-1.5 cursor-ew-resize rounded-l bg-white/25 hover:bg-white/60"
-                        style={{ left: pct(os) }}
-                        title="표시 시작 (드래그)"
-                      />
-                      <div
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setOvDrag({ target: o.target, id: o.id, side: "out" });
-                        }}
-                        className="absolute inset-y-0 z-20 w-1.5 -translate-x-full cursor-ew-resize rounded-r bg-white/25 hover:bg-white/60"
-                        style={{ left: pct(oe) }}
-                        title="표시 끝 (드래그)"
-                      />
-                    </div>
-                  );
-                })}
                 {trackList.map((tr, i) => {
                   const trIn = i === 0 ? state.trimIn : tr.trimIn;
                   const trOut = i === 0 ? state.trimOut : tr.trimOut;
@@ -884,6 +745,23 @@ export function EditorTimeline({
                   className="pointer-events-none absolute inset-y-0 z-20 w-0.5 animate-pulse bg-amber-300"
                   style={{ left: pct(splitFlash) }}
                 />
+              )}
+              {/* AI 추천 창 — 트랙 위에 얇은 반투명 밴드로 표시. 트림은 사용자가 자유롭게
+                  안팎으로 확장/축소할 수 있고, 이 밴드는 "원본 어디가 AI 추천이었는지"만 알려준다. */}
+              {recWindow && recWindow.end > recWindow.start && (
+                <>
+                  <div
+                    className="pointer-events-none absolute inset-y-0 z-0 border-x border-amber-400/40 bg-amber-400/10"
+                    style={{ left: pct(recWindow.start), width: pct(Math.max(0.1, recWindow.end - recWindow.start)) }}
+                    title={`AI 추천: ${formatTimecode(recWindow.start)}–${formatTimecode(recWindow.end)}`}
+                  />
+                  <div
+                    className="pointer-events-none absolute top-0 z-30 -translate-x-1/2 rounded-b bg-amber-400/80 px-1 text-[9px] font-semibold text-black"
+                    style={{ left: pct((recWindow.start + recWindow.end) / 2) }}
+                  >
+                    AI 추천
+                  </div>
+                </>
               )}
               <div className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-white" style={{ left: pct(t) }} />
             </div>

@@ -1,45 +1,94 @@
 "use client";
 
 import { useState } from "react";
+import { Check, Sparkles, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTimecode } from "@/lib/utils";
-import { RECOMMENDATION_KINDS } from "@/lib/constants";
 import type { Recommendation } from "@/lib/types";
-import type { AnalysisScene } from "@/lib/data/api";
+import { regenerateTitles, type AnalysisScene } from "@/lib/data/api";
 
-type AiTab = "analysis" | "shorts" | "clips";
+type AiTab = "analysis" | "titles";
 
-/** Left AI panel — analysis scenes + shorts/clip candidates. Clicking a candidate
- *  applies its title + segment to the editor (reference → clip, StepD pattern).
- *  `scenes` is the real content.analyze output (may be missing if analysis is not
- *  done yet — panel shows an empty state, not fake data). */
+/** Left AI panel — analysis scenes + title candidates for the current clip.
+ *  '제목 후보' 탭 상단에 '새로 생성' 배선이 있다: 사용자가 추가 지시를 텍스트로 넣고 버튼을
+ *  누르면 서버가 5개를 새로 뽑아 이 세션 로컬 리스트에 얹는다(서버 저장 X). 세션 내에서만
+ *  살고 새로고침하면 다시 sourceRec.titleCandidates 기본값으로 돌아간다 — 사용자의 실험용. */
 export function EditorAiPanel({
-  recs,
+  clipId,
   scenes,
-  onApply,
+  sourceRec,
+  currentTitle,
+  onApplyTitle,
 }: {
-  recs: Recommendation[];
+  clipId: string;
   scenes?: AnalysisScene[];
-  onApply: (rec: Recommendation) => void;
+  sourceRec?: Recommendation;
+  currentTitle: string;
+  onApplyTitle: (title: string) => void;
 }) {
-  const [tab, setTab] = useState<AiTab>("shorts");
-  const shorts = recs.filter((r) => r.kind === "short");
-  const clips = recs.filter((r) => r.kind === "clip");
+  const [tab, setTab] = useState<AiTab>("titles");
+  // '새로 생성' 상태 — 프롬프트 입력·로딩·에러·세션 로컬 재생성 후보들.
+  const [regenPrompt, setRegenPrompt] = useState("");
+  const [regenLoading, setRegenLoading] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+  const [regenTitles, setRegenTitles] = useState<string[] | null>(null);
+
   // 분석 탭은 대사/시각 신호가 있는 장면만 (조용한 빈 컷 제외 — 스크롤 노이즈)
   const analysisScenes = (scenes ?? []).filter((s) =>
     (s.text && s.text.trim()) || (s.vision_reason && s.vision_reason.trim()) || (s.vision_tags && s.vision_tags.length > 0),
   );
 
+  // 제목 후보 리스트 — 재생성 결과(있으면) 우선, 없으면 sourceRec.titleCandidates, 그것도 없으면 대표 title.
+  const titles = (() => {
+    if (regenTitles && regenTitles.length > 0) {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const t of regenTitles) {
+        const v = (t ?? "").trim();
+        if (!v || seen.has(v)) continue;
+        seen.add(v);
+        out.push(v);
+      }
+      return out;
+    }
+    if (!sourceRec) return [] as string[];
+    const raw = sourceRec.titleCandidates?.length ? sourceRec.titleCandidates : [sourceRec.title];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of raw) {
+      const v = (t ?? "").trim();
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      out.push(v);
+    }
+    return out;
+  })();
+
+  async function handleRegen() {
+    if (regenLoading) return;
+    setRegenLoading(true);
+    setRegenError(null);
+    try {
+      const next = await regenerateTitles(clipId, regenPrompt.trim());
+      if (next.length === 0) throw new Error("서버가 후보를 반환하지 않았습니다.");
+      setRegenTitles(next);
+    } catch (e) {
+      setRegenError(e instanceof Error ? e.message : "재생성 실패");
+    } finally {
+      setRegenLoading(false);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex border-b border-zinc-800 text-xs">
-        {(["analysis", "shorts", "clips"] as AiTab[]).map((k) => (
+        {(["analysis", "titles"] as AiTab[]).map((k) => (
           <button
             key={k}
             onClick={() => setTab(k)}
             className={cn("flex-1 py-2.5", tab === k ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
           >
-            {k === "analysis" ? "분석" : k === "shorts" ? "쇼츠 후보" : "클립 후보"}
+            {k === "analysis" ? "분석" : "제목 후보"}
           </button>
         ))}
       </div>
@@ -78,32 +127,68 @@ export function EditorAiPanel({
             );
           })}
 
-        {(tab === "shorts" ? shorts : tab === "clips" ? clips : []).map((r) => (
-          <button
-            key={r.id}
-            onClick={() => onApply(r)}
-            className="w-full rounded-md border border-zinc-800 p-2 text-left transition-colors hover:border-zinc-600 hover:bg-zinc-800/50"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-zinc-200">{r.title}</span>
-              <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
-                {RECOMMENDATION_KINDS[r.kind]}
-              </span>
+        {tab === "titles" && (
+          <>
+            {/* '새로 생성' 배선 — 프롬프트 텍스트 + 버튼. 결과는 세션 로컬(위 titles가 자동 반영). */}
+            <div className="mb-2 rounded-md border border-zinc-800 bg-zinc-900/50 p-2">
+              <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                <Sparkles className="size-3 text-amber-400" /> 새로 생성
+              </div>
+              <textarea
+                value={regenPrompt}
+                onChange={(e) => setRegenPrompt(e.target.value)}
+                placeholder="예: 더 자극적으로, 이모지 넣지 마, 인물 이름을 앞에"
+                rows={2}
+                className="w-full resize-none rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-zinc-500"
+              />
+              <div className="mt-1 flex items-center gap-1.5">
+                <button
+                  onClick={handleRegen}
+                  disabled={regenLoading}
+                  className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[11px] font-semibold text-black hover:bg-amber-400 disabled:opacity-60"
+                >
+                  {regenLoading ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                  {regenLoading ? "생성 중…" : "생성"}
+                </button>
+                {regenTitles && (
+                  <button
+                    onClick={() => setRegenTitles(null)}
+                    className="rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800"
+                  >
+                    원래대로
+                  </button>
+                )}
+              </div>
+              {regenError && (
+                <div className="mt-1 text-[10px] text-red-400">{regenError}</div>
+              )}
             </div>
-            <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
-              <span className="tabular-nums">
-                {formatTimecode(r.startTime)}–{formatTimecode(r.endTime)}
-              </span>
-              <span>appeal {r.appeal}</span>
-            </div>
-          </button>
-        ))}
 
-        {tab === "shorts" && shorts.length === 0 && (
-          <div className="p-3 text-center text-xs text-zinc-500">쇼츠 후보 없음</div>
-        )}
-        {tab === "clips" && clips.length === 0 && (
-          <div className="p-3 text-center text-xs text-zinc-500">클립 후보 없음</div>
+            {titles.length === 0 && (
+              <div className="p-3 text-center text-xs text-zinc-500">
+                제목 후보 없음 — '새로 생성'을 눌러 만들어 보세요.
+              </div>
+            )}
+            {titles.map((t, i) => {
+              const applied = t === currentTitle;
+              return (
+                <button
+                  key={`${i}-${t}`}
+                  onClick={() => onApplyTitle(t)}
+                  className={cn(
+                    "flex w-full items-start gap-2 rounded-md border p-2 text-left transition-colors",
+                    applied
+                      ? "border-emerald-500/60 bg-emerald-500/10"
+                      : "border-zinc-800 hover:border-zinc-600 hover:bg-zinc-800/50",
+                  )}
+                >
+                  <span className="mt-0.5 text-[10px] tabular-nums text-zinc-500">{i + 1}.</span>
+                  <span className="min-w-0 flex-1 text-xs text-zinc-200">{t}</span>
+                  {applied && <Check className="mt-0.5 size-3.5 text-emerald-400" />}
+                </button>
+              );
+            })}
+          </>
         )}
       </div>
     </div>

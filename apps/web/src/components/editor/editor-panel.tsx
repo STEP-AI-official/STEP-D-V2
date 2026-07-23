@@ -17,10 +17,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { ImageCropButton } from "@/components/editor/image-crop";
 import {
   ASPECTS,
   BG_SWATCHES,
   CAPTION_STYLES,
+  CHANNEL_BADGE_PRESETS,
   COLOR_SWATCHES,
   DEFAULT_FILTERS,
   ELEMENT_DEFAULTS,
@@ -163,6 +165,75 @@ function Swatches({ colors, value, onPick }: { colors: string[]; value: string; 
 }
 const field = "w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500";
 
+/** 파일 → data URL. 실패 시 reject. 큰 파일은 상위에서 크기 체크(2MB 상한 권장). */
+async function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(r.error ?? new Error("read failed"));
+    r.onload = () => resolve(String(r.result));
+    r.readAsDataURL(file);
+  });
+}
+
+/** 재사용 가능한 이미지 업로드 필드 — 파일 선택 → data URL 콜백. 초과 시 alert.
+ *  editorState 안에 base64로 살고 있으니 사이즈가 커지면 저장 페이로드가 통째로 부풀어
+ *  라우트 timeouts / SQL row 상한을 건드릴 수 있어 명시적 상한을 둔다. */
+function ImagePickField({
+  value,
+  onChange,
+  onClear,
+  maxBytes,
+  hint,
+}: {
+  value?: string;
+  onChange: (dataUrl: string) => void;
+  onClear: () => void;
+  maxBytes: number;
+  hint?: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <label className="inline-flex cursor-pointer items-center rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-700">
+        {value ? "다시 선택" : "이미지 선택"}
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={async (e) => {
+            const f = e.currentTarget.files?.[0];
+            e.currentTarget.value = "";
+            if (!f) return;
+            if (f.size > maxBytes) {
+              const kb = Math.round(f.size / 1024);
+              const limitKb = Math.round(maxBytes / 1024);
+              alert(`파일이 너무 큽니다 (${kb} KB > ${limitKb} KB). 압축·리사이즈 후 다시 시도.`);
+              return;
+            }
+            try {
+              onChange(await fileToDataUrl(f));
+            } catch {
+              alert("이미지 파일을 읽지 못했습니다.");
+            }
+          }}
+        />
+      </label>
+      {value ? (
+        <>
+          <img src={value} alt="" className="size-8 rounded-full border border-zinc-700 object-cover" />
+          <button
+            onClick={onClear}
+            className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+          >
+            제거
+          </button>
+        </>
+      ) : (
+        hint && <span className="text-[11px] text-zinc-500">{hint}</span>
+      )}
+    </div>
+  );
+}
+
 // ── tabs ─────────────────────────────────────────────────────────────────────
 function TextTab({ state, update, kf }: { state: EditorState; update: Update; kf: KfCtx }) {
   function setLine(id: string, patch: Partial<EditorState["titleLines"][number]>) {
@@ -272,6 +343,128 @@ function ChannelTab({ state, update }: { state: EditorState; update: Update }) {
         <input value={state.channelName} onChange={(e) => update({ channelName: e.target.value })} className={field} />
       </div>
       <div>
+        <Label>채널 아이콘</Label>
+        <ImagePickField
+          value={state.channelIconDataUrl}
+          onChange={(dataUrl) => update({ channelIconDataUrl: dataUrl })}
+          onClear={() => update({ channelIconDataUrl: undefined })}
+          maxBytes={256 * 1024}
+          hint="정사각형 이미지 · 최대 256KB"
+        />
+      </div>
+      <div>
+        <Label>뱃지 스타일</Label>
+        <div className="grid grid-cols-2 gap-1.5">
+          {CHANNEL_BADGE_PRESETS.map((p) => {
+            const active = state.channelBadgeTemplate === p.id;
+            return (
+              <button
+                key={p.id}
+                onClick={() => update({ channelBadgeTemplate: p.id, ...p.patch })}
+                className={cn(
+                  "rounded-md border p-2 text-left transition-colors",
+                  active ? "border-zinc-400 bg-zinc-800" : "border-zinc-700 hover:bg-zinc-800/50",
+                )}
+              >
+                <div className="text-xs font-medium text-white">{p.label}</div>
+                <div className="mt-0.5 text-[10px] leading-tight text-zinc-500">{p.hint}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <Label>아이콘 크기 {state.channelIconSize ?? 24}px</Label>
+        <input
+          type="range"
+          min={12}
+          max={120}
+          value={state.channelIconSize ?? 24}
+          onChange={(e) => update({ channelIconSize: Number(e.target.value) })}
+          className="w-full"
+        />
+      </div>
+      <div>
+        <Label>글자 크기 {state.channelLabelSize ?? 14}px</Label>
+        <input
+          type="range"
+          min={10}
+          max={40}
+          value={state.channelLabelSize ?? 14}
+          onChange={(e) => update({ channelLabelSize: Number(e.target.value) })}
+          className="w-full"
+        />
+      </div>
+      <div>
+        <Label>부가 줄</Label>
+        <div className="space-y-2">
+          {(state.channelExtraLines ?? []).map((line) => {
+            const size = line.size ?? Math.round((state.channelLabelSize ?? 14) * 0.75);
+            return (
+              <div key={line.id} className="rounded-md border border-zinc-800 p-2">
+                <div className="flex items-center gap-1">
+                  <input
+                    value={line.text}
+                    onChange={(e) =>
+                      update({
+                        channelExtraLines: (state.channelExtraLines ?? []).map((l) =>
+                          l.id === line.id ? { ...l, text: e.target.value } : l,
+                        ),
+                      })
+                    }
+                    placeholder="예: 매주 토요일 7시"
+                    className={cn(field, "flex-1")}
+                  />
+                  <button
+                    onClick={() =>
+                      update({
+                        channelExtraLines: (state.channelExtraLines ?? []).filter((l) => l.id !== line.id),
+                      })
+                    }
+                    className="shrink-0 rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
+                    title="줄 삭제"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="w-16 text-[10px] tabular-nums text-zinc-500">크기 {size}px</span>
+                  <input
+                    type="range"
+                    min={8}
+                    max={32}
+                    value={size}
+                    onChange={(e) =>
+                      update({
+                        channelExtraLines: (state.channelExtraLines ?? []).map((l) =>
+                          l.id === line.id ? { ...l, size: Number(e.target.value) } : l,
+                        ),
+                      })
+                    }
+                    className="flex-1"
+                  />
+                </div>
+              </div>
+            );
+          })}
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-1 h-7 rounded-[7px] px-2 text-xs"
+            onClick={() =>
+              update({
+                channelExtraLines: [
+                  ...(state.channelExtraLines ?? []),
+                  { id: `sub-${Date.now()}`, text: "" },
+                ],
+              })
+            }
+          >
+            <Plus className="size-3.5" /> 줄 추가
+          </Button>
+        </div>
+      </div>
+      <div>
         <Label>세로 위치 {state.channelY}%</Label>
         <input type="range" min={60} max={95} value={state.channelY} onChange={(e) => update({ channelY: Number(e.target.value) })} className="w-full" />
       </div>
@@ -315,8 +508,67 @@ function LayoutTab({ state, update, applyTpl }: { state: EditorState; update: Up
         </div>
       </div>
       <div>
-        <Label>배경</Label>
-        <Swatches colors={BG_SWATCHES} value={state.bg} onPick={(c) => update({ bg: c })} />
+        <Label>배경 채우기</Label>
+        <div className="grid grid-cols-3 gap-1">
+          {[
+            { k: "solid" as const, label: "단색" },
+            { k: "blur" as const, label: "영상 블러" },
+            { k: "image" as const, label: "이미지" },
+          ].map((o) => {
+            const active = (state.bgType ?? "solid") === o.k;
+            return (
+              <button
+                key={o.k}
+                onClick={() => update({ bgType: o.k })}
+                className={cn(
+                  "rounded-md border py-1.5 text-xs",
+                  active ? "border-zinc-400 bg-zinc-800 text-white" : "border-zinc-700 text-zinc-400",
+                )}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        {/* solid: 단색 스와치 · image: 업로드 필드 · blur: 옵션 없음(원본 그대로) */}
+        {(state.bgType ?? "solid") === "solid" && (
+          <div className="mt-2">
+            <Swatches colors={BG_SWATCHES} value={state.bg} onPick={(c) => update({ bg: c })} />
+          </div>
+        )}
+        {state.bgType === "image" && (
+          <div className="mt-2 space-y-2">
+            <ImagePickField
+              value={state.bgImageDataUrl}
+              onChange={(dataUrl) => update({ bgImageDataUrl: dataUrl, bgImageCrop: undefined })}
+              onClear={() => update({ bgImageDataUrl: undefined, bgImageCrop: undefined })}
+              maxBytes={2 * 1024 * 1024}
+              hint="영상 뒤 배경 · 최대 2MB"
+            />
+            {state.bgImageDataUrl && (
+              <div className="flex items-center gap-2">
+                <ImageCropButton
+                  src={state.bgImageDataUrl}
+                  targetAspect={ASPECTS[state.aspect].ratio}
+                  value={state.bgImageCrop}
+                  onChange={(v) => update({ bgImageCrop: v })}
+                  label={state.bgImageCrop ? "영역 다시 선택" : "영역 선택"}
+                />
+                {state.bgImageCrop && (
+                  <button
+                    onClick={() => update({ bgImageCrop: undefined })}
+                    className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800"
+                  >
+                    영역 초기화
+                  </button>
+                )}
+                <span className="text-[11px] text-zinc-500">
+                  종횡비 {state.aspect} 고정
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <Toggle on={state.showSafeArea} onChange={() => update({ showSafeArea: !state.showSafeArea })} label="세이프 에어리어 · Shorts UI" />
     </>

@@ -4,6 +4,8 @@ import { useRef, useState, type CSSProperties, type Ref } from "react";
 import { Heart, MessageCircle, Send } from "lucide-react";
 import { ASPECTS, defaultElementSize, filterCss, overlayVisibleAt, sampleKeyframes, type CaptionStyle, type EditorState } from "@/lib/editor/presets";
 import { Movable, SnapGuides, InlineText, type Guides } from "@/components/editor/editor-overlay";
+import { frameUrl } from "@/lib/data/api";
+import { cn } from "@/lib/utils";
 
 /**
  * WYSIWYG preview canvas. Overlays are positioned by percentage over a fixed-aspect
@@ -65,12 +67,15 @@ export function EditorPreview({
   captionKeyIdx,
   hasTranscript,
   currentTime,
+  posterMediaId,
+  posterApiBase,
+  posterTime,
 }: {
   state: EditorState;
   update: (patch: Partial<EditorState>) => void;
   videoUrl?: string;
   videoRef?: Ref<HTMLVideoElement>;
-  onDuration?: (seconds: number) => void;
+  onDuration?: (seconds: number, el?: HTMLVideoElement) => void;
   onTogglePlay?: () => void;
   /** Real STT caption under the playhead (from the master transcript). */
   caption?: string;
@@ -84,7 +89,13 @@ export function EditorPreview({
   hasTranscript?: boolean;
   /** Segment-relative playhead seconds — drives keyframe interpolation. */
   currentTime?: number;
+  /** poster 프레임 소스 — 스트림 로드 전 첫 프레임을 미리 보여준다(로딩 시 검은 화면 방지). */
+  posterMediaId?: string;
+  posterApiBase?: string;
+  posterTime?: number;
 }) {
+  const poster =
+    posterMediaId && posterApiBase != null ? frameUrl(posterApiBase, posterMediaId, posterTime ?? 0) : undefined;
   const ratio = ASPECTS[state.aspect].ratio;
   // Keyframe times are relative to the clip start (trim-in).
   const localT = (currentTime ?? state.trimIn) - state.trimIn;
@@ -146,7 +157,10 @@ export function EditorPreview({
   }
 
   return (
-    <div className="flex h-full items-center justify-center">
+    // w-full 없으면 자식 stage의 width:min(90%, 900px)의 %가 참조할 정의된 폭이 없어
+    // container-type:size 컨테인먼트와 겹쳐 폭이 0으로 붕괴 → 16:9·1:1에서 영상이 사라진다.
+    // 9:16·4:5는 height 기준이라 티가 안 났음.
+    <div className="flex h-full w-full items-center justify-center">
       <div
         ref={stageRef}
         onPointerDown={deselect}
@@ -162,33 +176,94 @@ export function EditorPreview({
           containerType: "size",
         }}
       >
-        {/* True 9:16 reframe (mirrors renderShort): a blurred cover copy fills the frame and
-            the real footage sits fit-to-frame on top. Letterbox bands show the blur, and
-            overlay %/px coordinates map 1:1 to the ASS burn (PlayRes = output size). */}
+        {/* 배경 채우기 (letterbox 대체) — 3가지 템플릿:
+              solid: state.bg 단색으로 그대로 (기본 · 최신 UX)
+              blur:  원본 확대 블러 커버 (예전 자동 동작 · 이제 opt-in)
+              image: 업로드 이미지 커버 (bgImageDataUrl)
+            프리뷰의 %/px 오버레이 좌표는 ASS 번인과 1:1 (PlayRes = output size). */}
         {videoUrl ? (
           <>
-            <video
-              aria-hidden
-              ref={bgRef}
-              src={videoUrl}
-              playsInline
-              muted
-              className="pointer-events-none absolute inset-0 size-full object-cover"
-              style={{
-                filter: `blur(16px) brightness(0.65)${videoFilter ? ` ${videoFilter}` : ""}`,
-                transform: "scale(1.15)",
-              }}
-            />
+            {state.bgType === "blur" && (
+              <video
+                aria-hidden
+                ref={bgRef}
+                src={videoUrl}
+                playsInline
+                muted
+                preload="auto"
+                className="pointer-events-none absolute inset-0 size-full object-cover"
+                style={{
+                  filter: `blur(16px) brightness(0.65)${videoFilter ? ` ${videoFilter}` : ""}`,
+                  transform: "scale(1.15)",
+                }}
+              />
+            )}
+            {state.bgType === "image" && state.bgImageDataUrl && (
+              // 크롭이 있으면 원본 이미지를 스케일업+오프셋해 크롭 영역만 프레임에 채운다.
+              // 크롭이 없으면 기존 object-fit:cover(중앙 크롭) 동작.
+              state.bgImageCrop ? (
+                <div className="pointer-events-none absolute inset-0 overflow-hidden">
+                  <img
+                    aria-hidden
+                    src={state.bgImageDataUrl}
+                    alt=""
+                    draggable={false}
+                    className="block"
+                    style={{
+                      // position:absolute이므로 top/left %가 각각 컨테이너 height/width를
+                      // 정확히 참조 → 9:16 세로 프레임에서도 y축이 안 어긋난다.
+                      // 원래 marginTop %가 컨테이너 너비 기준이라 y가 어긋났던 버그 수정.
+                      position: "absolute",
+                      // wPct%가 프레임 100%가 되도록 스케일업. hPct도 동일 원리.
+                      width: `${100 / (state.bgImageCrop.wPct / 100)}%`,
+                      height: `${100 / (state.bgImageCrop.hPct / 100)}%`,
+                      // image_width = container_w * 100/wPct → shift left by xPct% of image_width
+                      //             = xPct/wPct * container_w → left = -xPct/wPct * 100 (% of container_w) ✓
+                      left: `${-state.bgImageCrop.xPct / state.bgImageCrop.wPct * 100}%`,
+                      // image_height = container_h * 100/hPct → shift up by yPct% of image_height
+                      //              = yPct/hPct * container_h → top = -yPct/hPct * 100 (% of container_h) ✓
+                      top: `${-state.bgImageCrop.yPct / state.bgImageCrop.hPct * 100}%`,
+                      maxWidth: "none",  // 부모의 max-width 규칙이 스케일업을 막지 않도록
+                    }}
+                  />
+                </div>
+              ) : (
+                <img
+                  aria-hidden
+                  src={state.bgImageDataUrl}
+                  alt=""
+                  draggable={false}
+                  className="pointer-events-none absolute inset-0 size-full object-cover"
+                />
+              )
+            )}
             <video
               key={videoUrl}
               ref={videoRef}
               src={videoUrl}
               playsInline
-              onLoadedMetadata={(e) => onDuration?.(e.currentTarget.duration)}
+              // 'metadata'는 프레임을 안 디코딩해서 사용자가 재생 누르기 전까지 검은 화면.
+              // 'auto'로 편집 진입 즉시 프레임을 뽑아 poster 이후에도 실영상이 이어져 보인다.
+              preload="auto"
+              poster={poster}
+              onLoadedMetadata={(e) => onDuration?.(e.currentTarget.duration, e.currentTarget)}
               onPlay={(e) => syncBg(e.currentTarget)}
               onPause={(e) => syncBg(e.currentTarget)}
               onSeeked={(e) => syncBg(e.currentTarget)}
               onTimeUpdate={(e) => syncBg(e.currentTarget)}
+              onError={(e) => {
+                const el = e.currentTarget;
+                const err = el.error;
+                // 코드 매핑(MediaError): 1=ABORTED · 2=NETWORK · 3=DECODE · 4=SRC_NOT_SUPPORTED
+                // eslint-disable-next-line no-console
+                console.error("[editor-preview] video load failed", {
+                  src: el.currentSrc || el.src,
+                  code: err?.code,
+                  message: err?.message,
+                  networkState: el.networkState,
+                  readyState: el.readyState,
+                });
+              }}
               onClick={onTogglePlay}
               className="absolute inset-0 size-full cursor-pointer object-contain"
               style={{ filter: videoFilter }}
@@ -339,14 +414,72 @@ export function EditorPreview({
                 style={{ width: 160, textAlign: "center", fontWeight: 600, color: "#fff" }}
               />
             ) : (
-              <span className="flex items-center gap-2">
-                <span className="flex size-6 items-center justify-center rounded-full bg-white/90 text-[10px] font-bold text-black">
-                  CH
-                </span>
-                <span className="text-sm font-semibold text-white" style={{ textShadow: "0 1px 3px rgba(0,0,0,.6)" }}>
-                  {state.channelName}
-                </span>
-              </span>
+              (() => {
+                // 아이콘과 텍스트를 서로 독립적으로 스케일. 프리셋은 시작점만 세팅하고,
+                // 슬라이더로 각각 override 가능. 부가 줄들이 있으면 채널명 아래에 이어 렌더.
+                const iconPx = Math.max(8, Math.min(200, state.channelIconSize ?? 24));
+                const labelPx = Math.max(8, Math.min(64, state.channelLabelSize ?? 14));
+                const extras = (state.channelExtraLines ?? [])
+                  .map((l) => ({ id: l.id, text: (l.text ?? "").trim(), size: l.size }))
+                  .filter((l) => l.text.length > 0);
+                const layout = state.channelLayout ?? "horizontal";
+                const shape = state.channelIconShape ?? "circle";
+                const shapeCls =
+                  shape === "circle" ? "rounded-full" : shape === "rounded" ? "rounded-md" : "";
+                // 텍스트 블록: 이름 + 부가 줄들. 가로일 땐 좌측 정렬, 세로일 땐 가운데 정렬.
+                const textBlock = (
+                  <span
+                    className={cn(
+                      "flex flex-col leading-tight",
+                      layout === "vertical" ? "items-center text-center" : "items-start",
+                    )}
+                  >
+                    <span
+                      className="font-semibold text-white"
+                      style={{ textShadow: "0 1px 3px rgba(0,0,0,.6)", fontSize: labelPx }}
+                    >
+                      {state.channelName}
+                    </span>
+                    {extras.map((line) => {
+                      const size = Math.max(6, Math.min(48, line.size ?? Math.round(labelPx * 0.75)));
+                      return (
+                        <span
+                          key={line.id}
+                          className="font-medium text-white/80"
+                          style={{
+                            textShadow: "0 1px 3px rgba(0,0,0,.6)",
+                            fontSize: size,
+                            marginTop: Math.max(1, Math.round(size * 0.2)),
+                          }}
+                        >
+                          {line.text}
+                        </span>
+                      );
+                    })}
+                  </span>
+                );
+                return (
+                  <span className={cn("flex", layout === "vertical" ? "flex-col items-center gap-1" : "items-center gap-2")}>
+                    {state.channelIconDataUrl ? (
+                      <img
+                        src={state.channelIconDataUrl}
+                        alt=""
+                        draggable={false}
+                        className={cn("object-cover", shapeCls)}
+                        style={{ width: iconPx, height: iconPx }}
+                      />
+                    ) : (
+                      <span
+                        className={cn("flex items-center justify-center bg-white/90 font-bold text-black", shapeCls)}
+                        style={{ width: iconPx, height: iconPx, fontSize: Math.round(iconPx * 0.42) }}
+                      >
+                        CH
+                      </span>
+                    )}
+                    {textBlock}
+                  </span>
+                );
+              })()
             )}
           </Movable>
         )}

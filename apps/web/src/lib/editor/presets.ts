@@ -126,6 +126,14 @@ export interface TitleLine {
   endSec?: number;
 }
 
+/** 채널 뱃지의 부가 줄. TitleLine의 서브셋 — 색은 흰색 고정, 시간창·키프레임 없음. */
+export interface ChannelExtraLine {
+  id: string;
+  text: string;
+  /** 폰트 크기(px). 미설정 시 채널명 크기의 약 75%. */
+  size?: number;
+}
+
 export interface EditorElement {
   id: string;
   type: ElementType;
@@ -269,6 +277,30 @@ export interface EditorState {
   showChannel: boolean;
   channelName: string;
   channelY: number; // %
+  /** 채널 뱃지 아이콘 — 업로드 이미지의 data URL(base64). 미설정이면 이니셜('CH') 대체. */
+  channelIconDataUrl?: string;
+  /** 채널 뱃지 스타일 프리셋 id. 클릭 시 layout·shape·아이콘 크기·라벨 크기가 프리셋 기본값으로
+   *  세팅된다(그 후 사용자 개별 조정 가능). 프리셋이 부족하면 CHANNEL_BADGE_PRESETS에 추가. */
+  channelBadgeTemplate?: ChannelBadgeTemplate;
+  /** 아이콘/이니셜 지름(px). 프리셋 선택 시 함께 세팅되지만 슬라이더로 독립 조정 가능. */
+  channelIconSize?: number;
+  /** 채널명 텍스트 크기(px). 아이콘과 독립적으로 조정 가능. */
+  channelLabelSize?: number;
+  /** 채널명 아래에 붙는 부가 줄들. 제목의 titleLines처럼 자유롭게 추가/제거 가능.
+   *  줄 하나당 텍스트 + 크기. 비어 있으면 렌더 안 함. */
+  channelExtraLines?: ChannelExtraLine[];
+  /** 아이콘·텍스트 배치. horizontal=[아이콘 텍스트], vertical=[아이콘]/[텍스트]. 프리셋이 세팅. */
+  channelLayout?: "horizontal" | "vertical";
+  /** 아이콘 모양. circle=원, rounded=둥근 사각, square=사각. 프리셋이 세팅. */
+  channelIconShape?: "circle" | "rounded" | "square";
+  /** 배경 채우기 방식. solid=단색(state.bg), blur=원본 영상 확대 블러, image=업로드 이미지.
+   *  기존 저장분·미설정은 solid로 폴백(예전은 blur가 강제였는데 UX 정리로 solid를 기본). */
+  bgType?: "solid" | "blur" | "image";
+  /** bgType='image'일 때 표시할 이미지의 data URL(base64). */
+  bgImageDataUrl?: string;
+  /** 배경 이미지에서 실제로 프레임에 채울 사각형 영역(원본 이미지 대비 %). 미설정이면
+   *  기존 object-fit:cover 동작(중앙 크롭). aspect는 영상 종횡비에 맞춰 UI가 강제한다. */
+  bgImageCrop?: { xPct: number; yPct: number; wPct: number; hPct: number };
   captionsOn: boolean;
   captionStyle: CaptionStyle;
   highlightColor: string;
@@ -285,6 +317,19 @@ export interface EditorState {
   hookOn: boolean;
   silenceCut: boolean;
   offsetMs: number; // ±sync fine-tune
+  /** YouTube (기타 배포처) 업로드 메타 — 헤더 메타데이터 팝오버가 편집·저장한다.
+   *  생성 버튼이 title/desc/tags를 자막·소스 rec에서 뽑아 채운다. */
+  uploadMeta?: {
+    title: string;
+    description: string;
+    tags: string[];
+  };
+  /** trimIn/trimOut의 좌표계 표시.
+   *  - "segment" (또는 undefined): 옛 저장분 — 값이 clip.startTime 기준 세그먼트 상대(0..segLen).
+   *  - "master": 새 저장분 — 값이 마스터 전체(초) 기준 절대. 에디터가 원본 전체 타임라인을 보여주고
+   *    사용자가 AI 추천 창 밖까지 트림을 확장할 수 있게 하면서부터 사용.
+   *  ensureTracks가 옛 저장분을 감지해 "master"로 마이그레이션한다. */
+  trimBase?: "segment" | "master";
 }
 
 export const ASPECTS: Record<AspectKey, { label: string; ratio: number }> = {
@@ -309,6 +354,48 @@ export const CAPTION_STYLES: Record<CaptionStyle, string> = {
 
 export const COLOR_SWATCHES = ["#FFFFFF", "#FFD400", "#27E0A0", "#5B8CFF", "#FF49DB", "#16120D"];
 export const BG_SWATCHES = ["#0E0E12", "#10162B", "#FBF3E4", "#FFFFFF"];
+
+// ── 채널 뱃지 프리셋 ────────────────────────────────────────────────────────────
+// 자주 쓰는 조합을 이름으로 묶는다. 클릭 시 layout·shape·아이콘/라벨 크기가 모두 세팅.
+// 프리셋 선택 후에도 슬라이더로 개별 크기 override 가능 (프리셋은 시작점일 뿐).
+export type ChannelBadgeTemplate = "circle_inline" | "logo_stack" | "news_bar" | "minimal_text";
+export interface ChannelBadgePreset {
+  id: ChannelBadgeTemplate;
+  label: string;
+  hint: string;
+  patch: {
+    channelLayout: "horizontal" | "vertical";
+    channelIconShape: "circle" | "rounded" | "square";
+    channelIconSize: number;
+    channelLabelSize: number;
+  };
+}
+export const CHANNEL_BADGE_PRESETS: ChannelBadgePreset[] = [
+  {
+    id: "circle_inline",
+    label: "원형 배지",
+    hint: "가장 무난 · YouTube 기본 스타일",
+    patch: { channelLayout: "horizontal", channelIconShape: "circle", channelIconSize: 24, channelLabelSize: 14 },
+  },
+  {
+    id: "logo_stack",
+    label: "로고 블록",
+    hint: "아이콘 위·이름 아래 · 프로그램 로고형",
+    patch: { channelLayout: "vertical", channelIconShape: "rounded", channelIconSize: 48, channelLabelSize: 16 },
+  },
+  {
+    id: "news_bar",
+    label: "뉴스 바",
+    hint: "사각 로고 옆 이름 · 뉴스·시사 스타일",
+    patch: { channelLayout: "horizontal", channelIconShape: "square", channelIconSize: 32, channelLabelSize: 16 },
+  },
+  {
+    id: "minimal_text",
+    label: "텍스트 위주",
+    hint: "이름 크게 · 아이콘 작게",
+    patch: { channelLayout: "horizontal", channelIconShape: "circle", channelIconSize: 18, channelLabelSize: 18 },
+  },
+];
 
 export const ELEMENT_DEFAULTS: Record<ElementType, string> = {
   cta: "지금 확인",
@@ -358,8 +445,21 @@ export const TEMPLATE_PRESETS: TemplatePreset[] = [
   },
 ];
 
-export function makeInitialEditorState(title: string, durationSec: number): EditorState {
-  const dur = Math.max(1, durationSec);
+/**
+ * @param title 초기 제목
+ * @param masterDurationSec 마스터(원본) 전체 길이 — 타임라인 상한
+ * @param trimIn 마스터 절대 초 — 초기 트림 IN (AI 추천 시작). 미지정 시 0.
+ * @param trimOut 마스터 절대 초 — 초기 트림 OUT (AI 추천 끝). 미지정 시 masterDurationSec.
+ */
+export function makeInitialEditorState(
+  title: string,
+  masterDurationSec: number,
+  trimIn = 0,
+  trimOut?: number,
+): EditorState {
+  const dur = Math.max(1, masterDurationSec);
+  const inAbs = Math.max(0, Math.min(trimIn, dur - 0.1));
+  const outAbs = Math.min(dur, Math.max(inAbs + 0.1, trimOut ?? dur));
   return {
     templateId: "stacked_channel",
     aspect: "9:16",
@@ -377,13 +477,14 @@ export function makeInitialEditorState(title: string, durationSec: number): Edit
     highlightColor: "#FFD400",
     showSafeArea: false,
     elements: [],
-    trimIn: 0,
-    trimOut: dur,
-    tracks: [makeMainTrack(0, dur, dur)],
+    trimIn: inAbs,
+    trimOut: outAbs,
+    tracks: [makeMainTrack(inAbs, outAbs, dur)],
     speed: 1,
     hookOn: true,
     silenceCut: false,
     offsetMs: 0,
+    trimBase: "master",
   };
 }
 
@@ -393,18 +494,36 @@ export function makeInitialEditorState(title: string, durationSec: number): Edit
 /** 저장된 EditorState 로드 시 스키마 진화 대응 — 옛 클립을 새 필드로 안전 마이그레이션.
  *  원칙: 필드가 없으면 안전한 기본값 자동 채움 → undefined 접근으로 인한 크래시 방지.
  *  새 필드 추가 시 여기 fallback을 반드시 등록할 것 (안 하면 옛 클립 로드가 폭발한다). */
-export function ensureTracks(state: EditorState, durationSec: number): EditorState {
+/**
+ * @param durationSec 마스터(원본) 전체 길이 — 새 절대 좌표계 기준.
+ * @param segmentStart 옛 저장분의 세그먼트 시작(마스터 절대 초). trimBase가 "segment" 혹은
+ *   undefined면 이 값을 trimIn/trimOut에 더해 절대 좌표계로 마이그레이션한다.
+ */
+export function ensureTracks(state: EditorState, durationSec: number, segmentStart = 0): EditorState {
   const dur = Math.max(1, durationSec);
+
+  // Legacy migration: segment-relative → master-absolute. 옛 저장분은 clip.startTime 원점 기준
+  // 상대 초였으므로 지금 좌표계로 옮기려면 segmentStart를 더해준다. 값이 이미 masterDur 근처면
+  // 절대 좌표로 저장된 상태로 간주하고 건드리지 않는다 (재이동 방지).
+  const isSegmentRel = state.trimBase !== "master" && segmentStart > 0;
+  const shift = isSegmentRel ? segmentStart : 0;
+  const trimIn = Math.max(0, Math.min(dur, (state.trimIn ?? 0) + shift));
+  const trimOut = Math.max(trimIn + 0.1, Math.min(dur, (state.trimOut ?? dur) + shift));
+
   const tracks =
     Array.isArray(state.tracks) && state.tracks.length > 0
       ? state.tracks.map((tr) => ({
           ...tr,
+          trimIn: Math.max(0, Math.min(dur, (tr.trimIn ?? 0) + shift)),
+          trimOut: Math.max(0.1, Math.min(dur, (tr.trimOut ?? dur) + shift)),
+          startTime: Math.max(0, (tr.startTime ?? 0) + shift),
+          duration: dur,
           speedPoints: Array.isArray(tr.speedPoints) ? tr.speedPoints : [],
           volume: typeof tr.volume === "number" ? tr.volume : 1,
           muted: tr.muted === true,
           transition: tr.transition ?? { type: "cut" as const, duration: 0 },
         }))
-      : [makeMainTrack(state.trimIn ?? 0, state.trimOut ?? dur, dur)];
+      : [makeMainTrack(trimIn, trimOut, dur)];
 
   // titleLines·elements의 keyframes가 undefined거나 배열 아닌 경우 빈 배열로 정규화.
   // sampleKeyframes는 undefined도 처리하지만, 다른 소비자(server render·인덱스 접근)가 배열 가정할 수 있음.
@@ -439,6 +558,32 @@ export function ensureTracks(state: EditorState, durationSec: number): EditorSta
     showChannel: typeof state.showChannel === "boolean" ? state.showChannel : true,
     channelName: state.channelName ?? "",
     channelY: typeof state.channelY === "number" ? state.channelY : 82,
+    channelIconDataUrl: typeof state.channelIconDataUrl === "string" ? state.channelIconDataUrl : undefined,
+    channelBadgeTemplate:
+      state.channelBadgeTemplate && CHANNEL_BADGE_PRESETS.some((p) => p.id === state.channelBadgeTemplate)
+        ? state.channelBadgeTemplate
+        : undefined,
+    channelIconSize: typeof state.channelIconSize === "number" && state.channelIconSize > 0 ? state.channelIconSize : undefined,
+    channelLabelSize: typeof state.channelLabelSize === "number" && state.channelLabelSize > 0 ? state.channelLabelSize : undefined,
+    channelExtraLines: Array.isArray(state.channelExtraLines)
+      ? state.channelExtraLines
+          .filter((l): l is ChannelExtraLine => !!l && typeof (l as ChannelExtraLine).id === "string" && typeof (l as ChannelExtraLine).text === "string")
+          .map((l) => ({ id: l.id, text: l.text, size: typeof l.size === "number" && l.size > 0 ? l.size : undefined }))
+      : undefined,
+    channelLayout: state.channelLayout === "vertical" ? "vertical" : state.channelLayout === "horizontal" ? "horizontal" : undefined,
+    channelIconShape:
+      state.channelIconShape === "rounded" || state.channelIconShape === "square" || state.channelIconShape === "circle"
+        ? state.channelIconShape
+        : undefined,
+    // 배경 채우기 방식 — 예전 렌더는 항상 blur cover였으나 UX 정리로 solid를 기본.
+    bgType: state.bgType === "blur" || state.bgType === "image" ? state.bgType : "solid",
+    bgImageDataUrl: typeof state.bgImageDataUrl === "string" ? state.bgImageDataUrl : undefined,
+    bgImageCrop:
+      state.bgImageCrop &&
+      typeof state.bgImageCrop === "object" &&
+      ["xPct", "yPct", "wPct", "hPct"].every((k) => typeof (state.bgImageCrop as Record<string, unknown>)[k] === "number")
+        ? state.bgImageCrop
+        : undefined,
     // 세이프에어리어·필터
     showSafeArea: typeof state.showSafeArea === "boolean" ? state.showSafeArea : false,
     // 속도·훅
@@ -446,12 +591,12 @@ export function ensureTracks(state: EditorState, durationSec: number): EditorSta
     hookOn: typeof state.hookOn === "boolean" ? state.hookOn : false,
     silenceCut: typeof state.silenceCut === "boolean" ? state.silenceCut : false,
     offsetMs: typeof state.offsetMs === "number" ? state.offsetMs : 0,
-    // 트림 (안전 범위 클램프)
-    trimIn: typeof state.trimIn === "number" && Number.isFinite(state.trimIn) ? Math.max(0, state.trimIn) : 0,
-    trimOut:
-      typeof state.trimOut === "number" && Number.isFinite(state.trimOut) && state.trimOut > (state.trimIn ?? 0)
-        ? Math.min(dur, state.trimOut)
-        : dur,
+    // 트림 — 위에서 계산한 마이그레이션·클램프 결과를 그대로 사용 (원 state.trimIn/trimOut을
+    // 다시 쓰면 legacy 시프트가 되돌려진다).
+    trimIn,
+    trimOut,
+    // 마이그레이션 완료 표시. 다음 로드부터는 shift 안 됨.
+    trimBase: "master" as const,
   };
 }
 

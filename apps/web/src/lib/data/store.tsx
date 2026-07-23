@@ -720,10 +720,15 @@ export function AppDataProvider({
 
   const saveClipEditor = useCallback(async (clipId: string, editorState: EditorState) => {
     mutationEpochRef.current++;
-    // Persist locally first so reopening restores the edit even in mock mode.
+    // 서버가 master-absolute trim을 받으면 clip.startTime/endTime을 그 트림에 맞춰 옮기고
+    // editorState.trim은 세그먼트 상대(0..segLen)로 정규화한다. 로컬 스토어도 같은 규칙으로
+    // 동기 반영해두면 저장 직후 UI 다시 그릴 때 서버 응답 없이도 일치한다.
+    const normalize = editorState.trimBase === "master"
+      ? { startTime: editorState.trimIn, endTime: editorState.trimOut, durationSec: editorState.trimOut - editorState.trimIn }
+      : {};
     setState((prev) => ({
       ...prev,
-      clips: prev.clips.map((c) => (c.id === clipId ? { ...c, editorState } : c)),
+      clips: prev.clips.map((c) => (c.id === clipId ? { ...c, ...normalize, editorState } : c)),
     }));
     if (connectedRef.current) {
       await saveClipEditorApi(clipId, editorState);

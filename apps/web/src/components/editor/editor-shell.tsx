@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, Save, Send, Info, Check, Sparkles, Film, Plus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useAppData } from "@/lib/data/store";
 import { useToast } from "@/components/ui/toast";
-import { getStreamUrl, getMediaAnalysis, type AnalysisTranscriptSegment, type AnalysisScene } from "@/lib/data/api";
+import { getStreamUrl, getMediaAnalysis, generateUploadMetadata, API_BASE, type AnalysisTranscriptSegment, type AnalysisScene } from "@/lib/data/api";
 import {
   applyTemplate,
   ensureTracks,
@@ -17,12 +17,11 @@ import {
   type KfSelection,
 } from "@/lib/editor/presets";
 import { useEditorHistory } from "@/lib/editor/useEditorHistory";
-import { formatDuration } from "@/lib/utils";
 import { EditorPreview } from "@/components/editor/editor-preview";
 import { EditorPanel } from "@/components/editor/editor-panel";
 import { EditorTimeline } from "@/components/editor/editor-timeline";
 import { EditorAiPanel } from "@/components/editor/editor-ai-panel";
-import { RENDER_CHANNELS, type Recommendation, type RenderChannel } from "@/lib/types";
+import { RENDER_CHANNELS, type RenderChannel } from "@/lib/types";
 
 export function EditorShell({ clipId }: { clipId: string }) {
   const { clips, recsForEpisode, mediaForEpisode, saveClipEditor, exportClip } = useAppData();
@@ -30,7 +29,6 @@ export function EditorShell({ clipId }: { clipId: string }) {
   const clip = clips.find((c) => c.id === clipId);
 
   const title = clip?.title ?? "새 클립";
-  const duration = clip?.durationSec ?? 40;
   const recs = clip ? recsForEpisode(clip.episodeId) : [];
 
   // Real footage: the encoded clip video, else the episode's uploaded master — fetched as a
@@ -38,10 +36,25 @@ export function EditorShell({ clipId }: { clipId: string }) {
   const master = clip ? mediaForEpisode(clip.episodeId, "master") : undefined;
   const mediaId = clip?.mediaId ?? master?.id;
   // Draft clips preview the MASTER (no render yet); confirmed clips preview their own baked
-  // 9:16 file. When previewing the master we must seek into the clip's segment (startTime)
-  // so what plays — and the captions we overlay — match the eventual render (WYSIWYG, §2.4).
+  // file. Only master preview overlays live captions.
   const previewingMaster = !clip?.mediaId;
-  const segStart = previewingMaster ? Number(clip?.startTime ?? 0) : 0;
+  // ── 타임라인 좌표계 ──────────────────────────────────────────────────────────
+  // 예전엔 세그먼트(추천 창)만 타임라인이 되고 trimIn/trimOut은 그 안쪽 상대 초였다.
+  // 이제 '원본 전체'가 타임라인이 되고 trimIn/trimOut은 마스터 절대 초. AI 추천 창은
+  // [recStart, recEnd]로 별도 하이라이트만 표시하고, 사용자는 그 밖까지 트림을 확장/축소할 수 있다.
+  const masterDuration = previewingMaster
+    ? Math.max(1, Number(master?.durationSec ?? clip?.endTime ?? clip?.durationSec ?? 40))
+    : Math.max(1, Number(clip?.durationSec ?? 40));
+  const duration = masterDuration;
+  // AI 추천 원본 창은 소스 추천 엔티티에서 가져온다 — clip.startTime/endTime이 저장 시
+  // 트림에 맞춰 이동하더라도 원 AI 후보 위치는 고정. 소스 rec이 없으면 clip 최초값으로 폴백.
+  const sourceRecEarly = clip?.sourceRecommendationId
+    ? recs.find((r) => r.id === clip.sourceRecommendationId)
+    : undefined;
+  const recStart = previewingMaster ? Number(sourceRecEarly?.startTime ?? clip?.startTime ?? 0) : 0;
+  const recEnd = previewingMaster
+    ? Number(sourceRecEarly?.endTime ?? clip?.endTime ?? clip?.startTime ?? 0) || masterDuration
+    : masterDuration;
   // Master id that owns the STT transcript (the segment was cut from it).
   const transcriptMediaId = clip?.sourceMediaId ?? master?.id;
   const [videoUrl, setVideoUrl] = useState<string>();
@@ -93,7 +106,9 @@ export function EditorShell({ clipId }: { clipId: string }) {
     canUndo,
     canRedo,
   } = useEditorHistory(() =>
-    clip?.editorState ? ensureTracks(clip.editorState, duration) : makeInitialEditorState(title, duration),
+    clip?.editorState
+      ? ensureTracks(clip.editorState, duration, previewingMaster ? recStart : 0)
+      : makeInitialEditorState(title, duration, recStart, recEnd),
   );
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -183,10 +198,10 @@ export function EditorShell({ clipId }: { clipId: string }) {
     if (!clip || hydratedClipId.current === clip.id) return;
     hydratedClipId.current = clip.id;
     if (clip.editorState) {
-      reset(ensureTracks(clip.editorState, duration));
+      reset(ensureTracks(clip.editorState, duration, previewingMaster ? recStart : 0));
       setSaved(true);
     } else if (!canUndo) {
-      reset(makeInitialEditorState(clip.title, duration));
+      reset(makeInitialEditorState(clip.title, duration, recStart, recEnd));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.id]);
@@ -277,21 +292,17 @@ export function EditorShell({ clipId }: { clipId: string }) {
   }, [undo, redo, canUndo, canRedo]);
   const applyTpl = (id: EditorState["templateId"]) => setState((s) => applyTemplate(s, id));
 
-  function applyRec(rec: Recommendation) {
-    setState((s) => {
-      const trimIn = 0;
-      const trimOut = Math.max(1, rec.endTime - rec.startTime);
-      const [main, ...rest] = s.tracks ?? [];
-      return {
-        ...s,
-        titleLines: [{ ...s.titleLines[0], text: rec.title }, ...s.titleLines.slice(1)],
-        trimIn,
-        trimOut,
-        tracks: main ? [{ ...main, trimIn, trimOut }, ...rest] : s.tracks,
-      };
-    });
+  // 제목만 갈아끼우는 경로 — '제목 후보' 탭에서 클릭할 때 사용. trim은 건드리지 않는다.
+  function applyTitle(title: string) {
+    setState((s) => ({
+      ...s,
+      titleLines: [{ ...s.titleLines[0], text: title }, ...s.titleLines.slice(1)],
+    }));
     setSaved(false);
   }
+
+  // 소스 추천 — '제목 후보' 탭이 이 rec의 titleCandidates를 보여준다 (위 sourceRecEarly와 동일 값).
+  const sourceRec = sourceRecEarly;
 
   // Phase 1: a new layer duplicates the main track's trim (same video for all tracks).
   function addTrack() {
@@ -316,12 +327,13 @@ export function EditorShell({ clipId }: { clipId: string }) {
   }
 
   // The real <video> element is the transport's source of truth; both the preview
-  // (which mounts it) and the timeline (which drives it) share this handle. The timeline
-  // runs in segment-relative seconds [0, durationSec]; the video seeks at segStart + r.
+  // (which mounts it) and the timeline (which drives it) share this handle. Timeline
+  // seconds match video seconds directly — trim is stored in the same coord as the
+  // loaded video (master for draft, clip for rendered), so no offset needed.
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const timelineDuration = duration;
 
-  // Track the element's position (master-absolute) to drive the live caption overlay.
+  // Track the element's position (video-timeline seconds).
   const [videoTime, setVideoTime] = useState(0);
   useEffect(() => {
     const v = videoEl;
@@ -360,30 +372,32 @@ export function EditorShell({ clipId }: { clipId: string }) {
     const v = videoEl;
     if (!v) return;
     if (v.paused) {
-      // Snap into the segment's trim window (master-absolute) before playing so the preview
-      // shows the same footage the render will cut — render-free (§2.4).
-      const lo = segStart + state.trimIn;
-      const hi = segStart + state.trimOut;
+      // Snap into the trim window before playing so the preview matches what the render
+      // will cut. trim is in the video's own timeline (master or clip file) — no offset.
+      const lo = state.trimIn;
+      const hi = state.trimOut;
       if (v.currentTime < lo || v.currentTime >= hi - 0.05) v.currentTime = lo;
       void v.play();
     } else {
       v.pause();
     }
-  }, [videoEl, segStart, state.trimIn, state.trimOut]);
+  }, [videoEl, state.trimIn, state.trimOut]);
 
-  // On load, park the playhead at the segment start so the first frame is the clip's, not
-  // the master's opening (only meaningful when previewing the master).
+  // On load, park the playhead at the trim IN so the first frame matches the render
+  // window. Uses the video element from the event target — videoEl state가 stale일 수
+  // 있어 (mount race) 이벤트가 준 요소를 쓰면 항상 살아있는 요소를 seek한다.
   const handleDuration = useCallback(
-    (_d: number) => {
-      if (videoEl && previewingMaster) {
-        try {
-          videoEl.currentTime = segStart + state.trimIn;
-        } catch {
-          /* seeking before ready — the timeline will seek on first interaction */
-        }
+    (d: number, el?: HTMLVideoElement) => {
+      const v = el ?? videoEl;
+      if (!v) return;
+      const target = Math.min(Math.max(0, state.trimIn), Math.max(0, d - 0.05));
+      try {
+        v.currentTime = target;
+      } catch {
+        /* seeking before ready — the timeline will seek on first interaction */
       }
     },
-    [videoEl, previewingMaster, segStart, state.trimIn],
+    [videoEl, state.trimIn],
   );
 
   // Editor keyboard shortcuts (beyond undo/redo): space = play/pause, I/O = trim in/out at
@@ -399,7 +413,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
         return;
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const rel = Math.max(0, Math.min(videoTime - segStart, duration)); // segment-relative playhead
+      const rel = Math.max(0, Math.min(videoTime, duration)); // 타임라인 좌표 playhead
       if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
@@ -428,7 +442,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [togglePlay, videoTime, segStart, duration, state.trimIn, state.trimOut]);
+  }, [togglePlay, videoTime, duration, state.trimIn, state.trimOut]);
 
   const backHref = clip ? `/episodes/${clip.episodeId}?tab=clips` : "/clips";
 
@@ -445,7 +459,7 @@ export function EditorShell({ clipId }: { clipId: string }) {
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
 
         <div className="flex shrink-0 items-center gap-2">
-          <MetadataButton state={state} duration={duration} />
+          <MetadataButton clipId={clipId} state={state} update={update} />
           <button
             onClick={save}
             disabled={saving}
@@ -454,29 +468,6 @@ export function EditorShell({ clipId }: { clipId: string }) {
             {saved ? <Check className="size-4 text-emerald-400" /> : <Save className="size-4" />}
             {saving ? "저장 중…" : saved ? "저장됨" : "저장"}
           </button>
-          {/* F3 배포처 프리셋 — 렌더 비율과 길이 캡을 결정한다. 선택 즉시 렌더되지 않는다:
-              확정(렌더)을 눌러야 서버가 단 한 번 굽는다 (plan §2.4). */}
-          <label className="flex items-center gap-1.5 text-sm text-zinc-400">
-            <span className="sr-only">배포처 렌더 프리셋</span>
-            <select
-              value={channel}
-              onChange={(e) => {
-                channelPickedRef.current = true;
-                setChannel(e.target.value as RenderChannel | "");
-                setCapped(null);
-              }}
-              disabled={exporting}
-              title="렌더할 배포처를 고릅니다 — 비율과 길이 상한이 여기서 정해집니다"
-              className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 disabled:opacity-60"
-            >
-              <option value="">원본 유지 (프리셋 없음)</option>
-              {(Object.keys(RENDER_CHANNELS) as RenderChannel[]).map((k) => (
-                <option key={k} value={k}>
-                  {RENDER_CHANNELS[k].label} · {RENDER_CHANNELS[k].aspect} · 최대 {RENDER_CHANNELS[k].maxSec}초
-                </option>
-              ))}
-            </select>
-          </label>
           <button
             onClick={confirmExport}
             disabled={exporting}
@@ -531,7 +522,13 @@ export function EditorShell({ clipId }: { clipId: string }) {
                 <PanelLeftClose className="size-3.5" />
               </button>
             </div>
-            <EditorAiPanel recs={recs} scenes={scenes} onApply={applyRec} />
+            <EditorAiPanel
+              clipId={clipId}
+              scenes={scenes}
+              sourceRec={sourceRec}
+              currentTitle={state.titleLines[0]?.text ?? ""}
+              onApplyTitle={applyTitle}
+            />
           </aside>
         ) : (
           <div className="hidden w-10 shrink-0 flex-col items-center border-r border-zinc-800 bg-zinc-950 py-2 lg:flex">
@@ -560,7 +557,12 @@ export function EditorShell({ clipId }: { clipId: string }) {
             captionActiveIdx={captionData?.activeIdx ?? -1}
             captionKeyIdx={captionData?.keyIdx}
             hasTranscript={!!transcript}
-            currentTime={videoTime - segStart}
+            currentTime={videoTime}
+            posterMediaId={mediaId}
+            posterApiBase={API_BASE}
+            /* poster는 AI 추천 시작 프레임(마스터 절대 초) 하나로 고정 — trimIn이 바뀔 때마다
+               다시 fetch되면 캐시 무효화 폭탄이라 videoUrl 로드 전까지의 정지 미리보기만 담당. */
+            posterTime={recStart}
           />
         </div>
 
@@ -598,15 +600,14 @@ export function EditorShell({ clipId }: { clipId: string }) {
           state={state}
           update={update}
           duration={timelineDuration}
-          startOffset={segStart}
           video={videoEl}
           // 마스터 프리뷰(미렌더 드래프트)에선 파형 생략 — useAudioPeaks가 파일 전체를
           // 받아 디코드하므로 수 GB 마스터면 탭이 OOM 난다. 렌더된 클립만 파형 표시.
           videoUrl={previewingMaster ? undefined : videoUrl}
           tracks={state.tracks}
           onTogglePlay={togglePlay}
-          kfSel={kfSel}
-          onKfSelect={setKfSel}
+          // AI 추천 구간 — 타임라인 위에 하이라이트 밴드로 표시(트림과 별개).
+          recWindow={previewingMaster ? { start: recStart, end: recEnd } : undefined}
         />
         <button
           onClick={addTrack}
@@ -619,11 +620,36 @@ export function EditorShell({ clipId }: { clipId: string }) {
   );
 }
 
-/** Editor-embedded upload metadata preview (StepD pattern). */
-function MetadataButton({ state, duration }: { state: EditorState; duration: number }) {
+/** YouTube 업로드 메타데이터 편집 팝오버 — 제목·설명·태그 3필드 + AI 생성 버튼.
+ *  '생성'은 서버 /api/clips/:id/generate-metadata 호출 → 자막 근거로 title·description·tags
+ *  자동 채움. 로딩·에러 상태 반영. 사용자가 수동 편집 가능. */
+function MetadataButton({
+  clipId,
+  state,
+  update,
+}: {
+  clipId: string;
+  state: EditorState;
+  update: (patch: Partial<EditorState>) => void;
+}) {
   const [open, setOpen] = useState(false);
-  const title = state.titleLines.map((l) => l.text).join(" ").trim() || "제목 미설정";
-  const tags = ["쇼츠", "예능", "하이라이트"];
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const meta = state.uploadMeta;
+
+  async function generate() {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const gen = await generateUploadMetadata(clipId);
+      update({ uploadMeta: gen });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "생성 실패");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <div className="relative">
@@ -636,42 +662,80 @@ function MetadataButton({ state, duration }: { state: EditorState; duration: num
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-80 rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl">
-            <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
-              <Sparkles className="size-3.5 text-amber-400" /> 쇼츠 배포 메타데이터 · AI 최적화
+          <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-96 rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
+                <Sparkles className="size-3.5 text-amber-400" /> YouTube 업로드 메타데이터
+              </div>
+              <button
+                onClick={generate}
+                disabled={loading}
+                className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[11px] font-semibold text-black hover:bg-amber-400 disabled:opacity-60"
+              >
+                <Sparkles className="size-3" /> {loading ? "생성 중…" : "AI 생성"}
+              </button>
             </div>
-            <div className="text-sm font-medium">{title}</div>
-            <div className="mt-1 text-xs text-zinc-500">
-              {state.channelName} · {state.aspect} · {formatDuration(duration)}
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-              <Stat label="예상 조회수" value="12.4만" />
-              <Stat label="예상 CTR" value="8.7%" />
-              <Stat label="SEO 점수" value="94" />
-              <Stat label="완주율" value="71%" />
-            </div>
-            <div className="mt-3 flex flex-wrap gap-1">
-              {tags.map((t) => (
-                <span key={t} className="rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400">
-                  #{t}
-                </span>
-              ))}
-            </div>
+            {error && (
+              <div className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+                {error}
+              </div>
+            )}
+
+            <label className="block">
+              <span className="text-[11px] text-zinc-500">제목</span>
+              <input
+                type="text"
+                value={meta?.title ?? ""}
+                onChange={(e) => update({ uploadMeta: { ...(meta ?? { description: "", tags: [] }), title: e.target.value } })}
+                placeholder={meta ? "" : "‘생성’을 눌러 초안을 만들거나 직접 입력"}
+                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+            </label>
+
+            <label className="mt-2 block">
+              <span className="text-[11px] text-zinc-500">설명</span>
+              <textarea
+                value={meta?.description ?? ""}
+                onChange={(e) => update({ uploadMeta: { ...(meta ?? { title: "", tags: [] }), description: e.target.value } })}
+                placeholder={meta ? "" : "‘생성’을 눌러 초안을 만들거나 직접 입력"}
+                rows={5}
+                className="mt-1 w-full resize-none rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+            </label>
+
+            <label className="mt-2 block">
+              <span className="text-[11px] text-zinc-500">태그 (쉼표로 구분)</span>
+              <input
+                type="text"
+                value={(meta?.tags ?? []).join(", ")}
+                onChange={(e) => {
+                  const tags = e.target.value
+                    .split(",")
+                    .map((t) => t.trim())
+                    .filter(Boolean);
+                  update({ uploadMeta: { ...(meta ?? { title: "", description: "" }), tags } });
+                }}
+                placeholder="쇼츠, 하이라이트, …"
+                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+            </label>
+
+            {meta?.tags && meta.tags.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {meta.tags.map((t) => (
+                  <span key={t} className="rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400">
+                    #{t}
+                  </span>
+                ))}
+              </div>
+            )}
+
             <div className="mt-3 border-t border-zinc-800 pt-2 text-[11px] text-zinc-500">
-              AI 추천 발행: 수 19:00 (KST) · 실제 예측·발행은 M6에서 연동
+              배포 시 여기 값이 YouTube 업로드 필드로 전송됩니다.
             </div>
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-zinc-800 p-2">
-      <div className="text-[10px] text-zinc-500">{label}</div>
-      <div className="text-base font-bold text-amber-400">{value}</div>
     </div>
   );
 }
