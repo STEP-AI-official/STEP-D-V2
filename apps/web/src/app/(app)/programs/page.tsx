@@ -14,7 +14,8 @@ import { PIPELINE_STAGE_LABELS, targetAgeLabel } from "@/lib/constants";
 import { programSmrChecks } from "@/lib/publish/requirements";
 import { UploadVideoButton } from "@/components/upload-video-dialog";
 import { NewProgramButton } from "@/components/new-program-dialog";
-import { EditCastButton } from "@/components/edit-cast-dialog";
+import { EditProgramButton, EditProgramDialogMount } from "@/components/edit-program-dialog";
+import { useState } from "react";
 import type { Program, Episode, Recommendation, Clip } from "@/lib/types";
 import { Sparkles, Clapperboard } from "lucide-react";
 
@@ -112,7 +113,7 @@ function ProgramCard({ program, eps, recs, clips }: { program: Program; eps: Epi
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
-          <EditCastButton program={program} />
+          <EditProgramButton program={program} />
           <UploadVideoButton programId={program.id} />
         </div>
       </div>
@@ -183,7 +184,8 @@ function ProgramCard({ program, eps, recs, clips }: { program: Program; eps: Epi
   );
 }
 
-/** Program-level SMR feed readiness — the "프로그램 준비" step split out of per-clip publish. */
+/** Program-level SMR feed readiness — the "프로그램 준비" step split out of per-clip publish.
+ *  미충족일 땐 pill 자체가 편집 다이얼로그 진입점(SMR 섹션으로 스크롤). */
 function SmrFeedReadiness({ program }: { program: Program }) {
   const checks = programSmrChecks(program);
   const missing = checks.filter((c) => !c.met);
@@ -191,8 +193,35 @@ function SmrFeedReadiness({ program }: { program: Program }) {
     return <StatusBadge tone="done">SMR 피드 준비 완료</StatusBadge>;
   }
   return (
-    <StatusBadge tone="warn" className="cursor-default">
-      <span title={`미충족: ${missing.map((m) => m.label).join(", ")}`}>SMR 피드 {missing.length}개 미충족</span>
-    </StatusBadge>
+    <SmrUnmetLink program={program} missingLabels={missing.map((m) => m.label)} count={missing.length} />
+  );
+}
+
+function SmrUnmetLink({
+  program,
+  missingLabels,
+  count,
+}: {
+  program: Program;
+  missingLabels: string[];
+  count: number;
+}) {
+  // SmrFeedReadiness는 서버-사이드 렌더 대비 훅 사용을 피해야 해서 별도 클라이언트 컴포넌트로 분리.
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title={`미충족: ${missingLabels.join(", ")} · 클릭해 편집`}
+        className="inline-flex items-center gap-1 rounded-full border border-status-warn/25 bg-status-warn/10 px-2 py-0.5 text-xs font-medium text-status-warn transition hover:border-status-warn/50 hover:bg-status-warn/15"
+      >
+        <span className="relative flex size-1.5 items-center justify-center" aria-hidden>
+          <span className="relative size-1.5 rounded-full bg-current" />
+        </span>
+        <span>SMR 피드 {count}개 미충족 · 편집</span>
+      </button>
+      {open && <EditProgramDialogMount program={program} scrollTo="smr" onClose={() => setOpen(false)} />}
+    </>
   );
 }

@@ -347,8 +347,12 @@ export function EditorShell({ clipId }: { clipId: string }) {
     };
   }, [videoEl]);
 
-  // The spoken caption under the playhead — same source & timeline as the render burn-in,
-  // so what you see here is what gets baked. offsetMs applies the ±sync fine-tune.
+  // The spoken caption under the playhead — same source & timeline as the render burn-in.
+  //
+  // 2026-07-24: STT segment의 절대 시각(초) 그대로 활용 (사용자 확정: "이미 초 찍혀있잖아").
+  //   offsetMs는 사용자 수동 fine-tune만 (기본 0). drift·chunk 보정 로직 다 제거.
+  //   전제: master 재생 시 videoTime = 원본 절대 시각 · transcript.start = 실제 발화 시각.
+  //   sync 어긋나면 원인은 STT/refine 시각 정확도(코어) 이슈 → 파이프라인 쪽에서 fix.
   const captionData = useMemo(() => {
     if (!transcript) return undefined;
     const t = videoTime + (state.offsetMs || 0) / 1000; // master-absolute seconds
@@ -357,14 +361,8 @@ export function EditorShell({ clipId }: { clipId: string }) {
     );
     const text = (seg?.text ?? "").trim();
     if (!seg || !text) return undefined;
-    const segEnd = Number(seg.end ?? Number(seg.start) + 3);
-    // Word-by-word highlight, mirroring the render (buildEditorAss): the same synthesized
-    // word timings + keyword pick, so the preview shows exactly what burns in.
-    const words = synthesizeCaptionWords(text, Number(seg.start), segEnd);
-    if (!words.length) return { text, words: [], activeIdx: -1, keyIdx: new Set<number>() };
-    let activeIdx = words.findIndex((w) => t >= w.start && t < w.end);
-    if (activeIdx < 0) activeIdx = t >= segEnd ? words.length - 1 : 0;
-    return { text, words, activeIdx, keyIdx: pickKeywordIdx(words.map((w) => w.word)) };
+    // 한국 방송은 word-by-word 하이라이트 안 씀. words 계산·keyword pick 제거 (2026-07-24).
+    return { text, words: [] as { word: string; start: number; end: number }[], activeIdx: -1, keyIdx: new Set<number>() };
   }, [transcript, videoTime, state.offsetMs]);
   const captionText = captionData?.text;
 

@@ -29,6 +29,35 @@ export interface Program {
   status: "active" | "archived";
   /** SMR feed-level requirements — set once per program (plan §3, §5.1③). */
   smr?: ProgramSmrConfig;
+  /** 파이프라인 분기 축(2026-07-24~). section("예능") 표시와 별개로 코어 파이프라인이 어떤
+   *  트랙을 타야 하는지 명시. "variety"·"drama"만 지원 — 미설정이면 자동 판정. 씬 청크 크기,
+   *  shot 임계, faces 정면성 관용도, recommend 프롬프트 팩이 이 값에 따라 분기. */
+  pipelineGenre?: "variety" | "drama";
+  // ── TV/OTT 프로그램 정보 (program-home-prototype.html 참고) ───────────────────
+  /** 시놉시스 · 프로그램 소개 (multi-line 허용). */
+  synopsis?: string;
+  /** 방송 채널 · 편성 채널 (예: "ENA · SBS플러스"). */
+  broadcaster?: string;
+  /** 편성 정보 (예: "수 밤 10:30", "매주 토 저녁 7시 50분"). */
+  schedule?: string;
+  /** 첫 방송일 (자유 형식 문자열 예: "2021.07.14"). */
+  firstAiredDate?: string;
+  /** 현재 회차/기수 정보 (예: "25기 191회~"). */
+  currentInfo?: string;
+  /** 연출 · 감독. */
+  director?: string;
+  /** 스핀오프 프로그램명. */
+  spinoff?: string;
+  /** 수상 이력. */
+  awards?: string;
+  /** 분위기·서브장르 태그 (예: ["극사실주의","돌직구","삼각관계"]). */
+  moods?: string[];
+  /** 프로그램 대표 이미지(포스터) — data URL로 저장(base64). 프로그램 상세 페이지 히어로.
+   *  TODO: 사이즈 상한이 있으니 향후 /api/programs/:id/poster 업로드 라우트로 옮기는 게 이상적. */
+  posterImageDataUrl?: string;
+  /** 출연자별 인물 이미지 매핑 — cast 배열의 이름을 키로 data URL 저장.
+   *  cast에서 이름이 제거되면 해당 키도 정리(서버 PATCH 시). */
+  castPhotos?: Record<string, string>;
 }
 
 /**

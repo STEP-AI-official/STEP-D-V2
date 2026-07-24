@@ -483,6 +483,9 @@ export function makeInitialEditorState(
     speed: 1,
     hookOn: true,
     silenceCut: false,
+    // Gemini STT가 발화 시작을 살짝 앞서 marking하는 경향 관찰 — 자막이 영상보다 먼저 뜸.
+    // 기본값 0ms로 뒤로 밀어 다수 케이스 커버. 필요 시 하단 timeline UI에서 ±100ms 조정.
+    // 2026-07-24 사용자 지적: "살짝 자막이 더 빨라".
     offsetMs: 0,
     trimBase: "master",
   };
@@ -590,6 +593,7 @@ export function ensureTracks(state: EditorState, durationSec: number, segmentSta
     speed: typeof state.speed === "number" && state.speed > 0 ? state.speed : 1,
     hookOn: typeof state.hookOn === "boolean" ? state.hookOn : false,
     silenceCut: typeof state.silenceCut === "boolean" ? state.silenceCut : false,
+    // 저장된 값 있으면 유지 (사용자 조정 보호) · 없으면 0 기본값 (STT 이른 marking 보정).
     offsetMs: typeof state.offsetMs === "number" ? state.offsetMs : 0,
     // 트림 — 위에서 계산한 마이그레이션·클램프 결과를 그대로 사용 (원 state.trimIn/trimOut을
     // 다시 쓰면 legacy 시프트가 되돌려진다).

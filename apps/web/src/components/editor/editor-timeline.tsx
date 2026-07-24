@@ -822,17 +822,44 @@ export function EditorTimeline({
           />
         </label>
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <span>싱크 미세조정</span>
-          <button onClick={() => update({ offsetMs: state.offsetMs - 100 })} className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800">
-            −100ms
+        <div className="ml-auto flex items-center gap-1">
+          <span>싱크</span>
+          <button onClick={() => update({ offsetMs: state.offsetMs - 100 })}
+            title="큰 스텝 -100ms"
+            className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800">
+            −100
           </button>
-          <span className="w-14 text-center tabular-nums text-zinc-300">
-            {state.offsetMs > 0 ? "+" : ""}
-            {state.offsetMs}ms
-          </span>
-          <button onClick={() => update({ offsetMs: state.offsetMs + 100 })} className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800">
-            +100ms
+          <button onClick={() => update({ offsetMs: state.offsetMs - 25 })}
+            title="미세 -25ms"
+            className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800">
+            −25
+          </button>
+          <input
+            type="number"
+            step={5}
+            value={state.offsetMs}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v)) update({ offsetMs: Math.round(v) });
+            }}
+            className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center tabular-nums text-zinc-200 outline-none focus:border-zinc-500"
+            title="직접 입력 (ms · 음수면 자막 지연)"
+          />
+          <span className="text-zinc-500">ms</span>
+          <button onClick={() => update({ offsetMs: state.offsetMs + 25 })}
+            title="미세 +25ms"
+            className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800">
+            +25
+          </button>
+          <button onClick={() => update({ offsetMs: state.offsetMs + 100 })}
+            title="큰 스텝 +100ms"
+            className="rounded border border-zinc-700 px-1.5 py-0.5 hover:bg-zinc-800">
+            +100
+          </button>
+          <button onClick={() => update({ offsetMs: 0 })}
+            title="원위치 (0ms)"
+            className="ml-0.5 rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">
+            리셋
           </button>
         </div>
       </div>

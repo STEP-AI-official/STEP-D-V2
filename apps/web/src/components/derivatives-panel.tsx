@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Sparkles,
@@ -534,7 +534,10 @@ function AnalyzeTab({ episodeId }: { episodeId: string }) {
                 setPendingMap({});
                 const fresh = await getMediaFaces(master.id);
                 setFaces(fresh);
-                toast({ title: "매핑 저장됨", description: "refined.speaker 필드도 rename 됐어요.", tone: "done" });
+                // 2026-07-23: 서버 rename이 shorts·narrative·DB 다 갱신. useMediaAnalysisPoll가
+                // 20초 폴링이라 늦음 → 강제 refetch로 즉시 반영. 전체 state refresh.
+                await app.refresh?.();
+                toast({ title: "매핑 저장 · 즉시 반영", description: "자막·서사·쇼츠 제목 다 rename됐어요.", tone: "done" });
               } catch (e) {
                 toast({ title: "매핑 저장 실패", description: e instanceof Error ? e.message : "다시 시도해 주세요.", tone: "error" });
               } finally {
@@ -843,6 +846,18 @@ function FaceClustersView({
   const savedMap = faces.mapping ?? {};
   const effectiveMap: Record<string, string> = { ...savedMap, ...pendingMap };
   const pendingCount = Object.keys(pendingMap).length;
+  // 2026-07-23: 자동 저장 (사용자 요청 · 빠르게 등록). input blur or 500ms debounce에 즉시 저장.
+  const debounceRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  function scheduleAutoSave(label: string, value: string) {
+    // 취소 & 재설정 · 500ms 후 저장 (연속 타이핑 중엔 저장 안 함)
+    if (debounceRef.current[label]) clearTimeout(debounceRef.current[label]);
+    debounceRef.current[label] = setTimeout(() => {
+      if ((savedMap[label] ?? "") === value.trim()) return;  // 변화 없으면 skip
+      setPendingMap((prev) => ({ ...prev, [label]: value }));
+      // Auto-save trigger — 다음 tick에서 onSave 호출 (pendingMap이 이미 채워짐)
+      setTimeout(() => onSave(), 50);
+    }, 500);
+  }
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-brand/25 bg-brand/5 px-2.5 py-2 text-[11px] text-brand">
@@ -878,12 +893,24 @@ function FaceClustersView({
                     );
                   })}
                 </div>
-                {/* 이름 입력 — 프로그램 cast는 자동완성 후보로, 그 외 임의 이름도 자유 입력 */}
+                {/* 이름 입력 — 프로그램 cast는 자동완성 후보로, 그 외 임의 이름도 자유 입력.
+                    500ms 무입력 or blur → 자동 저장 (사용자 요청 · 빠른 등록). */}
                 <input
                   list={`cast-suggest-${label}`}
                   value={currentValue}
-                  placeholder="이름 입력 또는 선택"
-                  onChange={(e) => setPendingMap((prev) => ({ ...prev, [label]: e.target.value }))}
+                  placeholder="이름 입력 또는 선택 (Enter · 자동 저장)"
+                  onChange={(e) => {
+                    setPendingMap((prev) => ({ ...prev, [label]: e.target.value }));
+                    scheduleAutoSave(label, e.target.value);
+                  }}
+                  onBlur={(e) => scheduleAutoSave(label, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      scheduleAutoSave(label, (e.target as HTMLInputElement).value);
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
                   className="w-full rounded border border-input bg-background px-2 py-1 text-[11.5px]"
                 />
                 <datalist id={`cast-suggest-${label}`}>

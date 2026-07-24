@@ -275,10 +275,24 @@ export interface CreateProgramInput {
   section?: string;
   targetAge?: number;
   cast?: string[];
+  /** 파이프라인 분기 축(variety|drama). 미설정이면 워커가 auto 판정. */
+  pipelineGenre?: "variety" | "drama";
   /** SMR feed metadata (program-level). */
   programCode?: string;
   category?: string;
   weekdays?: number[];
+  // ── TV/OTT 프로그램 정보 (선택 필드) ────────────────────────────
+  synopsis?: string;
+  broadcaster?: string;
+  schedule?: string;
+  firstAiredDate?: string;
+  currentInfo?: string;
+  director?: string;
+  spinoff?: string;
+  awards?: string;
+  moods?: string[];
+  posterImageDataUrl?: string;
+  castPhotos?: Record<string, string>;
 }
 
 /** Create a program (content root). Required before any episode/upload can exist. */
@@ -304,6 +318,51 @@ export async function updateProgram(id: string, patch: UpdateProgramInput): Prom
       body: JSON.stringify(patch),
     }),
   );
+}
+
+export interface AutofillQuestion {
+  field: string;
+  question: string;
+  suggestions: string[];
+  allowOther: boolean;
+}
+
+export interface AutofillProgramResult {
+  /** 팩트체크 통과 필드 — 사용자 확인 없이 채워도 안전. */
+  draft: Partial<Record<
+    "section" | "synopsis" | "broadcaster" | "schedule" | "firstAiredDate"
+    | "currentInfo" | "director" | "spinoff" | "awards" | "moods",
+    string | string[]
+  >>;
+  sources: { url: string; title: string }[];
+  evidence: Record<string, string>;
+  /** 팩트체크 못한 필드 — 사용자에게 물어봐서 확정 필요. */
+  dropped: string[];
+  /** 사용자에게 한 번에 던질 질문 (각 필드에 대해 suggestions + allowOther=기타 입력). */
+  questions: AutofillQuestion[];
+}
+
+/** 프로그램 제목 기반 자동 채움 (Gemini + google_search grounding · 팩트체크 · 후속 질문 생성).
+ *  결과는 서버 저장 없음 · 프론트가 questions 답 받아 병합 후 updateProgram으로 저장. */
+export async function autofillProgram(id: string): Promise<AutofillProgramResult> {
+  const res = await fetch(`${API_BASE}/programs/${id}/autofill`, { method: "POST" });
+  return json<AutofillProgramResult>(res);
+}
+
+/** 얼굴 분석 → program 수동 sync (파이프라인 native crash 우회).
+ *  최근 분석된 media에서 faces.json → cast·castPhotos 채움. mediaId 생략 시 자동 선택. */
+export async function syncProgramFromAnalysis(id: string, mediaId?: string): Promise<{
+  mediaId: string;
+  workDirExists: boolean;
+  addedNames: string[];
+  addedPhotos: string[];
+}> {
+  const res = await fetch(`${API_BASE}/programs/${id}/sync-from-analysis`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mediaId ? { mediaId } : {}),
+  });
+  return json(res);
 }
 
 /** Persist the editor's decision blob on a clip (metadata only — no render, plan §2.4). */

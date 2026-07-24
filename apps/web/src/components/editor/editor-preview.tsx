@@ -353,28 +353,11 @@ export function EditorPreview({
           <div className="absolute inset-x-0 px-6 text-center" style={{ bottom: "14%" }}>
             {(() => {
               const cap = captionStyleClasses(state.captionStyle);
-              const words = captionWords ?? [];
-              const keyColor = state.keywordColor ?? state.highlightColor;
+              // 한국 방송은 word-by-word 하이라이트를 쓰지 않음(2026-07-24 사용자 지적).
+              // 오히려 하이라이트가 살짝 어긋나 보이는 원인이었음 · segment 통째 표시로 통일.
               return (
                 <span className={cap.cls} style={cap.style}>
-                  {words.length
-                    ? words.map((w, i) => (
-                        <span
-                          key={i}
-                          style={{
-                            color:
-                              i === captionActiveIdx
-                                ? captionKeyIdx?.has(i)
-                                  ? keyColor
-                                  : state.highlightColor
-                                : undefined,
-                          }}
-                        >
-                          {w.word}
-                          {i < words.length - 1 ? " " : ""}
-                        </span>
-                      ))
-                    : caption}
+                  {caption}
                 </span>
               );
             })()}
